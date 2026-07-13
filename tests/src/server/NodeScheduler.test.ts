@@ -1,6 +1,6 @@
 import { NodeScheduler } from '@src/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createRecorder, instrumentSignal } from '../../../setup.js'
+import { createRecorder, instrumentSignal } from '../../setup.js'
 
 // NodeScheduler — the server-native cooperative-yield backend over real setImmediate /
 // setTimeout. The yield-ordering proof uses REAL timers (fake timers don't reorder a

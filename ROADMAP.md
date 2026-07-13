@@ -29,12 +29,18 @@ stage begins.
    `guides/src/workflow.md`, and the guides parity suite passes 64/64
    (`@orkestrel/pool` proved unused and was dropped; worker is not a workflow
    dependency).
-5. **agent** — the final package; depends on the runner that ships inside
-   `@orkestrel/workflow`.
+5. ~~**agent** — the final package; depends on the runner that ships inside
+   `@orkestrel/workflow`.~~ **DONE (conversion + publish)** — converted to the
+   canonical core-only package and published as `@orkestrel/agent@0.0.1`;
+   this repo now declares it (`^0.0.1`) and is FULLY GREEN: zero type errors,
+   and 461 core + 40 browser + 21 server + 64 guides tests pass. The two
+   packages are mutually dependent — dev-time self-resolution is handled in
+   `vite.config.ts` (the `@orkestrel/workflow` alias + inlining
+   `@orkestrel/agent` through Vite, since Node's package self-reference does
+   not reach imports made from inside node_modules).
 
-Current known state: the ONLY unresolved specifier left anywhere is
-`@orkestrel/agent` (src/core/types.ts, factories.ts, WorkflowRunner.ts,
-tests/setup.ts) — typecheck / core tests are red on exactly that and nothing
-else; format / lint / build / guides parity are green. Stage 5 resolves it by
-publication, which also unblocks `test:guides` through the canonical
-`tests/setup.ts` wiring.
+Remaining publish handshake: (1) publish `@orkestrel/workflow@0.0.1` — every
+prepublish gate passes, no bypass needed; (2) add
+`"@orkestrel/workflow": "^0.0.1"` to agent's dependencies (its tests then run
+for real) and publish `@orkestrel/agent@0.0.2`; (3) bump this repo's agent pin
+to `^0.0.2`. After that both packages are self-sufficiently green.

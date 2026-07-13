@@ -2,7 +2,7 @@ import type { WorkflowSnapshot } from '@src/core'
 import { createMemoryDriver } from '@orkestrel/database'
 import { createDatabaseWorkflowStore, createWorkflow, restoreWorkflow } from '@src/core'
 import { describe, expect, it } from 'vitest'
-import { buildReleaseDefinition, settleSnapshot } from '../../../../setup.js'
+import { buildReleaseDefinition, settleSnapshot } from '../../../setup.js'
 
 // A higher per-test timeout for the `runner.execute`-driven round-trips below. The run is a
 // GENUINELY real-async integration round-trip — a live W-b tree built + driven through the

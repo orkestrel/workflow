@@ -23,14 +23,14 @@ import {
 	WORKFLOW_TOOL_NAME,
 } from '@src/core'
 import { describe, expect, it, vi } from 'vitest'
-import type { TestGateInterface } from '../../../setup.js'
+import type { TestGateInterface } from '../../setup.js'
 import {
 	createGate,
 	createRecorder,
 	createRecordingScheduler,
 	createScriptedProvider,
 	waitForDelay,
-} from '../../../setup.js'
+} from '../../setup.js'
 
 // The W-c1 WorkflowRunner �€” the thin orchestrator that EXECUTES a live W-b tree by
 // COMPOSING the shipped substrate (one Runner/Queue per phase, the bail policy mapped onto

@@ -1,6 +1,6 @@
 import { createNodeScheduler } from '@src/server'
 import { describe, expect, it } from 'vitest'
-import { waitForDelay } from '../../../setup.js'
+import { waitForDelay } from '../../setup.js'
 
 // createNodeScheduler — returns a working server-native SchedulerInterface over real
 // setImmediate / setTimeout.

@@ -1,7 +1,7 @@
 import type { TaskInterface, WorkflowDefinition, WorkflowInterface } from '@src/core'
 import { createWorkflow, isWorkflowError } from '@src/core'
 import { describe, expect, it } from 'vitest'
-import { captureError, createErrorRecorder, recordEmitterEvents } from '../../../../setup.js'
+import { captureError, createErrorRecorder, recordEmitterEvents } from '../../../setup.js'
 
 // The leaf state machine (W-b): the legal AGENTS §10 transition graph + each illegal
 // transition rejected, the recorded TaskResult (Success on complete, Failure on fail),

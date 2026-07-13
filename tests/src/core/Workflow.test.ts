@@ -6,7 +6,7 @@ import {
 	captureError,
 	createErrorRecorder,
 	recordEmitterEvents,
-} from '../../../setup.js'
+} from '../../setup.js'
 
 // The DERIVED workflow state machine (W-b) — the cascade's top tier under BOTH bail
 // modes, the override, the workflow-tier result tree, and the snapshot → restore

@@ -6,7 +6,7 @@ import {
 	createRecorder,
 	recordEmitterEvents,
 	waitForDelay,
-} from '../../../setup.js'
+} from '../../setup.js'
 
 describe('Runner', () => {
 	it('execute runs every input and returns results in declared order', async () => {

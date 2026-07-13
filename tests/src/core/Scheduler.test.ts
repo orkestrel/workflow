@@ -1,7 +1,7 @@
 import type { SchedulerPriority } from '@src/core'
 import { Scheduler } from '@src/core'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createRecorder } from '../../../setup.js'
+import { createRecorder } from '../../setup.js'
 
 // Scheduler — the cross-environment setTimeout-based cooperative-yield default.
 // Timing assertions use fake timers for determinism (AGENTS §16); the macrotask
