@@ -1,14 +1,14 @@
-import type { SchedulerInterface, SchedulerOptions } from './types.js'
+import type { ScheduleInterface, ScheduleOptions } from './types.js'
 
 /**
- * The safe cross-environment cooperative-yield default — a {@link SchedulerInterface}
+ * The safe cross-environment cooperative-yield default — a {@link ScheduleInterface}
  * built on `setTimeout` / `clearTimeout` alone, so it runs unchanged in both the
  * browser and Node.
  *
  * @remarks
  * - **Cross-environment.** Uses ONLY `setTimeout` / `clearTimeout` — universally
  *   available. It deliberately avoids env-specific fast paths (`setImmediate`,
- *   `scheduler.yield`, `requestAnimationFrame`, `node:timers/promises`,
+ *   `schedule.yield`, `requestAnimationFrame`, `node:timers/promises`,
  *   `MessageChannel`); those belong to the environment backends, built with the
  *   agent loop that consumes them.
  * - **`yield` is a macrotask host-turn, not a microtask.** `yield()` waits on a
@@ -28,20 +28,20 @@ import type { SchedulerInterface, SchedulerOptions } from './types.js'
  *
  * @example
  * ```ts
- * const scheduler = new Scheduler()
+ * const schedule = new Schedule()
  * while (!signal.aborted) {
  * 	doSomeWork()
- * 	await scheduler.yield({ signal }) // let the host run between work units
+ * 	await schedule.yield({ signal }) // let the host run between work units
  * }
  * ```
  */
-export class Scheduler implements SchedulerInterface {
+export class Schedule implements ScheduleInterface {
 	/**
 	 * Yield control back to the host so other tasks (I/O, timers, rendering) can
 	 * run, then resume — a macrotask turn via `setTimeout(0)` (NOT a microtask,
 	 * which would resume before the host regains control).
 	 */
-	yield(options?: SchedulerOptions): Promise<void> {
+	yield(options?: ScheduleOptions): Promise<void> {
 		return this.#sleep(0, options?.signal)
 	}
 
@@ -54,7 +54,7 @@ export class Scheduler implements SchedulerInterface {
 	 * clamps a negative value or `NaN` to ~0 — so an out-of-domain `ms` resolves on
 	 * the next host turn rather than throwing.
 	 */
-	delay(ms: number, options?: SchedulerOptions): Promise<void> {
+	delay(ms: number, options?: ScheduleOptions): Promise<void> {
 		return this.#sleep(ms, options?.signal)
 	}
 

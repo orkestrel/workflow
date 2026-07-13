@@ -1,4 +1,4 @@
-import type { EmitterInterface } from '../../emitters/types.js'
+import type { EmitterInterface } from '@orkestrel/emitter'
 import type {
 	PhaseInterface,
 	TaskContext,
@@ -10,7 +10,7 @@ import type {
 	TaskStatus,
 	WorkflowInterface,
 } from '../types.js'
-import { Emitter } from '../../emitters/Emitter.js'
+import { Emitter } from '@orkestrel/emitter'
 import { WorkflowError } from '../errors.js'
 import { canTransitionTask } from '../helpers.js'
 

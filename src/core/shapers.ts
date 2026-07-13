@@ -1,12 +1,12 @@
 import {
 	arrayShape,
-	describedLiteral,
 	integerShape,
+	literalShape,
 	objectShape,
 	optionalShape,
 	stringShape,
 	unionShape,
-} from '../contracts/index.js'
+} from '@orkestrel/contract'
 
 // Workflow contract shapes — the shape VALUES the contract (factories.ts) compiles
 // into the four lockstep outputs (JSON Schema + guard + parser + generator). These
@@ -28,8 +28,8 @@ import {
 // parser accept (the contract stays byte-for-byte strict).
 
 // The description-carrying `via` discriminant + `bail` toggle ride on the shared
-// `describedLiteral` (contracts module) — consolidated there (AGENTS §5) so the workspace tool's
-// `operation` discriminant reuses the SAME helper rather than a second module-local copy.
+// `literalShape` (the `@orkestrel/contract` module) — a described single-value literal
+// is just `literalShape([value], { description })`, so no module-local helper is needed.
 
 /**
  * The shape of a {@link import('./types.js').TaskForm} — a descriptive tagged union
@@ -44,21 +44,21 @@ import {
  */
 export const taskFormShape = unionShape(
 	objectShape({
-		via: describedLiteral('Run a registered workflow FUNCTION by name.', 'function'),
+		via: literalShape(['function'], { description: 'Run a registered workflow FUNCTION by name.' }),
 		name: stringShape({
 			min: 1,
 			description: 'The registered function name to invoke (a registry key, not a label).',
 		}),
 	}),
 	objectShape({
-		via: describedLiteral('Run a registered TOOL by name.', 'tool'),
+		via: literalShape(['tool'], { description: 'Run a registered TOOL by name.' }),
 		name: stringShape({
 			min: 1,
 			description: 'The registered tool name to invoke (a registry key, not a label).',
 		}),
 	}),
 	objectShape({
-		via: describedLiteral('Run a registered AGENT (a subagent) by name.', 'agent'),
+		via: literalShape(['agent'], { description: 'Run a registered AGENT (a subagent) by name.' }),
 		name: stringShape({
 			min: 1,
 			description: 'The registered agent name to invoke (a registry key, not a label).',
@@ -108,11 +108,9 @@ export const phaseShape = objectShape({
 		}),
 	),
 	bail: optionalShape(
-		describedLiteral(
-			'Per-phase failure-policy override; omitted inherits the workflow bail.',
-			true,
-			false,
-		),
+		literalShape([true, false], {
+			description: 'Per-phase failure-policy override; omitted inherits the workflow bail.',
+		}),
 	),
 })
 
@@ -130,11 +128,10 @@ export const workflowShape = objectShape({
 		description: 'The workflow phases; they run SEQUENTIALLY, in order.',
 	}),
 	bail: optionalShape(
-		describedLiteral(
-			'Failure policy: false (default) continues gracefully, true halts on the first failure.',
-			true,
-			false,
-		),
+		literalShape([true, false], {
+			description:
+				'Failure policy: false (default) continues gracefully, true halts on the first failure.',
+		}),
 	),
 })
 
@@ -196,11 +193,9 @@ export const phaseDraftShape = objectShape({
 		}),
 	),
 	bail: optionalShape(
-		describedLiteral(
-			'Per-phase failure-policy override; omitted inherits the workflow bail.',
-			true,
-			false,
-		),
+		literalShape([true, false], {
+			description: 'Per-phase failure-policy override; omitted inherits the workflow bail.',
+		}),
 	),
 })
 
@@ -227,11 +222,10 @@ export const workflowDraftShape = objectShape({
 		description: 'The workflow phases; they run SEQUENTIALLY, in order.',
 	}),
 	bail: optionalShape(
-		describedLiteral(
-			'Failure policy: false (default) continues gracefully, true halts on the first failure.',
-			true,
-			false,
-		),
+		literalShape([true, false], {
+			description:
+				'Failure policy: false (default) continues gracefully, true halts on the first failure.',
+		}),
 	),
 })
 
@@ -251,12 +245,9 @@ export const stepShape = objectShape({
 		description: 'The registered behavior name this step runs (becomes the task run.name).',
 	}),
 	via: optionalShape(
-		describedLiteral(
-			'How to run it: function (default), tool, or agent.',
-			'function',
-			'tool',
-			'agent',
-		),
+		literalShape(['function', 'tool', 'agent'], {
+			description: 'How to run it: function (default), tool, or agent.',
+		}),
 	),
 })
 

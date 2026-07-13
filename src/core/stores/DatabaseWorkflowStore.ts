@@ -1,4 +1,4 @@
-import type { TableInterface } from '../../databases/index.js'
+import type { TableInterface } from '@orkestrel/database'
 import type { WorkflowSnapshot, WorkflowSnapshotRow, WorkflowStoreInterface } from '../types.js'
 import { isWorkflowSnapshot } from '../helpers.js'
 

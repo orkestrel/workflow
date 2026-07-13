@@ -1,8 +1,8 @@
-import type { SchedulerInterface } from './types.js'
-import { Scheduler } from './Scheduler.js'
-import type { ContractInterface } from '../contracts/index.js'
-import type { ToolInterface } from '../agents/types.js'
-import type { DriverInterface, TableInterface } from '../databases/index.js'
+import type { ScheduleInterface } from './types.js'
+import { Schedule } from './Schedule.js'
+import type { ContractInterface } from '@orkestrel/contract'
+import type { ToolInterface } from '@orkestrel/agent'
+import type { DriverInterface, TableInterface } from '@orkestrel/database'
 import type {
 	WorkflowDefinition,
 	WorkflowDraft,
@@ -16,10 +16,9 @@ import type {
 	WorkflowStoreInterface,
 	WorkflowToolOptions,
 } from './types.js'
-import { createTool } from '../agents/factories.js'
-import { createContract, rawShape, schemaToParameters, stringShape } from '../contracts/index.js'
-import { createDatabase, createMemoryDriver } from '../databases/index.js'
-import { createScheduler } from '../schedulers/factories.js'
+import { createTool } from '@orkestrel/agent'
+import { createContract, rawShape, schemaToParameters, stringShape } from '@orkestrel/contract'
+import { createDatabase, createMemoryDriver } from '@orkestrel/database'
 import {
 	DEFAULT_BAIL,
 	MAX_WORKFLOW_DEPTH,
@@ -42,7 +41,6 @@ import { DatabaseWorkflowStore } from './stores/DatabaseWorkflowStore.js'
 import { MemoryWorkflowStore } from './stores/MemoryWorkflowStore.js'
 import { Workflow } from './Workflow.js'
 import { WorkflowRunner } from './WorkflowRunner.js'
-
 
 // Workflow contract factory — compiles the workflow shape (shapers.ts) into the
 // four lockstep outputs (JSON Schema + guard + parser + generator) and types the
@@ -377,7 +375,7 @@ export function createDatabaseWorkflowStore(
  * siblings + skips the rest) vs settle-all (`false` — failures are recorded, the run
  * finishes); the run-level abort / timeout / budget ({@link import('./types.js').WorkflowRunOptions})
  * fold through `AbortSignal.any` (the agent runtime's pattern); pacing is the shipped
- * scheduler. `execute(definition, options?)` BUILDS the live tree from the definition itself
+ * schedule. `execute(definition, options?)` BUILDS the live tree from the definition itself
  * (via {@link createWorkflow} — one source of truth, returned in `WorkflowResult.workflow`),
  * drives the live entity (`start` → `complete` / `fail`), and resolves a
  * {@link import('./types.js').WorkflowResult}.
@@ -394,7 +392,7 @@ export function createDatabaseWorkflowStore(
  * factories→classes direction; the binder is injected as a value at construction).
  *
  * @param options - The behavior registries (`functions` / `tools` / `agents`) the runner
- *   dispatches a task by name through, plus an optional pacing `scheduler` (default the shipped
+ *   dispatches a task by name through, plus an optional pacing `schedule` (default the shipped
  *   cross-environment one). Omitting `functions` / `tools` / `agents` makes those task forms
  *   auto-complete (no handler). See {@link WorkflowRunnerOptions}.
  * @returns A working {@link WorkflowRunnerInterface}
@@ -421,7 +419,7 @@ export function createWorkflowRunner(options?: WorkflowRunnerOptions): WorkflowR
 		options?.functions ?? {},
 		options?.tools,
 		options?.agents,
-		options?.scheduler ?? createScheduler(),
+		options?.schedule ?? createSchedule(),
 		createWorkflowTool,
 	)
 }
@@ -570,7 +568,7 @@ export function createWorkflowTool(
 
 /**
  * Create the safe cross-environment cooperative-yield default — a
- * {@link SchedulerInterface} built on `setTimeout` / `clearTimeout` alone, so it
+ * {@link ScheduleInterface} built on `setTimeout` / `clearTimeout` alone, so it
  * runs unchanged in both the browser and Node.
  *
  * @remarks
@@ -581,34 +579,34 @@ export function createWorkflowTool(
  * `options.priority` is accepted for contract compliance but treated uniformly by
  * this default — environment backends honour it.
  *
- * @returns A working {@link SchedulerInterface}
+ * @returns A working {@link ScheduleInterface}
  *
  * @example
  * ```ts
- * import { createAbort, createScheduler } from '@src/core'
+ * import { createAbort, createSchedule } from '@src/core'
  *
  * const abort = createAbort()
- * const scheduler = createScheduler()
+ * const schedule = createSchedule()
  *
  * // A cooperative loop: do a unit of work, then hand the host a turn.
  * while (!abort.signal.aborted) {
  * 	doSomeWork()
- * 	await scheduler.yield({ signal: abort.signal })
+ * 	await schedule.yield({ signal: abort.signal })
  * }
  * ```
  *
  * @example
  * ```ts
- * import { createScheduler } from '@src/core'
+ * import { createSchedule } from '@src/core'
  *
  * // A backoff: wait a growing interval between retries.
- * const scheduler = createScheduler()
+ * const schedule = createSchedule()
  * for (let attempt = 0; attempt < 5; attempt += 1) {
  * 	if (await tryOnce()) break
- * 	await scheduler.delay(2 ** attempt * 100)
+ * 	await schedule.delay(2 ** attempt * 100)
  * }
  * ```
  */
-export function createScheduler(): SchedulerInterface {
-	return new Scheduler()
+export function createSchedule(): ScheduleInterface {
+	return new Schedule()
 }

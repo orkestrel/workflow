@@ -1,9 +1,7 @@
-import type { AgentInterface, ToolInterface, ToolManagerInterface } from '../agents/types.js'
-import type { BudgetInterface, TokenUsage } from '../budgets/types.js'
-import type { EmitterErrorHandler, EmitterHooks, EmitterInterface } from '../emitters/types.js'
-import type { SchedulerInterface } from '../schedulers/types.js'
-import type { Result } from '../types.js'
-
+import type { AgentInterface, ToolInterface, ToolManagerInterface } from '@orkestrel/agent'
+import type { BudgetInterface, TokenUsage } from '@orkestrel/budget'
+import type { EmitterErrorHandler, EmitterHooks, EmitterInterface } from '@orkestrel/emitter'
+import type { Result } from '@orkestrel/contract'
 
 // Workflows — a JSON-serializable Workflow → Phase → Task tree (strict three
 // levels, positional, no DAG). Two type families share this file: the DEFINITION
@@ -405,8 +403,8 @@ export interface PhaseDerivation {
  * Carries the complete lineage (`task` / `phase` / `workflow` contexts) so a result
  * is self-describing wherever it travels. `status` is the terminal state this
  * result records. `result` BOXES the produced outcome in a {@link Result}: it is
- * PRESENT exactly when `status` is `completed` (a {@link import('../types.js').Success})
- * or `failed` (a {@link import('../types.js').Failure}), and ABSENT when `status` is
+ * PRESENT exactly when `status` is `completed` (a {@link import('@orkestrel/contract').Success})
+ * or `failed` (a {@link import('@orkestrel/contract').Failure}), and ABSENT when `status` is
  * `skipped` or `stopped` (terminal, but produced no outcome) — a pending/running
  * task has no result at all (a non-terminal status, per
  * {@link import('./helpers.js').isTerminalStatus}). This boxed `result` REPLACES separate
@@ -734,8 +732,8 @@ export interface WorkflowOptions {
  *   live parent entities for direct lineage navigation.
  * - **State machine (AGENTS §10).** `status` is the explicit current state. `start`
  *   moves `pending → running`; the terminal transitions are `complete(value)` (records
- *   a {@link import('../types.js').Success}), `fail(error)` (records a
- *   {@link import('../types.js').Failure}), `skip` (AGENTS §10 — intentionally not run),
+ *   a {@link import('@orkestrel/contract').Success}), `fail(error)` (records a
+ *   {@link import('@orkestrel/contract').Failure}), `skip` (AGENTS §10 — intentionally not run),
  *   and `stop` (AGENTS §10 — ended early). Each is GUARDED: an illegal transition (e.g.
  *   completing a non-`running` task) throws a {@link import('./errors.js').WorkflowError}.
  *   `skip` / `stop` set the override so the leaf's terminal state survives a snapshot.
@@ -903,8 +901,8 @@ export interface PhaseManagerInterface {
  * Receives a {@link TaskControllerInterface} — the running task's folded `signal`, its
  * `input` (the task's `metadata` bag), its lineage {@link TaskContext}, and read-UP access
  * to earlier phases' {@link TaskResult}s. A returned value becomes the task's
- * {@link import('../types.js').Success} ({@link TaskInterface.complete}); a throw / rejection
- * becomes its {@link import('../types.js').Failure} ({@link TaskInterface.fail}). Long work
+ * {@link import('@orkestrel/contract').Success} ({@link TaskInterface.complete}); a throw / rejection
+ * becomes its {@link import('@orkestrel/contract').Failure} ({@link TaskInterface.fail}). Long work
  * should honour `controller.signal` (a workflow-level abort / timeout / budget, or — under
  * `bail: true` — a sibling's failure, fires it) so a cancel stops it promptly.
  */
@@ -1053,7 +1051,7 @@ export type WorkflowRunOptions = WorkflowOptions & {
 
 /**
  * The options for `createWorkflowRunner` — the behavior registries the runner dispatches
- * a task BY NAME through, plus the optional pacing scheduler.
+ * a task BY NAME through, plus the optional pacing schedule.
  *
  * @remarks
  * - `functions` — the {@link WorkflowFunctions} registry for `function`-form tasks. A name
@@ -1070,9 +1068,9 @@ export type WorkflowRunOptions = WorkflowOptions & {
  *   the agent run, and drives it (success → `complete`, throw → `fail`), all behind the
  *   depth + cycle guard. An unregistered agent name is the no-handler case (auto-completes).
  *   Omitted ⇒ every `agent` task auto-completes.
- * - `scheduler` — the {@link SchedulerInterface} that paces the tree (a cooperative
+ * - `schedule` — the {@link ScheduleInterface} that paces the tree (a cooperative
  *   `yield` between phases). Omitted ⇒ the shipped cross-environment default
- *   ({@link import('../schedulers/factories.js').createScheduler}).
+ *   ({@link createSchedule}).
  *
  * The reserved `on` key (AGENTS §8) is intentionally ABSENT: the runner is THIN and drives
  * the W-b entities' OWN emitters (subscribe via `workflow.emitter` / `phase.emitter` /
@@ -1084,7 +1082,7 @@ export interface WorkflowRunnerOptions {
 	readonly tools?: ToolManagerInterface
 	/** The {@link WorkflowAgents} resolver for `agent`-form tasks (W-c2); omitted ⇒ every `agent` task auto-completes. */
 	readonly agents?: WorkflowAgents
-	readonly scheduler?: SchedulerInterface
+	readonly schedule?: ScheduleInterface
 }
 
 /**
@@ -1199,30 +1197,30 @@ export interface WorkflowRunnerInterface {
  * Relative urgency hint for cooperative scheduling. Honoured by environment
  * backends; the cross-environment default treats all priorities uniformly.
  */
-export type SchedulerPriority = 'user' | 'normal' | 'background'
+export type SchedulePriority = 'user' | 'normal' | 'background'
 
 /** Options for a single cooperative yield/delay. */
-export interface SchedulerOptions {
+export interface ScheduleOptions {
 	/**
 	 * A relative urgency hint. Honoured by environment backends; the
 	 * cross-environment default treats all priorities the same.
 	 */
-	readonly priority?: SchedulerPriority
+	readonly priority?: SchedulePriority
 	/** A signal whose abort rejects a pending yield/delay with its `reason`. */
 	readonly signal?: AbortSignal
 }
 
 /**
- * A cooperative host-yield primitive: a loop decides WHAT to do; the scheduler
+ * A cooperative host-yield primitive: a loop decides WHAT to do; the schedule
  * decides WHEN the host regains control. Abort-aware — a pending yield/delay
  * rejects with the signal's reason when aborted.
  */
-export interface SchedulerInterface {
+export interface ScheduleInterface {
 	/**
 	 * Yield control back to the host so other tasks (I/O, timers, rendering) can
 	 * run, then resume.
 	 */
-	yield(options?: SchedulerOptions): Promise<void>
+	yield(options?: ScheduleOptions): Promise<void>
 	/** Resume after at least `ms` milliseconds. */
-	delay(ms: number, options?: SchedulerOptions): Promise<void>
+	delay(ms: number, options?: ScheduleOptions): Promise<void>
 }

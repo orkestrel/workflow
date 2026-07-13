@@ -1,10 +1,6 @@
 import type { WorkflowSnapshot } from '@src/core'
-import {
-	createDatabaseWorkflowStore,
-	createMemoryDriver,
-	createWorkflow,
-	restoreWorkflow,
-} from '@src/core'
+import { createMemoryDriver } from '@orkestrel/database'
+import { createDatabaseWorkflowStore, createWorkflow, restoreWorkflow } from '@src/core'
 import { describe, expect, it } from 'vitest'
 import { buildReleaseDefinition, settleSnapshot } from '../../../../setup.js'
 
@@ -13,7 +9,7 @@ import { buildReleaseDefinition, settleSnapshot } from '../../../../setup.js'
 // substrate `createRunner`/`Queue` (a cooperative wake-park loop awaiting real promises across many
 // microtask turns), the per-task abort fold, the emitter cascade, a full snapshot serialize, AND a
 // real `databases` driver round-trip on every `set` / `get`. Pacing is already made deterministic
-// by an injected `createRecordingScheduler` (no wall-clock `setTimeout`), but the chain itself
+// by an injected `createRecordingSchedule` (no wall-clock `setTimeout`), but the chain itself
 // cannot be made instantaneous without MOCKING the unit under test (forbidden, §16.2). Under
 // full-`src:core`-project parallel load (~105 test files across the fork pool saturating every CPU),
 // that real-async chain — which finishes in well under a millisecond in isolation — can be
@@ -33,7 +29,7 @@ const ROUND_TRIP_TIMEOUT_MS = 30_000
 // statuses / results / bail are exercised); restore is the shipped restoreWorkflow, never re-rolled.
 
 // The real two-phase `release` WorkflowDefinition (`buildReleaseDefinition`), its by-name handler
-// map, and the deterministic `settleSnapshot` driver (paced by an injected recording scheduler so
+// map, and the deterministic `settleSnapshot` driver (paced by an injected recording schedule so
 // the run is wall-clock-free, AGENTS §16) all live in `tests/setup.ts` — the SAME shared store-test
 // fixture the Memory twin drives (AGENTS §16.1), so the definition + run stay in one place.
 

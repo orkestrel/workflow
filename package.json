@@ -1,21 +1,21 @@
 {
-	"name": "@orkestrel/database",
-	"version": "0.0.2",
-	"description": "A typed database abstraction for the @orkestrel line — a single core engine over pluggable storage drivers. Part of the @orkestrel line.",
+	"name": "@orkestrel/workflow",
+	"version": "0.0.1",
+	"description": "A typed workflow engine for the @orkestrel line — a serializable Workflow → Phase → Task tree run by a composed runner on a cooperative schedule. Part of the @orkestrel line.",
 	"keywords": [
-		"database",
-		"driver",
-		"query",
-		"server",
-		"storage",
-		"typescript"
+		"orchestration",
+		"runner",
+		"schedule",
+		"task",
+		"typescript",
+		"workflow"
 	],
-	"homepage": "https://github.com/orkestrel/database#readme",
-	"bugs": "https://github.com/orkestrel/database/issues",
+	"homepage": "https://github.com/orkestrel/workflow#readme",
+	"bugs": "https://github.com/orkestrel/workflow/issues",
 	"license": "MIT",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/orkestrel/database.git"
+		"url": "git+https://github.com/orkestrel/workflow.git"
 	},
 	"files": [
 		"dist",
@@ -85,10 +85,11 @@
 	},
 	"dependencies": {
 		"@orkestrel/abort": "^0.0.1",
+		"@orkestrel/budget": "^0.0.1",
 		"@orkestrel/contract": "^0.0.1",
+		"@orkestrel/database": "^0.0.1",
 		"@orkestrel/emitter": "^0.0.1",
-		"@orkestrel/indexeddb": "^0.0.2",
-		"@orkestrel/sqlite": "^0.0.2"
+		"@orkestrel/timeout": "^0.0.1"
 	},
 	"devDependencies": {
 		"@microsoft/api-extractor": "^7.58.9",

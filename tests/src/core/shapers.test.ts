@@ -1,7 +1,7 @@
 import type { WorkflowDefinition } from '@src/core'
+import { literalShape } from '@orkestrel/contract'
 import {
 	createWorkflowContract,
-	describedLiteral,
 	phaseDraftShape,
 	phaseShape,
 	stepShape,
@@ -100,9 +100,9 @@ describe('workflowShape', () => {
 	})
 })
 
-describe('describedLiteral — a literal shape carrying a description', () => {
+describe('literalShape — a literal shape carrying a description', () => {
 	it('attaches the description while preserving the literal values', () => {
-		const shape = describedLiteral('how to run', 'function', 'tool', 'agent')
+		const shape = literalShape(['function', 'tool', 'agent'], { description: 'how to run' })
 		expect(shape.type).toBe('literal')
 		expect(shape.values).toEqual(['function', 'tool', 'agent'])
 		expect(shape.description).toBe('how to run')

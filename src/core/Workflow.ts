@@ -1,4 +1,4 @@
-import type { EmitterInterface } from '../emitters/types.js'
+import type { EmitterInterface } from '@orkestrel/emitter'
 import type {
 	PhaseDerivation,
 	PhaseInterface,
@@ -12,7 +12,7 @@ import type {
 	WorkflowSnapshot,
 	WorkflowStatus,
 } from './types.js'
-import { Emitter } from '../emitters/Emitter.js'
+import { Emitter } from '@orkestrel/emitter'
 import { buildWorkflowContext, collectResults, deriveWorkflowStatus } from './helpers.js'
 import { Phase } from './phases/Phase.js'
 import { PhaseManager } from './phases/PhaseManager.js'

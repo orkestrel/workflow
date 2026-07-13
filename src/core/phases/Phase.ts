@@ -1,4 +1,4 @@
-import type { EmitterInterface } from '../../emitters/types.js'
+import type { EmitterInterface } from '@orkestrel/emitter'
 import type {
 	PhaseContext,
 	PhaseEventMap,
@@ -12,7 +12,7 @@ import type {
 	TaskSnapshot,
 	WorkflowInterface,
 } from '../types.js'
-import { Emitter } from '../../emitters/Emitter.js'
+import { Emitter } from '@orkestrel/emitter'
 import { buildTaskContext, derivePhaseStatus } from '../helpers.js'
 import { Task } from '../tasks/Task.js'
 import { TaskManager } from '../tasks/TaskManager.js'

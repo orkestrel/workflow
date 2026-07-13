@@ -1,11 +1,11 @@
-import type { AbortInterface } from '../aborts/types.js'
-import type { AgentInterface, ToolManagerInterface } from '../agents/types.js'
-import type { ControllerInterface, RunnerInterface } from '../runners/types.js'
-import type { SchedulerInterface } from '../schedulers/types.js'
-import type { TimeoutInterface } from '../timeouts/types.js'
+import type { AbortInterface } from '@orkestrel/abort'
+import type { AgentInterface, ToolManagerInterface } from '@orkestrel/agent'
+import type { ControllerInterface, RunnerInterface } from '@orkestrel/runner'
+import type { TimeoutInterface } from '@orkestrel/timeout'
 import type {
 	PhaseDefinition,
 	PhaseInterface,
+	ScheduleInterface,
 	TaskDefinition,
 	TaskInterface,
 	WorkflowAgents,
@@ -17,9 +17,9 @@ import type {
 	WorkflowRunnerInterface,
 	WorkflowToolBinder,
 } from './types.js'
-import { createAbort } from '../aborts/factories.js'
-import { createRunner } from '../runners/factories.js'
-import { createTimeout } from '../timeouts/factories.js'
+import { createAbort } from '@orkestrel/abort'
+import { createRunner } from '@orkestrel/runner'
+import { createTimeout } from '@orkestrel/timeout'
 import { DEFAULT_BAIL, DEFAULT_PHASE_CONCURRENCY, MAX_WORKFLOW_DEPTH } from './constants.js'
 import { WorkflowError } from './errors.js'
 import {
@@ -58,7 +58,7 @@ import { Workflow } from './Workflow.js'
  *   `Queue`); `bail` maps onto that Runner's fail-fast vs settle-all; the run-level abort /
  *   timeout / budget fold through {@link createAbort} / {@link createTimeout} +
  *   `AbortSignal.any` (exactly as the agent runtime folds its bounds); pacing is the shipped
- *   {@link SchedulerInterface}. The runner writes ZERO concurrency / retry / abort logic of
+ *   {@link ScheduleInterface}. The runner writes ZERO concurrency / retry / abort logic of
  *   its own — it only sequences phases, dispatches a task, and drives the live entity.
  * - **Phases sequential, tasks concurrent.** `#execute` awaits the phases in order (phase
  *   N+1 starts only once phase N has fully settled). Within a phase, ALL its tasks are the
@@ -100,7 +100,7 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 	readonly #functions: WorkflowFunctions
 	readonly #tools: ToolManagerInterface | undefined
 	readonly #agents: WorkflowAgents | undefined
-	readonly #scheduler: SchedulerInterface
+	readonly #schedule: ScheduleInterface
 	// The injected `createWorkflowTool` (see `WorkflowToolBinder`) — `undefined` only when the
 	// runner was constructed WITHOUT the binder (no agent can then author a nested workflow; an
 	// agent task still runs, just with no workflow tool bound). `createWorkflowRunner` always
@@ -111,13 +111,13 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 		functions: WorkflowFunctions,
 		tools: ToolManagerInterface | undefined,
 		agents: WorkflowAgents | undefined,
-		scheduler: SchedulerInterface,
+		schedule: ScheduleInterface,
 		workflowTool: WorkflowToolBinder | undefined,
 	) {
 		this.#functions = functions
 		this.#tools = tools
 		this.#agents = agents
-		this.#scheduler = scheduler
+		this.#schedule = schedule
 		this.#workflowTool = workflowTool
 	}
 
@@ -208,11 +208,11 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 					break
 				}
 				// Pace BETWEEN phases (never after the last) — the cooperative host yield, the
-				// shipped scheduler honouring the run signal (an aborted yield rejects, handled). A
+				// shipped schedule honouring the run signal (an aborted yield rejects, handled). A
 				// cancel during the phase skips pacing (the next iteration's halt guard handles it).
 				if (index < phases.length - 1 && !this.#cancelled(runSignal)) {
 					try {
-						await this.#scheduler.yield(runSignal === undefined ? undefined : { signal: runSignal })
+						await this.#schedule.yield(runSignal === undefined ? undefined : { signal: runSignal })
 					} catch {
 						// An aborted yield rejects with the run signal's reason — a cancel, not an error;
 						// the next loop iteration's halt guard skips the rest.

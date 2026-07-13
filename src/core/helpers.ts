@@ -22,7 +22,7 @@ import type {
 	WorkflowStep,
 	WorkflowSteps,
 } from './types.js'
-import { isArray, isBoolean, isNumber, isRecord, isString } from '../contracts/index.js'
+import { isArray, isBoolean, isNumber, isRecord, isString } from '@orkestrel/contract'
 import { DEFAULT_BAIL, TASK_TRANSITIONS } from './constants.js'
 
 // Workflow derivation helpers — pure, side-effect-free functions (AGENTS §4.3,

@@ -1,16 +1,16 @@
-import type { WorkflowDraft } from '@src/core'
-import type { ToolResult, WorkflowDefinition } from '@src/core'
+import type { ToolResult } from '@orkestrel/agent'
+import type { WorkflowDefinition, WorkflowDraft } from '@src/core'
+import { buildToolResult, createToolManager } from '@orkestrel/agent'
+import { isRecord } from '@orkestrel/contract'
 import {
 	assertSnapshot,
-	buildToolResult,
-	createToolManager,
+	createSchedule,
 	createWorkflow,
 	createWorkflowContract,
 	createWorkflowDraftContract,
 	createWorkflowRunner,
 	createWorkflowTool,
 	expandSteps,
-	isRecord,
 	isWorkflowError,
 	MAX_WORKFLOW_DEPTH,
 	restoreWorkflow,
@@ -18,26 +18,28 @@ import {
 	WORKFLOW_TOOL_NESTED_EXAMPLE,
 } from '@src/core'
 import { describe, expect, it } from 'vitest'
-import { buildWorkflowDefinition, captureError, createRecordingScheduler } from '../../../setup.js'
+import {
+	buildWorkflowDefinition,
+	captureError,
+	createRecordingSchedule,
+	waitForDelay,
+} from '../../../setup.js'
 
-import { createScheduler } from '@src/core'
-import { waitForDelay } from '../../../setup.js'
-
-// A workflow runner paced by an INJECTED `createRecordingScheduler` — the project's real
-// `SchedulerInterface` whose `yield` resolves immediately (honouring an abort signal exactly like
+// A workflow runner paced by an INJECTED `createRecordingSchedule` — the project's real
+// `ScheduleInterface` whose `yield` resolves immediately (honouring an abort signal exactly like
 // the shipped one, just without arming a real timer), threaded through the production
-// `WorkflowRunnerOptions.scheduler` seam (NOT a mock of the runner — the unit under test runs in
-// full). The runner paces BETWEEN phases, and the default `createScheduler` does so via a real
+// `WorkflowRunnerOptions.schedule` seam (NOT a mock of the runner — the unit under test runs in
+// full). The runner paces BETWEEN phases, and the default `createSchedule` does so via a real
 // `setTimeout(0)` macrotask; for a multi-phase run (an ids-omitted / flat blob expands to two-or-
 // more one-task phases) that wall-clock yield is a genuine starvation point under load, so driving
 // the clock removes it (AGENTS §16 deterministic) — a behaviour-identical no-op for the single-phase
-// cases (they never reach an inter-phase yield). The scheduler is NOT the whole story: each
+// cases (they never reach an inter-phase yield). The schedule is NOT the whole story: each
 // `tool.execute` still drives a real-async round-trip through the substrate `createRunner`/`Queue`
 // (a cooperative wake-park loop over real promises) that the workflow-run tests pair with a higher
 // per-test timeout ({@link ROUND_TRIP_TIMEOUT_MS}) so event-loop starvation under full parallel
 // load can't flake them.
 function runner(): ReturnType<typeof createWorkflowRunner> {
-	return createWorkflowRunner({ scheduler: createRecordingScheduler() })
+	return createWorkflowRunner({ schedule: createRecordingSchedule() })
 }
 
 // A higher per-test timeout for the `tool.execute` workflow-run tests below. Running an authored
@@ -46,7 +48,7 @@ function runner(): ReturnType<typeof createWorkflowRunner> {
 // `createRunner`/`Queue` (a cooperative wake-park loop awaiting real promises across many microtask
 // turns), the per-task abort fold, and the emitter cascade. That chain cannot be made instantaneous
 // without MOCKING the unit under test (forbidden, §16.2); pacing is already deterministic (the
-// injected `runner()` scheduler, no wall-clock `setTimeout`). Under full-`src:core`-project parallel
+// injected `runner()` schedule, no wall-clock `setTimeout`). Under full-`src:core`-project parallel
 // load (~105 test files across the fork pool saturating every CPU) the round-trip — sub-millisecond
 // in isolation — can be event-loop-starved past vitest's 5s default and flake. A generous ceiling
 // (6× the default) absorbs worst-case starvation while still failing fast on a genuine hang (§16.3 —
@@ -608,46 +610,45 @@ describe('createWorkflowTool — single canonical wrap over the ToolManager + MC
 	)
 })
 
+// createSchedule — returns a working cross-environment ScheduleInterface.
 
-// createScheduler — returns a working cross-environment SchedulerInterface.
+describe('createSchedule', () => {
+	it('returns a schedule whose yield and delay round-trip', async () => {
+		const schedule = createSchedule()
 
-describe('createScheduler', () => {
-	it('returns a scheduler whose yield and delay round-trip', async () => {
-		const scheduler = createScheduler()
-
-		await expect(scheduler.yield()).resolves.toBeUndefined()
+		await expect(schedule.yield()).resolves.toBeUndefined()
 
 		const start = Date.now()
-		await scheduler.delay(20)
+		await schedule.delay(20)
 		// Real timing with tolerance — delay waited at least roughly its interval.
 		expect(Date.now() - start).toBeGreaterThanOrEqual(15)
 	})
 
 	it('its delay is abort-aware — a pre-aborted signal rejects with the reason', async () => {
-		const scheduler = createScheduler()
+		const schedule = createSchedule()
 		const controller = new AbortController()
 		const reason = new Error('cancelled')
 		controller.abort(reason)
 
-		await expect(scheduler.delay(20, { signal: controller.signal })).rejects.toBe(reason)
+		await expect(schedule.delay(20, { signal: controller.signal })).rejects.toBe(reason)
 		// A subsequent unguarded yield still works.
 		await waitForDelay(0)
-		await expect(scheduler.yield()).resolves.toBeUndefined()
+		await expect(schedule.yield()).resolves.toBeUndefined()
 	})
 
 	it('returns independent, stateless instances — aborting one does not affect another', async () => {
-		const first = createScheduler()
-		const second = createScheduler()
+		const first = createSchedule()
+		const second = createSchedule()
 		const controller = new AbortController()
 		const reason = new Error('only the first')
 		controller.abort(reason)
 
 		// The first call is bound to an already-aborted signal and rejects; the second
-		// scheduler shares no state with it, so its own unguarded calls round-trip fine.
+		// schedule shares no state with it, so its own unguarded calls round-trip fine.
 		await expect(first.delay(20, { signal: controller.signal })).rejects.toBe(reason)
 		await expect(second.yield()).resolves.toBeUndefined()
 		await expect(second.delay(10)).resolves.toBeUndefined()
-		// And the first scheduler is itself unbroken for a fresh, unguarded call.
+		// And the first schedule is itself unbroken for a fresh, unguarded call.
 		await expect(first.yield()).resolves.toBeUndefined()
 	})
 })

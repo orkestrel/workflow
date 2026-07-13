@@ -1,7 +1,7 @@
-import type { SchedulerInterface, SchedulerOptions } from '@src/core'
+import type { ScheduleInterface, ScheduleOptions } from '@src/core'
 
 /**
- * The Node {@link SchedulerInterface} — the server-native cooperative-yield backend.
+ * The Node {@link ScheduleInterface} — the server-native cooperative-yield backend.
  *
  * @remarks
  * - **`yield` is a `setImmediate` host-turn.** `yield()` waits on `setImmediate`, the
@@ -22,29 +22,29 @@ import type { SchedulerInterface, SchedulerOptions } from '@src/core'
  *   rather than the caller's `signal.reason` — that would break reason fidelity, so the
  *   timer and listener are hand-rolled to match the contract.
  * - **Priority is accepted but a no-op.** Node has no priority primitive (no equivalent
- *   of the browser's `scheduler.postTask` priorities), so `options.priority` is accepted
+ *   of the browser's `schedule.postTask` priorities), so `options.priority` is accepted
  *   for contract compliance and ignored — every yield/delay is uniform.
  * - **Event-free.** A pure functional primitive — no Emitter, no events.
  *
  * @example
  * ```ts
  * import { createAbort } from '@src/core'
- * import { NodeScheduler } from '@src/server'
+ * import { NodeSchedule } from '@src/server'
  *
  * const abort = createAbort()
- * const scheduler = new NodeScheduler()
+ * const schedule = new NodeSchedule()
  * while (!abort.signal.aborted) {
  * 	doSomeWork()
- * 	await scheduler.yield({ signal: abort.signal }) // a setImmediate host-turn
+ * 	await schedule.yield({ signal: abort.signal }) // a setImmediate host-turn
  * }
  * ```
  */
-export class NodeScheduler implements SchedulerInterface {
+export class NodeSchedule implements ScheduleInterface {
 	/**
 	 * Yield control back to the event loop via `setImmediate` so pending I/O and timers
 	 * can run, then resume; abort rejects with `signal.reason`.
 	 */
-	yield(options?: SchedulerOptions): Promise<void> {
+	yield(options?: ScheduleOptions): Promise<void> {
 		return this.#immediate(options?.signal)
 	}
 
@@ -58,7 +58,7 @@ export class NodeScheduler implements SchedulerInterface {
 	 * `NaN` to ~0 — so an out-of-domain `ms` resolves on the next host turn rather than
 	 * throwing.
 	 */
-	delay(ms: number, options?: SchedulerOptions): Promise<void> {
+	delay(ms: number, options?: ScheduleOptions): Promise<void> {
 		return this.#sleep(ms, options?.signal)
 	}
 

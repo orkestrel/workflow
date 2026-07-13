@@ -1,5 +1,5 @@
 import type { TaskInterface, WorkflowDefinition, WorkflowInterface } from '@src/core'
-import { createWorkflow, isFailure, isSuccess, isWorkflowError } from '@src/core'
+import { createWorkflow, isWorkflowError } from '@src/core'
 import { describe, expect, it } from 'vitest'
 import { captureError, createErrorRecorder, recordEmitterEvents } from '../../../../setup.js'
 
@@ -73,8 +73,8 @@ describe('Task — legal transitions', () => {
 		expect(result?.status).toBe('completed')
 		expect(result?.result).toBeDefined()
 		if (result?.result === undefined) throw new Error('expected a boxed result')
-		expect(isSuccess(result.result)).toBe(true)
-		if (!isSuccess(result.result)) throw new Error('expected a Success')
+		expect(result.result.success).toBe(true)
+		if (!result.result.success) throw new Error('expected a Success')
 		expect(result.result.value).toEqual({ artifact: 42 })
 		// Lineage stamped on the result.
 		expect(result.task.id).toBe('t')
@@ -92,8 +92,8 @@ describe('Task — legal transitions', () => {
 		const result = task.result
 		expect(result?.status).toBe('failed')
 		if (result?.result === undefined) throw new Error('expected a boxed result')
-		expect(isFailure(result.result)).toBe(true)
-		if (!isFailure(result.result)) throw new Error('expected a Failure')
+		expect(result.result.success).toBe(false)
+		if (result.result.success) throw new Error('expected a Failure')
 		expect(result.result.error).toBe(boom)
 	})
 
@@ -102,7 +102,7 @@ describe('Task — legal transitions', () => {
 		task.start()
 		task.fail('plain string reason')
 		const result = task.result
-		if (result?.result === undefined || !isFailure(result.result)) {
+		if (result?.result === undefined || result.result.success) {
 			throw new Error('expected a Failure')
 		}
 		expect(result.result.error).toBeInstanceOf(Error)
@@ -122,8 +122,8 @@ describe('Task — legal transitions', () => {
 			expect(result?.status).toBe('completed')
 			if (result?.result === undefined)
 				throw new Error('expected a boxed result even for a falsy value')
-			expect(isSuccess(result.result)).toBe(true)
-			if (!isSuccess(result.result)) throw new Error('expected a Success')
+			expect(result.result.success).toBe(true)
+			if (!result.result.success) throw new Error('expected a Success')
 			expect(result.result.value).toBe(value)
 		}
 	})
