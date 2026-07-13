@@ -11,9 +11,14 @@ stage begins.
    exactly the Pool surface with `@orkestrel/emitter` as its sole dependency,
    37 src + 9 parity tests green; the shared monolith Workers guide was split
    into standalone package-specific guides).
-2. Publish `@orkestrel/queue` and `@orkestrel/pool` to npm. **IN PROGRESS** —
-   next up, handled manually.
-3. **worker** — built on queue and pool.
+2. ~~Publish `@orkestrel/queue` and `@orkestrel/pool` to npm.~~ **DONE** — both
+   published as 0.0.1.
+3. ~~**worker** — built on queue and pool.~~ **DONE (conversion)** — converted
+   to the canonical core+server package on the published queue/pool/emitter/
+   contract/database deps (src/server/serve.ts kept as the self-contained
+   worker-thread entry with its intentionally inlined local guards, exempted
+   by name in the guides parity suite; 73 src + 9 parity tests green).
+   Publish to npm pending — handled manually.
 4. **runner** and **controller** — depend on queue/pool/worker and integrate
    INTO `@orkestrel/workflow` as native modules (the same treatment the
    scheduler received), replacing today's unresolved `@orkestrel/runner`
