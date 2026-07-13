@@ -39,8 +39,8 @@ stage begins.
    `@orkestrel/agent` through Vite, since Node's package self-reference does
    not reach imports made from inside node_modules).
 
-Remaining publish handshake: (1) publish `@orkestrel/workflow@0.0.1` — every
-prepublish gate passes, no bypass needed; (2) add
-`"@orkestrel/workflow": "^0.0.1"` to agent's dependencies (its tests then run
-for real) and publish `@orkestrel/agent@0.0.2`; (3) bump this repo's agent pin
-to `^0.0.2`. After that both packages are self-sufficiently green.
+~~Remaining publish handshake~~ **COMPLETE** — `@orkestrel/workflow@0.0.1`
+and `@orkestrel/agent@0.0.2` are both published and mutually resolvable; this
+repo pins agent at `^0.0.2` and every gate passes against the published
+registry artifacts. The line is done: every package converted, published, and
+self-sufficiently green.
