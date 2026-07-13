@@ -19,16 +19,22 @@ stage begins.
    worker-thread entry with its intentionally inlined local guards, exempted
    by name in the guides parity suite; 73 src + 9 parity tests green).
    Publish to npm pending — handled manually.
-4. **runner** and **controller** — depend on queue/pool/worker and integrate
+4. ~~**runner** and **controller** — depend on queue/pool/worker and integrate
    INTO `@orkestrel/workflow` as native modules (the same treatment the
    scheduler received), replacing today's unresolved `@orkestrel/runner`
-   imports with local core modules.
+   imports with local core modules.~~ **DONE** — `Runner` / `Controller` live
+   natively in `src/core` on the published abort/emitter/queue packages,
+   `WorkflowRunner` composes the local `Runner` per phase (zero
+   `@orkestrel/runner` references remain), the runners guide was merged into
+   `guides/src/workflow.md`, and the guides parity suite passes 64/64
+   (`@orkestrel/pool` proved unused and was dropped; worker is not a workflow
+   dependency).
 5. **agent** — the final package; depends on the runner that ships inside
    `@orkestrel/workflow`.
 
-Current known state: `@orkestrel/workflow` imports `@orkestrel/agent` and
-`@orkestrel/runner` as bare specifiers that do not resolve yet — typecheck /
-tests are red on exactly those specifiers and nothing else (format / lint
-green; the browser / server surfaces compile clean). Stage 4 resolves the
-runner imports by integration; stage 5 resolves the agent imports by
-publication.
+Current known state: the ONLY unresolved specifier left anywhere is
+`@orkestrel/agent` (src/core/types.ts, factories.ts, WorkflowRunner.ts,
+tests/setup.ts) — typecheck / core tests are red on exactly that and nothing
+else; format / lint / build / guides parity are green. Stage 5 resolves it by
+publication, which also unblocks `test:guides` through the canonical
+`tests/setup.ts` wiring.

@@ -7,16 +7,16 @@ import type { WorkflowSnapshot, WorkflowStoreInterface } from '../types.js'
  *
  * @remarks
  * A plain `Map<string, WorkflowSnapshot>` (AGENTS §21 — the snapshot is already pure,
- * self-contained JSON, so no encoding is needed for the memory tier). UNLIKE the
- * {@link import('../../../server/http/types.js').SessionStoreInterface}'s memory store there is
+ * self-contained JSON, so no encoding is needed for the memory tier). UNLIKE the server
+ * package's `SessionStoreInterface`'s memory store there is
  * NO idle-TTL and NO eviction: a persisted workflow run-state is durable orchestration state
  * that lives until an explicit `delete`, never silently aging out (a run that vanished
  * mid-flight would be a silent data loss, not a freed session). A durable backend (JSON /
  * SQLite / IndexedDB) swaps in through the SAME interface without touching the runner or the
  * entity tree — its driver-pluggable twin is
  * {@link import('./DatabaseWorkflowStore.js').DatabaseWorkflowStore} (the snapshot as one opaque
- * JSON column), exactly as {@link import('../../workers/stores/MemoryQueueStore.js').MemoryQueueStore}
- * twins {@link import('../../workers/stores/DatabaseQueueStore.js').DatabaseQueueStore}.
+ * JSON column), exactly as `@orkestrel/queue`'s `MemoryQueueStore`
+ * twins `DatabaseQueueStore`.
  *
  * - **`get` resolves the persisted snapshot for an id**, or `undefined` if none is stored.
  * - **`set` inserts / replaces under the snapshot's OWN `id`** (no separate id param).

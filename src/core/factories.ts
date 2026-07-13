@@ -1,4 +1,4 @@
-import type {RunnerInterface, RunnerOptions, SchedulerInterface} from './types.js'
+import type { RunnerInterface, RunnerOptions, SchedulerInterface } from './types.js'
 import { Scheduler } from './Scheduler.js'
 import type { ContractInterface } from '@orkestrel/contract'
 import type { ToolInterface } from '@orkestrel/agent'
@@ -41,7 +41,7 @@ import { DatabaseWorkflowStore } from './stores/DatabaseWorkflowStore.js'
 import { MemoryWorkflowStore } from './stores/MemoryWorkflowStore.js'
 import { Workflow } from './Workflow.js'
 import { WorkflowRunner } from './WorkflowRunner.js'
-import {Runner} from "./Runner";
+import { Runner } from './Runner.js'
 
 // Workflow contract factory — compiles the workflow shape (shapers.ts) into the
 // four lockstep outputs (JSON Schema + guard + parser + generator) and types the
@@ -293,7 +293,7 @@ export function assertSnapshot(snapshot: WorkflowSnapshot): void {
  * backend behind the W-d persistence seam.
  *
  * @remarks
- * The snapshot analogue of {@link import('../../server/http/factories.js').createMemorySessionStore}
+ * The snapshot analogue of the server package's `createMemorySessionStore`
  * (and the {@link createMemoryQueueStore} family), but LEANER — there is no idle-TTL, so no
  * options bag (AGENTS §21 minimal): a persisted run-state lives until an explicit `delete`. This is
  * the zero-plumbing DEFAULT (a plain `Map`); its driver-pluggable twin is
@@ -371,7 +371,7 @@ export function createDatabaseWorkflowStore(
  *
  * @remarks
  * The runner is THIN — it re-implements no concurrency / retry / abort logic. Per-phase
- * bounded concurrency is one {@link import('../runners/factories.js').createRunner} per phase;
+ * bounded concurrency is one {@link createRunner} per phase;
  * `bail` maps onto that Runner's fail-fast (`true` — the first failure aborts the in-flight
  * siblings + skips the rest) vs settle-all (`false` — failures are recorded, the run
  * finishes); the run-level abort / timeout / budget ({@link import('./types.js').WorkflowRunOptions})
@@ -454,7 +454,7 @@ export function createWorkflowRunner(options?: WorkflowRunnerOptions): WorkflowR
  *
  * The handler conforms to the universal tool-handler contract (AGENTS §14): it returns the PLAIN
  * run-summary VALUE on success and THROWS a typed {@link WorkflowError} on every failure path. It
- * does NOT build a {@link ToolResult} itself — the {@link import('../agents/tools/ToolManager.js').ToolManager}
+ * does NOT build a {@link ToolResult} itself — the `@orkestrel/agent` package's `ToolManager`
  * performs the ONE canonical wrap (`{ id, name, value }` on a return; `{ id, name, error }` on a
  * throw, ISOLATED so nothing escapes the run), so the outcome appears EXACTLY ONCE, identically,
  * over BOTH the agent loop and MCP (a throw → MCP `isError: true`):
@@ -611,7 +611,6 @@ export function createWorkflowTool(
 export function createScheduler(): SchedulerInterface {
 	return new Scheduler()
 }
-
 
 /**
  * Create a thin generic orchestrator that drives declared units — and any they

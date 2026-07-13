@@ -1,4 +1,5 @@
 import type {
+	DeferredInterface,
 	LifecycleStatus,
 	PhaseContext,
 	PhaseDefinition,
@@ -430,9 +431,9 @@ export function collectResults(phases: readonly (readonly TaskResult[])[]): read
  * {@link import('./factories.js').createWorkflowTool} handler returns on success.
  *
  * @remarks
- * This is the run summary the handler returns DIRECTLY — NOT a {@link import('../agents/types.js').ToolResult}.
+ * This is the run summary the handler returns DIRECTLY — NOT a `ToolResult` (the future `@orkestrel/agent` package).
  * The handler conforms to the universal tool-handler contract (AGENTS §14): it returns the plain value
- * (and throws on failure), so the {@link import('../agents/tools/ToolManager.js').ToolManager} performs
+ * (and throws on failure), so the `@orkestrel/agent` package's `ToolManager` performs
  * the ONE canonical wrap (`{ id, name, value }`) and the model reads exactly this summary — once,
  * identically — over BOTH the agent loop and MCP. The summary is LEAN: the workflow's terminal `status`
  * and the COUNT of settled task results — enough for a caller / model to react without serializing the
@@ -563,4 +564,21 @@ export function expandSteps(flat: WorkflowSteps): WorkflowDefinition {
  */
 export function stepToForm(step: WorkflowStep): TaskForm {
 	return { via: step.via ?? 'function', name: step.name }
+}
+
+/**
+ * Create a {@link DeferredInterface} — a promise whose settlement is driven
+ * externally, so a caller can resolve/reject it from outside the executor.
+ *
+ * @typeParam T - The value the deferred promise resolves
+ * @returns A deferred `promise` plus its `resolve` / `reject`
+ */
+export function createDeferred<T>(): DeferredInterface<T> {
+	let resolve: (value: T) => void = () => {}
+	let reject: (reason: unknown) => void = () => {}
+	const promise = new Promise<T>((res, rej) => {
+		resolve = res
+		reject = rej
+	})
+	return { promise, resolve, reject }
 }

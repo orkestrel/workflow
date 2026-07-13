@@ -21,8 +21,8 @@ import { canTransitionTask } from '../helpers.js'
  *
  * @remarks
  * - **Guarded transitions (AGENTS §10).** `start` (→ `running`), then `complete(value)`
- *   (→ `completed`, records a {@link import('../types.js').Success}), `fail(error)`
- *   (→ `failed`, records a {@link import('../types.js').Failure}), `skip` (→ `skipped`),
+ *   (→ `completed`, records a {@link import('@orkestrel/contract').Success}), `fail(error)`
+ *   (→ `failed`, records a {@link import('@orkestrel/contract').Failure}), `skip` (→ `skipped`),
  *   `stop` (→ `stopped`). Each consults {@link canTransitionTask} FIRST and throws a
  *   `TRANSITION` {@link WorkflowError} on an illegal move (e.g. completing a non-`running`
  *   task) — the legal graph is the single source of truth, so the leaf can never reach an

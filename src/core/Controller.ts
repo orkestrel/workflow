@@ -1,4 +1,4 @@
-import type { AbortInterface } from '../aborts/index.js'
+import type { AbortInterface } from '@orkestrel/abort'
 import type { ControllerInterface } from './types.js'
 
 /**

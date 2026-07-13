@@ -108,7 +108,7 @@ export const TASK_TRANSITIONS: Readonly<Record<TaskStatus, readonly TaskStatus[]
  * The determinism principle fixes that a phase's tasks run CONCURRENTLY; `concurrency` is
  * only an optional resource throttle (max-in-flight). With none declared, the runner runs
  * all of a phase's tasks at once — modelled as this large finite cap so the value flows
- * straight into the substrate {@link import('../runners/types.js').RunnerInterface}'s
+ * straight into the substrate {@link import('./types.js').RunnerInterface}'s
  * `concurrency` (which expects a positive integer) without a special unbounded branch. No
  * realistic phase declares enough tasks to reach it, so it behaves as "run them all".
  */
@@ -131,7 +131,7 @@ export const MAX_WORKFLOW_DEPTH = 8
 /**
  * The name under which the {@link import('./WorkflowRunner.js').WorkflowRunner} BINDS the
  * depth/cycle-aware workflow tool onto a dispatched `agent` task's
- * {@link import('../agents/types.js').AgentContextInterface} (W-c2).
+ * `AgentContextInterface` (the future `@orkestrel/agent` package, W-c2).
  *
  * @remarks
  * The propagation seam's well-known key: before running an `agent` task, the runner adds a

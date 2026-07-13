@@ -17,7 +17,7 @@ import type { WorkflowErrorCode } from './types.js'
  * cyclic nested-workflow dispatch (`DEPTH`), and a malformed
  * {@link import('./factories.js').createWorkflowTool} args blob (`TOOL`). On the
  * workflow-tool seam the `DEPTH` / `TOOL` throw is ISOLATED by the
- * {@link import('../agents/tools/ToolManager.js').ToolManager} into the tool result's
+ * `@orkestrel/agent` package's `ToolManager` into the tool result's
  * top-level `error` (AGENTS §14 — the universal tool-handler contract).
  */
 export class WorkflowError extends Error {

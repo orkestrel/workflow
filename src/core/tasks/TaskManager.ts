@@ -1,7 +1,7 @@
 import type { TaskInterface, TaskManagerInterface } from '../types.js'
 
 /**
- * The lean child manager (AGENTS §9) of a {@link import('../Phase.js').Phase}'s live
+ * The lean child manager (AGENTS §9) of a {@link import('../phases/Phase.js').Phase}'s live
  * tasks — an insertion-ordered registry keyed by task `id`, so positional order is
  * preserved across an interior `skip` / `remove`.
  *

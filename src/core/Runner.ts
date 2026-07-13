@@ -1,18 +1,18 @@
-import type { AbortInterface } from '../aborts/index.js'
-import type { EmitterInterface } from '../emitters/types.js'
-import type { QueueExecution, QueueInterface } from '../workers/index.js'
-import type { DeferredInterface } from '../types.js'
+import type { AbortInterface } from '@orkestrel/abort'
+import type { EmitterInterface } from '@orkestrel/emitter'
+import type { QueueExecution, QueueInterface } from '@orkestrel/queue'
 import type {
+	DeferredInterface,
 	RunnerEventMap,
 	RunnerInterface,
 	RunnerOptions,
 	RunnerUnit,
 	UnitOutcome,
 } from './types.js'
-import { createAbort } from '../aborts/index.js'
-import { createQueue } from '../workers/index.js'
-import { createDeferred } from '../helpers.js'
-import { Emitter } from '../emitters/Emitter.js'
+import { createAbort } from '@orkestrel/abort'
+import { createQueue } from '@orkestrel/queue'
+import { Emitter } from '@orkestrel/emitter'
+import { createDeferred } from './helpers.js'
 import { Controller } from './Controller.js'
 
 /**

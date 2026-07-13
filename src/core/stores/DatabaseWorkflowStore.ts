@@ -12,7 +12,7 @@ import { isWorkflowSnapshot } from '../helpers.js'
  * The store is driver-agnostic: it holds a single {@link TableInterface} whose backend
  * (memory, JSON, SQLite, IndexedDB) is chosen by whoever builds it (the factories), so a
  * JSON / SQLite / IndexedDB backend swaps in WITHOUT touching the runner or the entity tree
- * — the same seam as {@link import('../../workers/stores/DatabaseQueueStore.js').DatabaseQueueStore}.
+ * — the same seam as `@orkestrel/queue`'s `DatabaseQueueStore`.
  * The driver defaults to memory ({@link import('../factories.js').createDatabaseWorkflowStore}
  * passes `createMemoryDriver()`), so it ALSO works in memory out of the box; you opt into the
  * durable plumbing by passing a JSON / SQLite / IndexedDB driver.
@@ -32,7 +32,7 @@ import { isWorkflowSnapshot } from '../helpers.js'
  *   boundary narrow for an untrusted storage read), or `undefined` if none is stored.
  * - **`delete(id)` drops a snapshot by id**; an absent id is a no-op (no throw).
  *
- * UNLIKE the {@link import('../../../server/http/types.js').SessionStoreInterface} there is NO
+ * UNLIKE the server package's `SessionStoreInterface` there is NO
  * idle-TTL / eviction — a persisted run-state is durable orchestration state that lives until an
  * explicit `delete`. The public surface is EXACTLY `get` / `set` / `delete` — no extra members (the
  * §22 method bijection with {@link WorkflowStoreInterface}). Restore stays a caller concern: read a

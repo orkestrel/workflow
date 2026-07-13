@@ -87,9 +87,8 @@
 		"@orkestrel/abort": "^0.0.1",
 		"@orkestrel/budget": "^0.0.1",
 		"@orkestrel/contract": "^0.0.1",
-		"@orkestrel/database": "^0.0.1",
+		"@orkestrel/database": "^0.0.2",
 		"@orkestrel/emitter": "^0.0.1",
-		"@orkestrel/pool": "^0.0.1",
 		"@orkestrel/queue": "^0.0.1",
 		"@orkestrel/timeout": "^0.0.1"
 	},

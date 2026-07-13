@@ -1,10 +1,11 @@
 import type { AbortInterface } from '@orkestrel/abort'
 import type { AgentInterface, ToolManagerInterface } from '@orkestrel/agent'
-import type { ControllerInterface, RunnerInterface } from '@orkestrel/runner'
 import type { TimeoutInterface } from '@orkestrel/timeout'
 import type {
+	ControllerInterface,
 	PhaseDefinition,
 	PhaseInterface,
+	RunnerInterface,
 	SchedulerInterface,
 	TaskDefinition,
 	TaskInterface,
@@ -18,7 +19,6 @@ import type {
 	WorkflowToolBinder,
 } from './types.js'
 import { createAbort } from '@orkestrel/abort'
-import { createRunner } from '@orkestrel/runner'
 import { createTimeout } from '@orkestrel/timeout'
 import { DEFAULT_BAIL, DEFAULT_PHASE_CONCURRENCY, MAX_WORKFLOW_DEPTH } from './constants.js'
 import { WorkflowError } from './errors.js'
@@ -30,6 +30,7 @@ import {
 	isToolTask,
 	workflowTag,
 } from './helpers.js'
+import { Runner } from './Runner.js'
 import { TaskController } from './tasks/TaskController.js'
 import { Workflow } from './Workflow.js'
 
@@ -86,7 +87,7 @@ import { Workflow } from './Workflow.js'
  *   the Runner settles every unit (allSettled) and the run finishes (the workflow derives
  *   `completed`, the failure recorded in the result tree).
  * - **Abort / Timeout / Budget fold.** `#execute` folds the run's external `signal`, a
- *   {@link TimeoutInterface}, and the {@link import('../budgets/types.js').BudgetInterface}'s
+ *   {@link TimeoutInterface}, and the `@orkestrel/budget` package's `BudgetInterface`'s
  *   `signal` into one `runSignal` (`AbortSignal.any`); a fire aborts the active phase's Runner
  *   (cancelling every in-flight task) and HALTS the run — the remaining tasks / phases `skip`
  *   and the workflow is force-`stop`ped (settles `stopped`). Each task's
@@ -276,7 +277,7 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 		// terminating the leaf, so a subsequent success can still `complete` it. A no-retry task's first
 		// attempt IS its final one, so this reduces to today's behavior exactly. Fresh per phase run.
 		const attempts = new Map<string, number>()
-		const runner = createRunner<TaskInterface, void>({
+		const runner = new Runner<TaskInterface, void>({
 			concurrency,
 			// Thread each task's per-entry `retries` / `timeout` overrides (Seam A) from its definition
 			// into the substrate unit — the Part-0 resolver. The phase Runner's defaults are the

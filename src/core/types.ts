@@ -28,7 +28,7 @@ import type { Result } from '@orkestrel/contract'
  *
  * @remarks
  * - `function` — a registered function the runner invokes directly.
- * - `tool` — a registered {@link import('../agents/types.js').ToolInterface} the
+ * - `tool` — a registered {@link ToolInterface} the
  *   runner executes as a tool call.
  * - `agent` — a registered agent (a subagent). It will later carry a depth/cycle
  *   guard (W-c, bounded by {@link import('./constants.js').MAX_WORKFLOW_DEPTH}); in
@@ -307,12 +307,12 @@ export interface TaskInput extends Partial<TaskContext> {
  *   cycle). Raised on BOTH seams of the W-c2 recursion — an `agent`-task dispatch
  *   (`fail`ed with this code; it never runs) AND the
  *   {@link import('./factories.js').createWorkflowTool} handler (thrown, then ISOLATED
- *   by the {@link import('../agents/tools/ToolManager.js').ToolManager} into the tool
+ *   by the `@orkestrel/agent` package's `ToolManager` into the tool
  *   result's `error`). The error `context` names the offending agent / workflow id + the depth.
  * - `TOOL` — the {@link import('./factories.js').createWorkflowTool} handler was handed
  *   a MALFORMED / over-constraint authored args blob (e.g. an empty `id`, `concurrency: 0`)
  *   that the contract rejected, so no workflow ran. The handler THROWS it (rather than
- *   returning a failure result), and the {@link import('../agents/tools/ToolManager.js').ToolManager}
+ *   returning a failure result), and the `@orkestrel/agent` package's `ToolManager`
  *   ISOLATES the throw into the canonical tool result's top-level `error` (AGENTS §14 — the
  *   universal tool-handler contract); the error `context` names the wrapped workflow id.
  */
@@ -503,7 +503,7 @@ export interface WorkflowSnapshot {
 /**
  * The durable persistence seam for a {@link WorkflowSnapshot} — three async primitives
  * (`get` / `set` / `delete`) keyed by a workflow id, the snapshot analogue of
- * {@link import('../../server/http/types.js').SessionStoreInterface} (and the
+ * the server package's `SessionStoreInterface` (and the
  * {@link QueueStoreInterface} driver-swap pattern).
  *
  * @remarks
@@ -517,8 +517,8 @@ export interface WorkflowSnapshot {
  *
  * Every primitive is async (a `Promise`), so a durable backend (a database round-trip) fits the
  * same shape as the memory one. The snapshot carries its OWN id, so `set` takes no separate id
- * param (mirroring {@link QueueStoreInterface.save} / {@link
- * import('../../server/http/types.js').SessionStoreInterface.set}, which key off the value's own
+ * param (mirroring {@link QueueStoreInterface.save} / the server package's
+ * `SessionStoreInterface.set`, which key off the value's own
  * `id`). UNLIKE a session store there is NO idle-TTL / eviction — a persisted workflow run-state
  * lives until an explicit `delete`, never silently expiring (it is durable orchestration state,
  * not an ephemeral session). It is concrete over {@link WorkflowSnapshot} — no generic parameter
@@ -554,7 +554,7 @@ export interface WorkflowStoreInterface {
  * @remarks
  * The Database twin of {@link WorkflowStoreInterface} stores the snapshot whole (the `snapshot`
  * column is a `rawShape`, an opaque JSON blob — exactly as
- * {@link import('../workers/types.js').StoredEntry} stores a queue entry's `input`), so the row
+ * `@orkestrel/queue`'s `StoredEntry` stores a queue entry's `input`), so the row
  * type stays FLAT and the deeply-nested snapshot shape (workflow → phases → tasks → results) never
  * forces the contract to `Infer` it — sidestepping a TS2589 instantiation-depth blow-up. The column
  * therefore reads back as the broad `unknown`; the store narrows it to a {@link WorkflowSnapshot} on
@@ -922,7 +922,7 @@ export type WorkflowFunctions = Readonly<Record<string, WorkflowFunction>>
 
 /**
  * The `agent`-task behavior resolver (W-c2) — resolves a registered agent BY NAME to a
- * live {@link import('../agents/types.js').AgentInterface} the runner runs as a subagent.
+ * live {@link AgentInterface} the runner runs as a subagent.
  *
  * @remarks
  * The `agent` analogue of the {@link WorkflowFunctions} registry / the
@@ -1018,7 +1018,7 @@ export interface WorkflowResult {
  * and phases are `skip`ped and the workflow settles `stopped`.
  * - `signal` — an external cancellation (a caller `AbortController`).
  * - `timeout` — a whole-run deadline in milliseconds. A non-positive value (`0` or negative)
- *   ⇒ NO deadline (the runner arms a {@link import('../timeouts/types.js').TimeoutInterface}
+ *   ⇒ NO deadline (the runner arms an `@orkestrel/timeout` `TimeoutInterface`
  *   only when `timeout > 0`).
  * - `budget` — a whole-run cost ceiling (a {@link BudgetInterface} over {@link TokenUsage}
  *   — its `signal` fires when a task-reported usage crosses `max`); the runner folds its
@@ -1063,7 +1063,7 @@ export type WorkflowRunOptions = WorkflowOptions & {
  *   (auto-completes). Omitted ⇒ every `tool` task auto-completes.
  * - `agents` — the {@link WorkflowAgents} resolver (W-c2) an `agent`-form task is dispatched
  *   through: the runner resolves `run.name` to a live
- *   {@link import('../agents/types.js').AgentInterface}, BINDS a depth/cycle-aware workflow
+ *   {@link AgentInterface}, BINDS a depth/cycle-aware workflow
  *   tool onto its `context.tools` (the propagation seam), folds the task's cancellation into
  *   the agent run, and drives it (success → `complete`, throw → `fail`), all behind the
  *   depth + cycle guard. An unregistered agent name is the no-handler case (auto-completes).
@@ -1092,7 +1092,7 @@ export interface WorkflowRunnerOptions {
  * @remarks
  * This is the PROPAGATION carrier across the agent/tool boundary. A `Tool`'s handler receives
  * ONLY the model-supplied `args` (no ambient context, no signal — see
- * {@link import('../agents/types.js').ToolOptions}), so the run's position in the
+ * the `@orkestrel/agent` package's `ToolOptions`), so the run's position in the
  * workflow→agent→workflow chain CANNOT be threaded through a tool call at runtime. Instead the
  * runner CLOSES it over the tool at BIND time: when it dispatches an `agent` task at depth `D`
  * with ancestry `A`, it builds the agent's workflow tool with `{ depth: D, ancestry: A }`, so
@@ -1129,7 +1129,7 @@ export interface WorkflowToolOptions {
  * @param definition - The workflow the bound tool runs when called with no authored args
  * @param runner - The runner that executes the (nested) workflow (the runner passes `this`)
  * @param options - The depth + ancestry the nested workflow runs under (see {@link WorkflowToolOptions})
- * @returns The bound {@link import('../agents/types.js').ToolInterface}
+ * @returns The bound {@link ToolInterface}
  */
 export type WorkflowToolBinder = (
 	definition: WorkflowDefinition,
@@ -1146,7 +1146,7 @@ export type WorkflowToolBinder = (
  * `execute(definition, options?)` BUILDS the live W-b entity tree from the definition itself
  * (via {@link import('./factories.js').createWorkflow}) and drives it to a terminal
  * {@link WorkflowResult} — phases SEQUENTIALLY and, within each phase, the tasks CONCURRENTLY
- * through ONE substrate {@link import('../runners/types.js').RunnerInterface} (concurrency =
+ * through ONE substrate {@link RunnerInterface} (concurrency =
  * the phase's {@link PhaseDefinition.concurrency}). The definition is the SINGLE source of
  * truth: the runner owns both the declarative state (the live tree it constructs) and the
  * EXECUTION-ONLY fields the snapshot deliberately dropped — each task's {@link TaskForm}
@@ -1224,7 +1224,6 @@ export interface SchedulerInterface {
 	/** Resume after at least `ms` milliseconds. */
 	delay(ms: number, options?: SchedulerOptions): Promise<void>
 }
-
 
 /**
  * The push observation surface of a {@link RunnerInterface} (AGENTS §13) — the run
@@ -1349,7 +1348,7 @@ export type RunnerHandler<TInput, TResult> = (
  * abort), so only the two reliability knobs are exposed here. Each field OVERRIDES the
  * runner-level `retries` / `timeout` default for that one unit; an omitted field falls back
  * to the default. This is the per-unit slice of the backing Queue's
- * {@link import('../workers/types.js').QueueEntryOptions} surfaced cleanly — the Queue already
+ * `@orkestrel/queue` `QueueEntryOptions` surfaced cleanly — the Queue already
  * resolves default→override.
  */
 export interface RunnerEntryOptions {
@@ -1468,4 +1467,16 @@ export interface RunnerInterface<TInput, TResult> {
 	abort(reason?: unknown): void
 	/** Tear the runner down — `abort` plus stop the backing queue; idempotent. */
 	destroy(): void
+}
+
+/**
+ * A promise paired with its externally-callable `resolve`/`reject` — the settle path
+ * is exposed to the caller instead of being buried in an executor closure.
+ *
+ * @typeParam T - The value the deferred's `promise` resolves
+ */
+export interface DeferredInterface<T> {
+	readonly promise: Promise<T>
+	resolve(value: T): void
+	reject(reason: unknown): void
 }
