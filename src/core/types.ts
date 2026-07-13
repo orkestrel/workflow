@@ -1224,3 +1224,248 @@ export interface SchedulerInterface {
 	/** Resume after at least `ms` milliseconds. */
 	delay(ms: number, options?: SchedulerOptions): Promise<void>
 }
+
+
+/**
+ * The push observation surface of a {@link RunnerInterface} (AGENTS §13) — the run
+ * lifecycle a fire-and-forget observer (logging, metrics, tracing) subscribes to,
+ * ALONGSIDE the eventual `execute` result.
+ *
+ * @typeParam TResult - The value a unit resolves; the `finish` payload is the run's ordered
+ *   `readonly TResult[]`, so the map is `RunnerEventMap<TResult>` — mirroring how the
+ *   {@link RunnerInterface} is generic.
+ *
+ * @remarks
+ * Listener isolation is the emitter's (AGENTS §13): every event is emitted directly and a
+ * listener throw is routed to the emitter's OWN `error` handler (the `error` option), never
+ * onto this domain map and never into the one-shot / fail-fast / spawn-tracking engine — so a
+ * buggy observer can never reorder, throw into, or corrupt the run. Every emit sits AFTER the
+ * relevant unit-launch / settle / drain transition, so a throwing observer cannot unbalance
+ * the outstanding-unit count gate or break fail-fast. Subscribe via `runner.emitter.on(...)`.
+ *
+ * Declared as a `type` alias (not `interface extends EventMap`, §4.5 — `EventMap` is a
+ * `type` kind): a type-literal satisfies the `EventMap` constraint
+ * (`Record<string, readonly unknown[]>`) structurally, whereas an interface lacks the
+ * required index signature.
+ */
+export type RunnerEventMap<TResult> = {
+	/** `execute` began — emitted once at the top of a non-empty run. */
+	readonly start: readonly []
+	/** A unit's handler began running — the unit's id (declared or spawned). */
+	readonly unit: readonly [id: string]
+	/** A sub-unit was spawned — its id + the spawning parent's id (when known). */
+	readonly spawn: readonly [id: string, parent: string | undefined]
+	/** A unit completed successfully — its id (after its outcome was recorded). */
+	readonly settle: readonly [id: string]
+	/** A unit failed — its id + the error (always `unknown`). */
+	readonly fail: readonly [id: string, error: unknown]
+	/** The batch settled — the run's ordered results (the same array `execute` resolves). */
+	readonly finish: readonly [results: readonly TResult[]]
+	/** The run was aborted (fail-fast, a user `abort`, or `destroy`) — the cancel reason. */
+	readonly abort: readonly [reason: unknown]
+}
+
+/**
+ * The per-unit handle a {@link RunnerHandler} receives — the running unit's
+ * identity, input, cancellation, and the controls to cooperate with the run.
+ *
+ * @remarks
+ * One `Controller` is built per unit the {@link RunnerInterface} runs (a declared
+ * input or a `spawn`ed sibling). It exposes:
+ * - `id` — the unit's identifier (a random UUID).
+ * - `input` — the unit's work payload.
+ * - `signal` — the unit's cancellation: fires on the unit's own `abort()`, a
+ *   runner-level `abort` (the runner aborts every unit), or this attempt's timeout
+ *   expiring (it reflects the underlying queue attempt's signal, which ANY-combines
+ *   all three).
+ * - `aborted` — whether the unit's cancellation has fired.
+ *
+ * @typeParam TInput - The unit's work input
+ * @typeParam TResult - The value a unit resolves
+ */
+export interface ControllerInterface<TInput, TResult> {
+	readonly id: string
+	readonly input: TInput
+	/** Fires on the unit's own `abort()`, a runner-level abort, or this attempt's timeout. */
+	readonly signal: AbortSignal
+	readonly aborted: boolean
+	/**
+	 * Park until this unit's `signal` aborts — **promise-parked**, never a timer.
+	 *
+	 * @remarks
+	 * Resolves the moment the unit's `signal` fires (unit abort, runner abort, or
+	 * timeout) and resolves immediately if it has already fired. It registers a
+	 * one-shot `'abort'` listener and never polls — no `setTimeout`, no `delay`, no
+	 * busy-yield — so a parked unit consumes no CPU until it is actually cancelled.
+	 *
+	 * @returns A promise that resolves once the unit's `signal` aborts
+	 */
+	wait(): Promise<void>
+	/**
+	 * Add a sibling unit to the run; returns its result promise.
+	 *
+	 * @remarks
+	 * **Fire-and-track.** The spawned unit is routed through the same backing queue
+	 * as every declared unit, so it actually runs (in FIFO wake order) and its result
+	 * joins the run's ordered output after the declared units, in spawn order. The
+	 * runner's `execute` awaits the full transitive spawn closure (it tracks an
+	 * outstanding-unit count, not a one-time snapshot), so a caller does NOT need to
+	 * await the returned promise to make the sibling run.
+	 *
+	 * **Deadlock caveat.** On a bounded-`concurrency` runner, do NOT `await` a
+	 * `spawn`ed promise *inline* from within a handler — the handler holds a queue
+	 * slot while it awaits, and if every slot is held by a handler awaiting its own
+	 * spawn, no slot is free to run the spawns and the run deadlocks. The intended
+	 * pattern is fan-out: `spawn` siblings and return, letting the runner drain them.
+	 *
+	 * @param input - The sibling unit's work payload
+	 * @returns The sibling's result promise (it runs regardless of whether it's awaited)
+	 */
+	spawn(input: TInput): Promise<TResult>
+	/**
+	 * Cancel this unit — fires its `signal` with the optional reason.
+	 *
+	 * @param reason - An optional cancellation reason carried on the signal
+	 */
+	abort(reason?: unknown): void
+}
+
+/**
+ * Runs one unit's work, given its {@link ControllerInterface}.
+ *
+ * @typeParam TInput - The unit's work input
+ * @typeParam TResult - The value the handler resolves for a unit
+ */
+export type RunnerHandler<TInput, TResult> = (
+	controller: ControllerInterface<TInput, TResult>,
+) => Promise<TResult> | TResult
+
+/**
+ * The per-entry reliability OVERRIDES for one unit — its extra attempts on failure and its
+ * per-attempt deadline, resolved from the unit's input via {@link RunnerOptions.entries}.
+ *
+ * @remarks
+ * The unit's `id` and `signal` stay Runner-managed (it mints the id and owns the per-unit
+ * abort), so only the two reliability knobs are exposed here. Each field OVERRIDES the
+ * runner-level `retries` / `timeout` default for that one unit; an omitted field falls back
+ * to the default. This is the per-unit slice of the backing Queue's
+ * {@link import('../workers/types.js').QueueEntryOptions} surfaced cleanly — the Queue already
+ * resolves default→override.
+ */
+export interface RunnerEntryOptions {
+	readonly retries?: number
+	readonly timeout?: number
+}
+
+/**
+ * Options for `createRunner`.
+ *
+ * @remarks
+ * - `handler` — runs each unit's work against its {@link ControllerInterface};
+ *   rejecting fails the unit (and, after retries are exhausted, fails the run).
+ * - `concurrency` — the maximum units in flight at once; defaults to `1` (ordered,
+ *   one-at-a-time). Floored at `1`.
+ * - `retries` — the default extra attempts per unit on failure (or a per-attempt
+ *   timeout); defaults to `0`.
+ * - `timeout` — the per-attempt deadline in milliseconds; defaults to none (a
+ *   non-positive value means no deadline).
+ * - `entries` — per-entry `retries` / `timeout` overrides, resolved from each
+ *   input; falls back to the runner-level `retries` / `timeout` defaults.
+ * - `on` — the reserved {@link EmitterHooks} key (§8): initial listeners for the runner's
+ *   {@link RunnerEventMap}, wired at construction (e.g. `{ finish: (r) => log(r) }`).
+ */
+export interface RunnerOptions<TInput, TResult> {
+	readonly on?: EmitterHooks<RunnerEventMap<TResult>>
+	/** The emitter's listener-error handler (AGENTS §13) — a listener throw routes here, not to a domain event. */
+	readonly error?: EmitterErrorHandler
+	readonly handler: RunnerHandler<TInput, TResult>
+	readonly concurrency?: number
+	readonly retries?: number
+	readonly timeout?: number
+	/** Per-entry `retries` / `timeout` overrides, resolved from each input; falls back to the runner-level defaults. */
+	readonly entries?: (input: TInput) => RunnerEntryOptions
+}
+
+/**
+ * One unit the {@link RunnerInterface} is tracking: the queue payload it was enqueued
+ * with — its `id` (a random UUID) keys it in the runner's ordered launch list and value
+ * map, and `input` is the unit's work payload handed to the handler's `Controller`.
+ *
+ * @remarks
+ * The runner's internal bookkeeping shape, published through the barrel because §5
+ * centralizes every file-local type — declared or spawned, every unit flows through the
+ * one queue as a `RunnerUnit`, so backpressure / ordering / retries / timeout stay the
+ * Queue's behavior and the runner adds only orchestration.
+ *
+ * @typeParam TInput - The unit's work input
+ */
+export interface RunnerUnit<TInput> {
+	readonly id: string
+	readonly input: TInput
+}
+
+/**
+ * One unit's settled outcome — a discriminated union so a value of `undefined` is still
+ * a success (`{ ok: true, value: undefined }`), never mistaken for a failure or an
+ * absent result.
+ *
+ * @remarks
+ * The runner records each settled unit's outcome through this shape: a success boxes the
+ * resolved `value` (presence tracked by the union tag, so `undefined` is a valid result),
+ * a failure carries the `error` (always `unknown`). The FIRST failure is fail-fast.
+ *
+ * @typeParam TResult - The value a unit resolves
+ */
+export type UnitOutcome<TResult> =
+	| { readonly ok: true; readonly value: TResult }
+	| { readonly ok: false; readonly error: unknown }
+
+/**
+ * A thin generic orchestrator that drives declared units — plus any they `spawn` —
+ * through a bounded-concurrency queue, collecting their results in order.
+ *
+ * @remarks
+ * One-shot: `execute` runs the unit set once and resolves their results. A `Runner`
+ * does not reimplement concurrency or retries — it composes the workers `Queue`
+ * (the backpressure + retry + timeout engine), routing every unit (declared and
+ * spawned) through it so spawned work actually runs.
+ *
+ * Exposes a typed {@link emitter} (AGENTS §13) carrying its run lifecycle moments
+ * ({@link RunnerEventMap}) for fire-and-forget observers, ALONGSIDE the eventual `execute`
+ * result. Emitting is observation-only — every event fires AFTER the relevant unit-launch /
+ * settle / drain transition, so a buggy observer can never reorder or corrupt the one-shot /
+ * fail-fast / spawn-tracking engine: the emitter isolates a listener throw and routes it to
+ * its `error` handler (the `error` option), never the run. Subscribe via
+ * `runner.emitter.on(...)`.
+ *
+ * @typeParam TInput - The unit's work input
+ * @typeParam TResult - The value a unit resolves
+ */
+export interface RunnerInterface<TInput, TResult> {
+	readonly emitter: EmitterInterface<RunnerEventMap<TResult>>
+	readonly active: number
+	readonly stopped: boolean
+	/**
+	 * Run all `inputs` — and anything they `spawn` — to completion; resolve their
+	 * results in order: the declared inputs first (in input order), then the spawned
+	 * units (in spawn order).
+	 *
+	 * @remarks
+	 * One-shot — a second call throws. **Fail-fast** — the first unit failure (after
+	 * its retries) aborts every other in-flight + pending unit and rejects the run
+	 * with that error; later failures are ignored. An empty `inputs` resolves to `[]`.
+	 *
+	 * @param inputs - The declared units to run
+	 * @returns The units' results, in order (declared first, then spawns)
+	 */
+	execute(inputs: readonly TInput[]): Promise<readonly TResult[]>
+	/**
+	 * Cancel every in-flight + pending unit (and the backing queue), making a running
+	 * `execute` reject.
+	 *
+	 * @param reason - An optional cancellation reason propagated to every unit's signal
+	 */
+	abort(reason?: unknown): void
+	/** Tear the runner down — `abort` plus stop the backing queue; idempotent. */
+	destroy(): void
+}

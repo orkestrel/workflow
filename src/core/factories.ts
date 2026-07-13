@@ -1,4 +1,4 @@
-import type { SchedulerInterface } from './types.js'
+import type {RunnerInterface, RunnerOptions, SchedulerInterface} from './types.js'
 import { Scheduler } from './Scheduler.js'
 import type { ContractInterface } from '@orkestrel/contract'
 import type { ToolInterface } from '@orkestrel/agent'
@@ -41,6 +41,7 @@ import { DatabaseWorkflowStore } from './stores/DatabaseWorkflowStore.js'
 import { MemoryWorkflowStore } from './stores/MemoryWorkflowStore.js'
 import { Workflow } from './Workflow.js'
 import { WorkflowRunner } from './WorkflowRunner.js'
+import {Runner} from "./Runner";
 
 // Workflow contract factory — compiles the workflow shape (shapers.ts) into the
 // four lockstep outputs (JSON Schema + guard + parser + generator) and types the
@@ -609,4 +610,55 @@ export function createWorkflowTool(
  */
 export function createScheduler(): SchedulerInterface {
 	return new Scheduler()
+}
+
+
+/**
+ * Create a thin generic orchestrator that drives declared units — and any they
+ * `spawn` — through a bounded-concurrency queue, collecting their results in order.
+ *
+ * @remarks
+ * The Runner composes the workers `Queue` for backpressure, FIFO ordering, bounded
+ * concurrency, retries, and the per-attempt timeout — it adds only orchestration, not
+ * a second concurrency engine. `execute(inputs)` runs the unit set ONCE (a second call
+ * throws) and resolves the units' results in order: the declared inputs first, then
+ * any `spawn`ed siblings in spawn order. Each unit's handler gets a `Controller` — its
+ * `id` / `input`, a `signal` that fires on the unit's `abort`, a runner-level `abort`,
+ * or the attempt's timeout, a promise-parked `wait()`, and `spawn(input)` to fan out
+ * sibling units. The run is **fail-fast**: the first unit failure (after retries)
+ * aborts every other unit and rejects `execute` with that error. **Observable (§13):** a
+ * typed `emitter` surfaces `start` / `unit` / `spawn` / `settle` / `fail` / `finish` / `abort`.
+ *
+ * Because `spawn` is fire-and-track (the runner awaits the whole spawn closure via an
+ * outstanding-unit count, not a one-time snapshot), a handler need NOT await its spawns
+ * for them to run — and on a bounded runner it should NOT `await` a spawn inline (a
+ * slot-holding handler awaiting its own spawn can deadlock); fan out and return instead.
+ *
+ * @typeParam TInput - The work input each unit carries
+ * @typeParam TResult - The value a unit's handler resolves
+ * @param options - The `handler` plus optional `concurrency` (default `1`), `retries`
+ *   (default `0`), and a default per-attempt `timeout` in milliseconds
+ * @returns A working {@link RunnerInterface}
+ *
+ * @example
+ * ```ts
+ * import { createRunner } from '@src/core'
+ *
+ * // A handler that fans out one sibling per declared unit, then returns its own value.
+ * const runner = createRunner<number, number>({
+ * 	concurrency: 4,
+ * 	handler: (controller) => {
+ * 		if (controller.input < 10) controller.spawn(controller.input + 100) // fire-and-track
+ * 		return controller.input
+ * 	},
+ * })
+ *
+ * const results = await runner.execute([1, 2, 3])
+ * // [1, 2, 3, 101, 102, 103] — declared inputs first (in order), then spawns (in order)
+ * ```
+ */
+export function createRunner<TInput, TResult>(
+	options: RunnerOptions<TInput, TResult>,
+): RunnerInterface<TInput, TResult> {
+	return new Runner(options)
 }

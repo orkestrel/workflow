@@ -89,6 +89,8 @@
 		"@orkestrel/contract": "^0.0.1",
 		"@orkestrel/database": "^0.0.1",
 		"@orkestrel/emitter": "^0.0.1",
+		"@orkestrel/pool": "^0.0.1",
+		"@orkestrel/queue": "^0.0.1",
 		"@orkestrel/timeout": "^0.0.1"
 	},
 	"devDependencies": {

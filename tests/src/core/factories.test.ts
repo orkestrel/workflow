@@ -23,7 +23,10 @@ import {
 	captureError,
 	createRecordingScheduler,
 	waitForDelay,
-} from '../../../setup.js'
+} from '../../setup.js'
+import { createRunner } from '@src/core'
+
+
 
 // A workflow runner paced by an INJECTED `createRecordingScheduler` — the project's real
 // `SchedulerInterface` whose `yield` resolves immediately (honouring an abort signal exactly like
@@ -650,5 +653,36 @@ describe('createScheduler', () => {
 		await expect(second.delay(10)).resolves.toBeUndefined()
 		// And the first scheduler is itself unbroken for a fresh, unguarded call.
 		await expect(first.yield()).resolves.toBeUndefined()
+	})
+})
+
+describe('createRunner', () => {
+	it('returns a working runner — fan-out via spawn with ordered results', async () => {
+		const runner = createRunner<number, number>({
+			concurrency: 4,
+			handler: (controller) => {
+				if (controller.input < 10) controller.spawn(controller.input + 100)
+				return controller.input
+			},
+		})
+		const results = await runner.execute([1, 2, 3])
+		expect(results).toEqual([1, 2, 3, 101, 102, 103])
+	})
+
+	it('honours concurrency / retries options end to end', async () => {
+		let attempts = 0
+		const runner = createRunner<string, string>({
+			concurrency: 2,
+			retries: 1,
+			handler: (controller) => {
+				if (controller.input === 'flaky') {
+					attempts += 1
+					if (attempts < 2) throw new Error('once')
+				}
+				return controller.input.toUpperCase()
+			},
+		})
+		expect(await runner.execute(['a', 'flaky', 'b'])).toEqual(['A', 'FLAKY', 'B'])
+		expect(attempts).toBe(2)
 	})
 })
