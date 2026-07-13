@@ -1,9 +1,9 @@
-import type { ScheduleInterface, ScheduleOptions } from '@src/core'
+import type { SchedulerInterface, SchedulerOptions } from '@src/core'
 import { isFunction } from '@orkestrel/contract'
 import type { IdleAPI } from './types.js'
 
 /**
- * The idle-time {@link ScheduleInterface} — a browser cooperative-yield backend whose
+ * The idle-time {@link SchedulerInterface} — a browser cooperative-yield backend whose
  * `yield` resumes when the host is idle via `requestIdleCallback`, falling back to a
  * zero-delay macrotask where it is absent.
  *
@@ -29,23 +29,23 @@ import type { IdleAPI } from './types.js'
  * @example
  * ```ts
  * import { createAbort } from '@src/core'
- * import { IdleSchedule } from '@src/browser'
+ * import { IdleScheduler } from '@src/browser'
  *
  * const abort = createAbort()
- * const schedule = new IdleSchedule()
+ * const scheduler = new IdleScheduler()
  * while (!abort.signal.aborted) {
  * 	doLowPriorityWork()
- * 	await schedule.yield({ signal: abort.signal }) // resume when the host is idle
+ * 	await scheduler.yield({ signal: abort.signal }) // resume when the host is idle
  * }
  * ```
  */
-export class IdleSchedule implements ScheduleInterface {
+export class IdleScheduler implements SchedulerInterface {
 	/**
 	 * Yield control to the host until it is idle via `requestIdleCallback` (or a
 	 * `setTimeout(0)` macrotask where the API is absent), then resume; abort rejects with
 	 * `signal.reason`.
 	 */
-	yield(options?: ScheduleOptions): Promise<void> {
+	yield(options?: SchedulerOptions): Promise<void> {
 		const idle = this.#idleAPI()
 		if (idle === undefined) return this.#sleep(0, options?.signal)
 		return this.#idle(idle, options?.signal)
@@ -61,7 +61,7 @@ export class IdleSchedule implements ScheduleInterface {
 	 * `NaN` to ~0 — so an out-of-domain `ms` resolves on the next host turn rather than
 	 * throwing.
 	 */
-	delay(ms: number, options?: ScheduleOptions): Promise<void> {
+	delay(ms: number, options?: SchedulerOptions): Promise<void> {
 		return this.#sleep(ms, options?.signal)
 	}
 

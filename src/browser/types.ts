@@ -4,7 +4,7 @@
  *
  * @remarks
  * A `request` taking a callback and returning a numeric handle, and a `cancel` taking that
- * handle. {@link IdleSchedule} feature-detects the pair through a guard (`isFunction`,
+ * handle. {@link IdleScheduler} feature-detects the pair through a guard (`isFunction`,
  * never an `as` — AGENTS §14) and resolves to `undefined` when the API is absent (Safari
  * today), so `yield` falls back to a macrotask.
  */

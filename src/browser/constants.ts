@@ -1,16 +1,16 @@
-import type { SchedulePriority } from '@src/core'
+import type { SchedulerPriority } from '@src/core'
 
 /**
- * The browser-native `postTask` priority for each portable {@link SchedulePriority} — the
+ * The browser-native `postTask` priority for each portable {@link SchedulerPriority} — the
  * Prioritized Task Scheduling API's three levels.
  *
  * @remarks
  * A `user` hint maps to the most urgent `'user-blocking'`, `normal` to the default
- * `'user-visible'`, and `background` to `'background'`. {@link BrowserSchedule} reads this
+ * `'user-visible'`, and `background` to `'background'`. {@link BrowserScheduler} reads this
  * map to translate the caller's portable priority into the value passed to
- * `schedule.postTask`, so the urgency hint is honoured by the host.
+ * `scheduler.postTask`, so the urgency hint is honoured by the host.
  */
-export const POST_TASK_PRIORITY: Readonly<Record<SchedulePriority, string>> = {
+export const POST_TASK_PRIORITY: Readonly<Record<SchedulerPriority, string>> = {
 	user: 'user-blocking',
 	normal: 'user-visible',
 	background: 'background',

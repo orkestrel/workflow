@@ -16,7 +16,7 @@ import type {
 import { createAgent, createTool, createToolManager, ProviderAbortError } from '@orkestrel/agent'
 import { createTokenBudget } from '@orkestrel/budget'
 import {
-	createSchedule,
+	createScheduler,
 	createWorkflowRunner,
 	isWorkflowError,
 	MAX_WORKFLOW_DEPTH,
@@ -27,14 +27,14 @@ import type { TestGateInterface } from '../../../setup.js'
 import {
 	createGate,
 	createRecorder,
-	createRecordingSchedule,
+	createRecordingScheduler,
 	createScriptedProvider,
 	waitForDelay,
 } from '../../../setup.js'
 
 // The W-c1 WorkflowRunner �€” the thin orchestrator that EXECUTES a live W-b tree by
 // COMPOSING the shipped substrate (one Runner/Queue per phase, the bail policy mapped onto
-// fail-fast vs settle-all, the abort/timeout/budget fold via AbortSignal.any, the schedule
+// fail-fast vs settle-all, the abort/timeout/budget fold via AbortSignal.any, the scheduler
 // pacing). Real data stubs �€” scripted WorkflowFunction handlers + a real ToolManager, NO
 // mocks (AGENTS §16). Determinism comes from gates (createGate), not wall-clock races.
 //
@@ -49,7 +49,7 @@ import {
 // built + driven through the substrate `createRunner`/`Queue` (a cooperative wake-park loop awaiting
 // real promises across many microtask turns), the per-task abort fold, the emitter cascade, plus a
 // real scripted-agent `generate()` in its third phase. Pacing is already made deterministic by an
-// injected `createRecordingSchedule` (no wall-clock `setTimeout`), but the chain itself cannot be
+// injected `createRecordingScheduler` (no wall-clock `setTimeout`), but the chain itself cannot be
 // made instantaneous without MOCKING the unit under test (forbidden, §16.2). Under
 // full-`src:core`-project parallel load (~105 test files across the fork pool saturating every CPU),
 // that real-async chain �€” sub-millisecond in isolation �€” can be event-loop-starved past vitest's 5s
@@ -57,29 +57,29 @@ import {
 // failing fast on a genuine hang (§16.3 �€” a measured setting with a current reason). Scoped to the
 // the multi-phase tests; single-phase tests finish in microseconds regardless of the ceiling. Applied
 // FILE-WIDE (below) because EVERY multi-phase execute round-trip — not just compose-all — shares the
-// same parallel-load CPU-starvation risk; it is the residual flake after the deterministic-schedule
+// same parallel-load CPU-starvation risk; it is the residual flake after the deterministic-scheduler
 // (pacedRunner) fix removes the setTimeout macrotask-queue starvation. A real hang still fails at 30s.
 const ROUND_TRIP_TIMEOUT_MS = 30_000
 vi.setConfig({ testTimeout: ROUND_TRIP_TIMEOUT_MS })
 
 // A workflow runner whose inter-phase pacing is DETERMINISTIC (AGENTS §16: clock seams, not
-// wall-clock). The runner paces BETWEEN phases through its `schedule` seam; the shipped
-// `createSchedule` default does so with a real `setTimeout(0)` macrotask, which under
+// wall-clock). The runner paces BETWEEN phases through its `scheduler` seam; the shipped
+// `createScheduler` default does so with a real `setTimeout(0)` macrotask, which under
 // full-`src:core`-project parallel load (~105 test files saturating every CPU) can be
 // event-loop-starved well past vitest's 5s default — so a MULTI-phase run flakes with an
 // intermittent timeout (the failing phase varying run-to-run with scheduling luck). Injecting
-// the project's `createRecordingSchedule` (its `yield` resolves immediately, honouring the run
+// the project's `createRecordingScheduler` (its `yield` resolves immediately, honouring the run
 // signal exactly like the shipped one but arming NO timer) removes that lone wall-clock
 // dependency WITHOUT mocking the unit under test or weakening any assertion: phases stay
 // sequential, tasks stay concurrent, every status / result is verified identically (it is the
 // same seam the P2.1 compose-all test and `settleSnapshot` already use). A caller that must
-// exercise the REAL shipped schedule passes its own `schedule` — the `??` preserves it (the
+// exercise the REAL shipped scheduler passes its own `scheduler` — the `??` preserves it (the
 // dedicated pacing test does exactly that). For single-/zero-phase runs this is a no-op (`yield`
 // is never called), so routing every test through it is uniform and safe.
 function pacedRunner(options?: WorkflowRunnerOptions): WorkflowRunnerInterface {
 	return createWorkflowRunner({
 		...options,
-		schedule: options?.schedule ?? createRecordingSchedule(),
+		scheduler: options?.scheduler ?? createRecordingScheduler(),
 	})
 }
 
@@ -467,11 +467,11 @@ describe('WorkflowRunner �€” all three dispatch branches compose in one ru
 					},
 				],
 			}
-			// Pace with an INJECTED `createRecordingSchedule` (the project's real `ScheduleInterface`
+			// Pace with an INJECTED `createRecordingScheduler` (the project's real `SchedulerInterface`
 			// whose `yield` resolves immediately, honoring its signal exactly like the shipped one but
-			// without arming a real timer) through the production `WorkflowRunnerOptions.schedule` seam �€”
+			// without arming a real timer) through the production `WorkflowRunnerOptions.scheduler` seam �€”
 			// NOT a mock of the runner (the unit under test composes all three branches in full). This is a
-			// THREE-phase run, so the runner paces TWICE between phases, and the default `createSchedule`
+			// THREE-phase run, so the runner paces TWICE between phases, and the default `createScheduler`
 			// would do so via real `setTimeout(0)` macrotasks �€” which, under full-`src:core`-project
 			// parallel load, can be starved past the 5s default test timeout. Driving the clock makes this
 			// compose-all round-trip deterministic (AGENTS §16) with identical assertions.
@@ -479,7 +479,7 @@ describe('WorkflowRunner �€” all three dispatch branches compose in one ru
 				functions: { f: fn },
 				tools,
 				agents,
-				schedule: createRecordingSchedule(),
+				scheduler: createRecordingScheduler(),
 			}).execute(definition)
 			expect(result.status).toBe('completed')
 			// Each branch reached `completed` on its own leaf.
@@ -1320,16 +1320,16 @@ describe('WorkflowRunner �€” controller reads earlier results', () => {
 })
 
 describe('WorkflowRunner �€” pacing', () => {
-	it('uses the shipped schedule by default and accepts a custom one without error', async () => {
+	it('uses the shipped scheduler by default and accepts a custom one without error', async () => {
 		const order: string[] = []
 		const definition = buildDefinition([
 			{ id: 'a', tasks: [functionTask('t0', 'f')] },
 			{ id: 'b', tasks: [functionTask('t1', 'f')] },
 		])
-		// An explicit schedule instance (the shipped cross-environment default) paces between phases.
+		// An explicit scheduler instance (the shipped cross-environment default) paces between phases.
 		const result = await pacedRunner({
 			functions: { f: recordingFunction(order) },
-			schedule: createSchedule(),
+			scheduler: createScheduler(),
 		}).execute(definition)
 		expect(result.status).toBe('completed')
 		expect(order).toEqual(['t0', 't1'])

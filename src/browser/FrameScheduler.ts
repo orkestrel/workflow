@@ -1,7 +1,7 @@
-import type { ScheduleInterface, ScheduleOptions } from '@src/core'
+import type { SchedulerInterface, SchedulerOptions } from '@src/core'
 
 /**
- * The frame-aligned {@link ScheduleInterface} — a browser cooperative-yield backend
+ * The frame-aligned {@link SchedulerInterface} — a browser cooperative-yield backend
  * whose `yield` resumes just before the next paint via `requestAnimationFrame`.
  *
  * @remarks
@@ -24,22 +24,22 @@ import type { ScheduleInterface, ScheduleOptions } from '@src/core'
  * @example
  * ```ts
  * import { createAbort } from '@src/core'
- * import { FrameSchedule } from '@src/browser'
+ * import { FrameScheduler } from '@src/browser'
  *
  * const abort = createAbort()
- * const schedule = new FrameSchedule()
+ * const scheduler = new FrameScheduler()
  * while (!abort.signal.aborted) {
  * 	renderOneFrameOfWork()
- * 	await schedule.yield({ signal: abort.signal }) // resume before the next paint
+ * 	await scheduler.yield({ signal: abort.signal }) // resume before the next paint
  * }
  * ```
  */
-export class FrameSchedule implements ScheduleInterface {
+export class FrameScheduler implements SchedulerInterface {
 	/**
 	 * Yield control to the host until just before the next paint via
 	 * `requestAnimationFrame`, then resume; abort rejects with `signal.reason`.
 	 */
-	yield(options?: ScheduleOptions): Promise<void> {
+	yield(options?: SchedulerOptions): Promise<void> {
 		return this.#frame(options?.signal)
 	}
 
@@ -53,7 +53,7 @@ export class FrameSchedule implements ScheduleInterface {
 	 * `NaN` to ~0 — so an out-of-domain `ms` resolves on the next host turn rather than
 	 * throwing.
 	 */
-	delay(ms: number, options?: ScheduleOptions): Promise<void> {
+	delay(ms: number, options?: SchedulerOptions): Promise<void> {
 		return this.#sleep(ms, options?.signal)
 	}
 

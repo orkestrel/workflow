@@ -1,2 +1,2 @@
-export * from './NodeSchedule.js'
+export * from './NodeScheduler.js'
 export * from './factories.js'

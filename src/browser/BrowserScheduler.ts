@@ -1,15 +1,15 @@
-import type { ScheduleInterface, ScheduleOptions, SchedulePriority } from '@src/core'
+import type { SchedulerInterface, SchedulerOptions, SchedulerPriority } from '@src/core'
 import { isFunction, isRecord } from '@orkestrel/contract'
 import { POST_TASK_PRIORITY } from './constants.js'
 
 /**
- * The browser {@link ScheduleInterface} — the browser-native cooperative-yield backend
- * built on the Prioritized Task Scheduling API (`schedule.postTask`), falling back to a
+ * The browser {@link SchedulerInterface} — the browser-native cooperative-yield backend
+ * built on the Prioritized Task Scheduling API (`scheduler.postTask`), falling back to a
  * zero-delay macrotask where it is absent.
  *
  * @remarks
- * - **`yield` prefers `schedule.postTask`, honouring priority.** When `globalThis`
- *   exposes a `schedule` with a `postTask` method, `yield()` posts a task at the mapped
+ * - **`yield` prefers `scheduler.postTask`, honouring priority.** When `globalThis`
+ *   exposes a `scheduler` with a `postTask` method, `yield()` posts a task at the mapped
  *   priority (`user` → `'user-blocking'`, `normal` → `'user-visible'`, `background` →
  *   `'background'`), so the host genuinely regains control and the urgency hint is
  *   honoured. The capability is feature-detected through guards (`isRecord` / `isFunction`),
@@ -26,29 +26,29 @@ import { POST_TASK_PRIORITY } from './constants.js'
  *   leaked task/timer and no leaked listener. The caller's `signal` is NOT handed to
  *   `postTask` (whose own abort would reject with a platform `AbortError`, not the
  *   caller's `reason`); instead an internal controller cancels the posted task while this
- *   schedule rejects with the verbatim `signal.reason`.
+ *   scheduler rejects with the verbatim `signal.reason`.
  * - **Event-free.** A pure functional primitive — no Emitter, no events.
  *
  * @example
  * ```ts
  * import { createAbort } from '@src/core'
- * import { BrowserSchedule } from '@src/browser'
+ * import { BrowserScheduler } from '@src/browser'
  *
  * const abort = createAbort()
- * const schedule = new BrowserSchedule()
+ * const scheduler = new BrowserScheduler()
  * while (!abort.signal.aborted) {
  * 	doSomeWork()
- * 	await schedule.yield({ priority: 'background', signal: abort.signal })
+ * 	await scheduler.yield({ priority: 'background', signal: abort.signal })
  * }
  * ```
  */
-export class BrowserSchedule implements ScheduleInterface {
+export class BrowserScheduler implements SchedulerInterface {
 	/**
-	 * Yield control to the host via `schedule.postTask` at the given priority (or a
+	 * Yield control to the host via `scheduler.postTask` at the given priority (or a
 	 * `setTimeout(0)` macrotask where the API is absent), then resume; abort rejects with
 	 * `signal.reason`.
 	 */
-	yield(options?: ScheduleOptions): Promise<void> {
+	yield(options?: SchedulerOptions): Promise<void> {
 		const post = this.#postTask()
 		if (post === undefined) return this.#macrotask(options?.signal)
 		return this.#yieldVia(post, options?.priority ?? 'normal', options?.signal)
@@ -64,24 +64,24 @@ export class BrowserSchedule implements ScheduleInterface {
 	 * `NaN` to ~0 — so an out-of-domain `ms` resolves on the next host turn rather than
 	 * throwing.
 	 */
-	delay(ms: number, options?: ScheduleOptions): Promise<void> {
+	delay(ms: number, options?: SchedulerOptions): Promise<void> {
 		return this.#timer(ms, options?.signal)
 	}
 
 	// === Private
 
 	// Feature-detect the Prioritized Task Scheduling API through guards (no `as`): the
-	// global `schedule` must be a record carrying a callable `postTask`. Returns the
+	// global `scheduler` must be a record carrying a callable `postTask`. Returns the
 	// narrowed `postTask` function, or `undefined` when the API is absent (the fallback).
 	#postTask(): ((callback: () => void, options: Record<string, unknown>) => unknown) | undefined {
-		const candidate: unknown = Reflect.get(globalThis, 'schedule')
+		const candidate: unknown = Reflect.get(globalThis, 'scheduler')
 		if (!isRecord(candidate)) return undefined
 		const post = candidate.postTask
 		if (!isFunction(post)) return undefined
 		return (callback, options) => Reflect.apply(post, candidate, [callback, options])
 	}
 
-	// A `schedule.postTask` host-turn at the mapped priority. The caller's signal is NOT
+	// A `scheduler.postTask` host-turn at the mapped priority. The caller's signal is NOT
 	// passed to `postTask` (its abort rejects with a platform `AbortError`, not the
 	// caller's `reason`); instead an internal controller cancels the posted task on abort
 	// while this rejects with the verbatim `signal.reason`. Settle-once, no leak: the task
@@ -89,7 +89,7 @@ export class BrowserSchedule implements ScheduleInterface {
 	// controller (cancelling the task) before rejecting.
 	#yieldVia(
 		post: (callback: () => void, options: Record<string, unknown>) => unknown,
-		priority: SchedulePriority,
+		priority: SchedulerPriority,
 		signal?: AbortSignal,
 	): Promise<void> {
 		if (signal?.aborted === true) return Promise.reject(signal.reason)

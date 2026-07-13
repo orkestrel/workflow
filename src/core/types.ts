@@ -1051,7 +1051,7 @@ export type WorkflowRunOptions = WorkflowOptions & {
 
 /**
  * The options for `createWorkflowRunner` — the behavior registries the runner dispatches
- * a task BY NAME through, plus the optional pacing schedule.
+ * a task BY NAME through, plus the optional pacing scheduler.
  *
  * @remarks
  * - `functions` — the {@link WorkflowFunctions} registry for `function`-form tasks. A name
@@ -1068,9 +1068,9 @@ export type WorkflowRunOptions = WorkflowOptions & {
  *   the agent run, and drives it (success → `complete`, throw → `fail`), all behind the
  *   depth + cycle guard. An unregistered agent name is the no-handler case (auto-completes).
  *   Omitted ⇒ every `agent` task auto-completes.
- * - `schedule` — the {@link ScheduleInterface} that paces the tree (a cooperative
+ * - `scheduler` — the {@link SchedulerInterface} that paces the tree (a cooperative
  *   `yield` between phases). Omitted ⇒ the shipped cross-environment default
- *   ({@link createSchedule}).
+ *   ({@link createScheduler}).
  *
  * The reserved `on` key (AGENTS §8) is intentionally ABSENT: the runner is THIN and drives
  * the W-b entities' OWN emitters (subscribe via `workflow.emitter` / `phase.emitter` /
@@ -1082,7 +1082,7 @@ export interface WorkflowRunnerOptions {
 	readonly tools?: ToolManagerInterface
 	/** The {@link WorkflowAgents} resolver for `agent`-form tasks (W-c2); omitted ⇒ every `agent` task auto-completes. */
 	readonly agents?: WorkflowAgents
-	readonly schedule?: ScheduleInterface
+	readonly scheduler?: SchedulerInterface
 }
 
 /**
@@ -1197,30 +1197,30 @@ export interface WorkflowRunnerInterface {
  * Relative urgency hint for cooperative scheduling. Honoured by environment
  * backends; the cross-environment default treats all priorities uniformly.
  */
-export type SchedulePriority = 'user' | 'normal' | 'background'
+export type SchedulerPriority = 'user' | 'normal' | 'background'
 
 /** Options for a single cooperative yield/delay. */
-export interface ScheduleOptions {
+export interface SchedulerOptions {
 	/**
 	 * A relative urgency hint. Honoured by environment backends; the
 	 * cross-environment default treats all priorities the same.
 	 */
-	readonly priority?: SchedulePriority
+	readonly priority?: SchedulerPriority
 	/** A signal whose abort rejects a pending yield/delay with its `reason`. */
 	readonly signal?: AbortSignal
 }
 
 /**
- * A cooperative host-yield primitive: a loop decides WHAT to do; the schedule
+ * A cooperative host-yield primitive: a loop decides WHAT to do; the scheduler
  * decides WHEN the host regains control. Abort-aware — a pending yield/delay
  * rejects with the signal's reason when aborted.
  */
-export interface ScheduleInterface {
+export interface SchedulerInterface {
 	/**
 	 * Yield control back to the host so other tasks (I/O, timers, rendering) can
 	 * run, then resume.
 	 */
-	yield(options?: ScheduleOptions): Promise<void>
+	yield(options?: SchedulerOptions): Promise<void>
 	/** Resume after at least `ms` milliseconds. */
-	delay(ms: number, options?: ScheduleOptions): Promise<void>
+	delay(ms: number, options?: SchedulerOptions): Promise<void>
 }

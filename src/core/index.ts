@@ -1,5 +1,5 @@
 export type * from './types.js'
-export * from './Schedule.js'
+export * from './Scheduler.js'
 export * from './factories.js'
 export type * from './types.js'
 export * from './constants.js'

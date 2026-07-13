@@ -9,8 +9,8 @@ import type {
 } from '@orkestrel/agent'
 import type { EmitterInterface, EventMap } from '@orkestrel/emitter'
 import type {
-	ScheduleInterface,
-	ScheduleOptions,
+	SchedulerInterface,
+	SchedulerOptions,
 	WorkflowDefinition,
 	WorkflowFunction,
 	WorkflowSnapshot,
@@ -226,7 +226,7 @@ export interface SignalListenerCountsInterface {
 /**
  * Instrument a REAL {@link AbortSignal}'s listener bookkeeping by wrapping its own
  * `addEventListener` / `removeEventListener` (delegating to the genuine implementation) and
- * counting `'abort'` adds and removes — so a test can prove a schedule / primitive detaches
+ * counting `'abort'` adds and removes — so a test can prove a scheduler / primitive detaches
  * every abort listener it attaches (no leak), counting on the real signal rather than mocking
  * the unit under test (AGENTS §16). Environment-agnostic — `AbortSignal` exists in node and
  * the browser alike, so it lives in the shared setup.
@@ -258,30 +258,30 @@ export function instrumentSignal(signal: AbortSignal): SignalListenerCountsInter
 	return { added, removed }
 }
 
-// ── Recording schedule (a real ScheduleInterface, wrapped) ────────────────────
+// ── Recording scheduler (a real SchedulerInterface, wrapped) ────────────────────
 
-/** A {@link ScheduleInterface} that records how many turn boundaries its `yield` paced. */
-export interface RecordingScheduleInterface extends ScheduleInterface {
-	/** How many times `yield` ran — the turn boundaries the loop paced through this schedule. */
+/** A {@link SchedulerInterface} that records how many turn boundaries its `yield` paced. */
+export interface RecordingSchedulerInterface extends SchedulerInterface {
+	/** How many times `yield` ran — the turn boundaries the loop paced through this scheduler. */
 	readonly yields: number
 }
 
 /**
- * Create a {@link RecordingScheduleInterface} — a real `ScheduleInterface` whose
+ * Create a {@link RecordingSchedulerInterface} — a real `SchedulerInterface` whose
  * `yield` counts each call (the turn boundary it paced) and resolves immediately, so a
  * test can prove pacing ran BETWEEN turns (not after the last). It honours its signal
- * exactly like the real schedule — an already-aborted signal rejects with the reason —
- * and its `delay` is a no-op. Not a mock: a genuine schedule the agent loop drives.
+ * exactly like the real scheduler — an already-aborted signal rejects with the reason —
+ * and its `delay` is a no-op. Not a mock: a genuine scheduler the agent loop drives.
  *
- * @returns A schedule whose `yields` reports the turn boundaries it paced
+ * @returns A scheduler whose `yields` reports the turn boundaries it paced
  */
-export function createRecordingSchedule(): RecordingScheduleInterface {
+export function createRecordingScheduler(): RecordingSchedulerInterface {
 	let yields = 0
 	return {
 		get yields() {
 			return yields
 		},
-		async yield(options?: ScheduleOptions) {
+		async yield(options?: SchedulerOptions) {
 			if (options?.signal?.aborted) throw options.signal.reason
 			yields += 1
 		},
@@ -581,8 +581,8 @@ export const RELEASE_FUNCTIONS: Readonly<Record<string, WorkflowFunction>> = {
  * tree is built, executed (phases sequential, tasks concurrent via {@link RELEASE_FUNCTIONS}),
  * and serialized. The genuine durable payload after a run (real `completed` statuses + recorded
  * TaskResults), not a hand-rolled stub. The runner is paced by an injected
- * {@link createRecordingSchedule} (its `yield` resolves immediately, honouring an abort signal
- * exactly like the shipped schedule) so the run is DETERMINISTIC with no wall-clock `setTimeout`
+ * {@link createRecordingScheduler} (its `yield` resolves immediately, honouring an abort signal
+ * exactly like the shipped scheduler) so the run is DETERMINISTIC with no wall-clock `setTimeout`
  * (AGENTS §16) — the unit under test still runs in full (NOT a mock). Shared by the store twins.
  *
  * @param definition - The workflow definition to build, run to completion, and snapshot
@@ -591,7 +591,7 @@ export const RELEASE_FUNCTIONS: Readonly<Record<string, WorkflowFunction>> = {
 export async function settleSnapshot(definition: WorkflowDefinition): Promise<WorkflowSnapshot> {
 	const runner = createWorkflowRunner({
 		functions: RELEASE_FUNCTIONS,
-		schedule: createRecordingSchedule(),
+		scheduler: createRecordingScheduler(),
 	})
 	const result = await runner.execute(definition)
 	return result.workflow.snapshot()
