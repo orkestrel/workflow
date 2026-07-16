@@ -214,14 +214,27 @@ export class Runner<TInput, TResult> implements RunnerInterface<TInput, TResult>
 	/**
 	 * Suspend dispatch (AGENTS §10 — resumable): delegates to the backing queue's own
 	 * `pause`, which holds the NEXT dispatch while any in-flight unit finishes.
-	 * Idempotent (the queue's own `pause` is idempotent).
+	 *
+	 * @remarks
+	 * A no-op once the runner is `stopped` — a stopped runner has no dispatch left to
+	 * suspend, mirroring the guard `stop()` itself applies. Also a no-op when already
+	 * `paused` (the queue's own `pause` is idempotent), so calling it repeatedly is safe.
 	 */
 	pause(): void {
+		if (this.#stopped || this.#queue.paused) return
 		this.#queue.pause()
 	}
 
-	/** Continue a paused runner (AGENTS §10); delegates to the backing queue's `resume`. Idempotent. */
+	/**
+	 * Continue a paused runner (AGENTS §10); delegates to the backing queue's `resume`.
+	 *
+	 * @remarks
+	 * A no-op once the runner is `stopped` (nothing left to resume) and a no-op when the
+	 * runner is not currently `paused`, so calling it repeatedly or on a never-paused
+	 * runner is safe.
+	 */
 	resume(): void {
+		if (this.#stopped || !this.#queue.paused) return
 		this.#queue.resume()
 	}
 

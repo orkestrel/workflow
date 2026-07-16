@@ -603,6 +603,79 @@ export function stepToForm(step: WorkflowStep): TaskForm {
 	return { via: step.via ?? 'function', name: step.name }
 }
 
+// === Positional-entry array manipulation (the TaskManager/PhaseManager `add`/`move` core)
+
+/**
+ * Insert one `[key, value]` entry at a positional index into a readonly entries array —
+ * the pure splice-in step behind an insertion-ordered registry's `add`.
+ *
+ * @remarks
+ * Shared by {@link import('./tasks/TaskManager.js').TaskManager} and
+ * {@link import('./phases/PhaseManager.js').PhaseManager}: both convert their
+ * insertion-ordered `Map` to `[...map.entries()]`, call this to splice the new entry
+ * in at the target index, then rebuild the `Map` from the result (a stateful step that
+ * stays a `#` private method — this helper does no `Map` construction). Does not
+ * mutate `entries`; returns a new array.
+ *
+ * @typeParam T - The entry's value type
+ * @param entries - The current positional entries, in order
+ * @param index - The index to insert at (`0` prepends, `entries.length` appends)
+ * @param key - The new entry's key
+ * @param value - The new entry's value
+ * @returns A new entries array with `[key, value]` inserted at `index`
+ *
+ * @example
+ * ```ts
+ * insertEntry([['a', 1], ['b', 2]], 1, 'c', 3) // [['a', 1], ['c', 3], ['b', 2]]
+ * ```
+ */
+export function insertEntry<T>(
+	entries: readonly (readonly [string, T])[],
+	index: number,
+	key: string,
+	value: T,
+): readonly (readonly [string, T])[] {
+	const next = [...entries]
+	next.splice(index, 0, [key, value])
+	return next
+}
+
+/**
+ * Reposition the entry keyed `key` to a new positional index in a readonly entries
+ * array — the pure remove-then-reinsert step behind an insertion-ordered registry's
+ * `move`.
+ *
+ * @remarks
+ * The move counterpart of {@link insertEntry}: finds the entry by `key`, splices it
+ * out, then splices it back in at `index`. An absent `key` is a no-op (returns a copy
+ * of `entries` unchanged) — the caller (`TaskManager.move` / `PhaseManager.move`)
+ * already gates on the target's existence before calling this, so the no-op branch is
+ * defensive, never reached in practice. Does not mutate `entries`; returns a new array.
+ *
+ * @typeParam T - The entry's value type
+ * @param entries - The current positional entries, in order
+ * @param key - The key of the entry to reposition
+ * @param index - The new index for the entry
+ * @returns A new entries array with the `key` entry repositioned to `index`
+ *
+ * @example
+ * ```ts
+ * moveEntry([['a', 1], ['b', 2], ['c', 3]], 'a', 2) // [['b', 2], ['c', 3], ['a', 1]]
+ * ```
+ */
+export function moveEntry<T>(
+	entries: readonly (readonly [string, T])[],
+	key: string,
+	index: number,
+): readonly (readonly [string, T])[] {
+	const next = [...entries]
+	const at = next.findIndex(([entryKey]) => entryKey === key)
+	if (at === -1) return next
+	const [entry] = next.splice(at, 1)
+	if (entry !== undefined) next.splice(index, 0, entry)
+	return next
+}
+
 /**
  * Create a {@link DeferredInterface} — a promise whose settlement is driven
  * externally, so a caller can resolve/reject it from outside the executor.

@@ -2,12 +2,8 @@ import type { Result } from '@orkestrel/contract'
 import type { TaskInterface, TaskManagerInterface, TaskUpdate } from '../types.js'
 import { compileGuard } from '@orkestrel/contract'
 import { WorkflowError } from '../errors.js'
+import { insertEntry, moveEntry } from '../helpers.js'
 import { taskUpdateShape } from '../shapers.js'
-
-// The compiled guard validating a `TaskUpdate` patch (AGENTS §14) before it reaches
-// `update`'s `task.patch` call — a module-scope constant would be a stray non-exported
-// centralized-file member, so it is compiled once here as a private field instead.
-const isTaskUpdate = compileGuard(taskUpdateShape)
 
 /**
  * The lean child manager (AGENTS §9) of a {@link import('../phases/Phase.js').Phase}'s live
@@ -40,6 +36,9 @@ const isTaskUpdate = compileGuard(taskUpdateShape)
  */
 export class TaskManager implements TaskManagerInterface {
 	readonly #tasks = new Map<string, TaskInterface>()
+	// The compiled guard validating a `TaskUpdate` patch (AGENTS §14) before it reaches
+	// `update`'s `task.patch` call.
+	readonly #isUpdate = compileGuard(taskUpdateShape)
 
 	get count(): number {
 		return this.#tasks.size
@@ -66,9 +65,7 @@ export class TaskManager implements TaskManagerInterface {
 				error: new WorkflowError('MUTATION', `index '${at}' out of bounds`, { index: at }),
 			}
 		}
-		const entries = [...this.#tasks.entries()]
-		entries.splice(at, 0, [task.id, task])
-		this.#reorder(entries)
+		this.#reorder(insertEntry([...this.#tasks.entries()], at, task.id, task))
 		return { success: true, value: task }
 	}
 
@@ -98,11 +95,7 @@ export class TaskManager implements TaskManagerInterface {
 				error: new WorkflowError('MUTATION', `index '${index}' out of bounds`, { index }),
 			}
 		}
-		const entries = [...this.#tasks.entries()]
-		const at = entries.findIndex(([key]) => key === id)
-		const [entry] = entries.splice(at, 1)
-		if (entry !== undefined) entries.splice(index, 0, entry)
-		this.#reorder(entries)
+		this.#reorder(moveEntry([...this.#tasks.entries()], id, index))
 		return { success: true, value: target }
 	}
 
@@ -114,7 +107,7 @@ export class TaskManager implements TaskManagerInterface {
 				error: new WorkflowError('MUTATION', `task '${id}' is not a pending task`, { id }),
 			}
 		}
-		if (!isTaskUpdate(patch)) {
+		if (!this.#isUpdate(patch)) {
 			return {
 				success: false,
 				error: new WorkflowError('MUTATION', `invalid patch for task '${id}'`, { id }),

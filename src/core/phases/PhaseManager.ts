@@ -2,12 +2,8 @@ import type { Result } from '@orkestrel/contract'
 import type { PhaseInterface, PhaseManagerInterface, PhaseUpdate } from '../types.js'
 import { compileGuard } from '@orkestrel/contract'
 import { WorkflowError } from '../errors.js'
+import { insertEntry, moveEntry } from '../helpers.js'
 import { phaseUpdateShape } from '../shapers.js'
-
-// The compiled guard validating a `PhaseUpdate` patch (AGENTS §14) before it reaches
-// `update`'s `phase.patch` call — a module-scope constant would be a stray non-exported
-// centralized-file member, so it is compiled once here as a private field instead.
-const isPhaseUpdate = compileGuard(phaseUpdateShape)
 
 /**
  * The lean child manager (AGENTS §9) of a {@link import('../Workflow.js').Workflow}'s
@@ -39,6 +35,9 @@ const isPhaseUpdate = compileGuard(phaseUpdateShape)
  */
 export class PhaseManager implements PhaseManagerInterface {
 	readonly #phases = new Map<string, PhaseInterface>()
+	// The compiled guard validating a `PhaseUpdate` patch (AGENTS §14) before it reaches
+	// `update`'s `phase.patch` call.
+	readonly #isUpdate = compileGuard(phaseUpdateShape)
 
 	get count(): number {
 		return this.#phases.size
@@ -65,9 +64,7 @@ export class PhaseManager implements PhaseManagerInterface {
 				error: new WorkflowError('MUTATION', `index '${at}' out of bounds`, { index: at }),
 			}
 		}
-		const entries = [...this.#phases.entries()]
-		entries.splice(at, 0, [phase.id, phase])
-		this.#reorder(entries)
+		this.#reorder(insertEntry([...this.#phases.entries()], at, phase.id, phase))
 		return { success: true, value: phase }
 	}
 
@@ -97,11 +94,7 @@ export class PhaseManager implements PhaseManagerInterface {
 				error: new WorkflowError('MUTATION', `index '${index}' out of bounds`, { index }),
 			}
 		}
-		const entries = [...this.#phases.entries()]
-		const at = entries.findIndex(([key]) => key === id)
-		const [entry] = entries.splice(at, 1)
-		if (entry !== undefined) entries.splice(index, 0, entry)
-		this.#reorder(entries)
+		this.#reorder(moveEntry([...this.#phases.entries()], id, index))
 		return { success: true, value: target }
 	}
 
@@ -113,7 +106,7 @@ export class PhaseManager implements PhaseManagerInterface {
 				error: new WorkflowError('MUTATION', `phase '${id}' is not a pending phase`, { id }),
 			}
 		}
-		if (!isPhaseUpdate(patch)) {
+		if (!this.#isUpdate(patch)) {
 			return {
 				success: false,
 				error: new WorkflowError('MUTATION', `invalid patch for phase '${id}'`, { id }),
