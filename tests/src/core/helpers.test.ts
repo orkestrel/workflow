@@ -460,15 +460,16 @@ describe('definitionToSnapshot — the initial, all-pending construction input',
 		],
 	}
 
-	it('seeds every node pending, drops execution-only fields (run / concurrency)', () => {
+	it('seeds every node pending, persists declarative fields (concurrency), drops execution-only fields (run)', () => {
 		const snapshot = definitionToSnapshot(definition)
 		expect(snapshot.status).toBe('pending')
 		expect(snapshot.description).toBe('top')
 		expect(snapshot.phases[0]?.status).toBe('pending')
 		expect(snapshot.phases[0]?.tasks[0]?.status).toBe('pending')
 		expect(snapshot.phases[0]?.tasks[0]?.metadata).toEqual({})
+		// Concurrency is declarative phase configuration and persists, like bail.
+		expect(snapshot.phases[0]?.concurrency).toBe(2)
 		// The snapshot tree carries no execution fields.
-		expect(JSON.stringify(snapshot)).not.toContain('concurrency')
 		expect(JSON.stringify(snapshot)).not.toContain('"run"')
 	})
 

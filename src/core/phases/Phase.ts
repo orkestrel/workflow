@@ -17,7 +17,12 @@ import type {
 } from '../types.js'
 import { Emitter } from '@orkestrel/emitter'
 import { WorkflowError } from '../errors.js'
-import { buildPhaseContext, buildTaskContext, derivePhaseStatus, isTerminalStatus } from '../helpers.js'
+import {
+	buildPhaseContext,
+	buildTaskContext,
+	derivePhaseStatus,
+	isTerminalStatus,
+} from '../helpers.js'
 import { Task } from '../tasks/Task.js'
 import { TaskManager } from '../tasks/TaskManager.js'
 

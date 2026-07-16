@@ -309,7 +309,8 @@ export const phaseUpdateShape = objectShape({
 	concurrency: optionalShape(
 		integerShape({
 			min: 1,
-			description: 'Max tasks in flight at once (a resource throttle); omitted leaves it unchanged.',
+			description:
+				'Max tasks in flight at once (a resource throttle); omitted leaves it unchanged.',
 		}),
 	),
 	bail: optionalShape(
