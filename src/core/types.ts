@@ -2,6 +2,7 @@ import type { AgentInterface, ToolInterface, ToolManagerInterface } from '@orkes
 import type { BudgetInterface, TokenUsage } from '@orkestrel/budget'
 import type { EmitterErrorHandler, EmitterHooks, EmitterInterface } from '@orkestrel/emitter'
 import type { Result } from '@orkestrel/contract'
+import type { WorkflowError } from './errors.js'
 
 // Workflows — a JSON-serializable Workflow → Phase → Task tree (strict three
 // levels, positional, no DAG). Two type families share this file: the DEFINITION
@@ -288,6 +289,52 @@ export interface TaskInput extends Partial<TaskContext> {
 	readonly metadata?: Readonly<Record<string, unknown>>
 }
 
+// === Patches (declarative partial updates — the mutation API's `update` payloads)
+
+/**
+ * A declarative partial update to a {@link TaskInterface} — the fields a `pending`
+ * task's {@link TaskInterface.patch} (and the owning {@link TaskManagerInterface.update})
+ * accept, runtime-validated via {@link import('./shapers.js').taskUpdateShape}.
+ *
+ * @remarks
+ * Mirrors the identity fields of {@link TaskDefinition} (`name` / `description`) —
+ * never `run` / `retries` / `timeout` (a form/reliability change is a structural
+ * replace, not a patch) and never `id` (identity is immutable once created). Every
+ * field is optional; an omitted field is left unchanged.
+ *
+ * @example
+ * ```ts
+ * const result = task.phase.tasks.update(task.id, { name: 'Renamed task' })
+ * ```
+ */
+export interface TaskUpdate {
+	readonly name?: string
+	readonly description?: string
+}
+
+/**
+ * A declarative partial update to a {@link PhaseInterface} — the fields a `pending`
+ * phase's {@link PhaseInterface.patch} (and the owning {@link PhaseManagerInterface.update})
+ * accept, runtime-validated via {@link import('./shapers.js').phaseUpdateShape}.
+ *
+ * @remarks
+ * Mirrors the identity + throttle/policy fields of {@link PhaseDefinition} (`name` /
+ * `description` / `concurrency` / `bail`) — never `id` / `tasks` (structural children
+ * change through {@link PhaseInterface.add} / `remove` / `move`, not a patch). Every
+ * field is optional; an omitted field is left unchanged.
+ *
+ * @example
+ * ```ts
+ * const result = workflow.phases.update(phase.id, { concurrency: 4, bail: true })
+ * ```
+ */
+export interface PhaseUpdate {
+	readonly name?: string
+	readonly description?: string
+	readonly concurrency?: number
+	readonly bail?: boolean
+}
+
 // === Error codes (AGENTS §12 — the machine-readable codes the W-b entities throw)
 
 /**
@@ -315,8 +362,20 @@ export interface TaskInput extends Partial<TaskContext> {
  *   returning a failure result), and the `@orkestrel/agent` package's `ToolManager`
  *   ISOLATES the throw into the canonical tool result's top-level `error` (AGENTS §14 — the
  *   universal tool-handler contract); the error `context` names the wrapped workflow id.
+ * - `MUTATION` — a GATED structural or patch edit was refused: a duplicate id on
+ *   `append`/`add`, a target that does not exist or is not `pending`, an out-of-bounds
+ *   `index`, a patch that failed shaper validation, or a live structural edit refused by
+ *   the NATIVE bottom-up gate — a terminal container, an edit targeting (or destined for)
+ *   a position BEFORE the container's own pending-suffix boundary, or (a running phase)
+ *   anything other than a pure append. The manager /
+ *   entity structural API (AGENTS §12) returns it as a graceful `Result` `failure` —
+ *   it NEVER throws for this code except {@link TaskInterface.patch} /
+ *   {@link PhaseInterface.patch}'s defense-in-depth self-check and the build-time
+ *   {@link TaskManagerInterface.append} / {@link PhaseManagerInterface.append} duplicate-id
+ *   guard (both genuine programmer-error paths, AGENTS §12). The error `context` names
+ *   the offending id / index / status.
  */
-export type WorkflowErrorCode = 'TRANSITION' | 'RESTORE' | 'DEPTH' | 'TOOL'
+export type WorkflowErrorCode = 'TRANSITION' | 'RESTORE' | 'DEPTH' | 'TOOL' | 'MUTATION'
 
 // === Status unions (AGENTS §10 lifecycle vocabulary)
 
@@ -466,6 +525,12 @@ export interface PhaseSnapshot {
 	 * per-phase policy identically without a silent default.
 	 */
 	readonly bail: boolean
+	/**
+	 * Max tasks in flight at once (a resource throttle), persisted so a restore reinstates the
+	 * same per-phase throttle — mirrors {@link import('./types.js').PhaseDefinition.concurrency}.
+	 * Omitted ⇒ unbounded.
+	 */
+	readonly concurrency?: number
 	readonly tasks: readonly TaskSnapshot[]
 }
 
@@ -578,10 +643,13 @@ export interface WorkflowSnapshotRow {
  * Present-tense events with arg tuples. `start` fires when the workflow begins;
  * `complete` when every phase settled successfully; `fail` when a phase failed
  * under `bail` (carrying the failing {@link TaskResult}); `stop` when the workflow
- * was permanently ended. A throwing listener never reaches the domain surface — the
- * emitter isolates it and routes it to its OWN `error` handler (the `error` option,
- * AGENTS §13). Declared as a `type` alias (not `interface extends EventMap`, AGENTS
- * §4.5) so the type-literal satisfies `EventMap` structurally.
+ * was permanently ended. `add` / `remove` / `move` / `update` fire on a successful
+ * structural or patch edit through {@link WorkflowInterface.add} / `remove` / `move` /
+ * `update` (AGENTS §7) — never on a refused/gated one. A throwing listener never
+ * reaches the domain surface — the emitter isolates it and routes it to its OWN
+ * `error` handler (the `error` option, AGENTS §13). Declared as a `type` alias (not
+ * `interface extends EventMap`, AGENTS §4.5) so the type-literal satisfies `EventMap`
+ * structurally.
  */
 export type WorkflowEventMap = {
 	/** The workflow began — its `id`. */
@@ -592,6 +660,14 @@ export type WorkflowEventMap = {
 	readonly fail: readonly [result: TaskResult]
 	/** The workflow was permanently stopped. */
 	readonly stop: readonly []
+	/** A phase was inserted — the inserted phase + its final index. */
+	readonly add: readonly [phase: PhaseInterface, index: number]
+	/** A phase was removed — the removed phase. */
+	readonly remove: readonly [phase: PhaseInterface]
+	/** A phase was repositioned — the moved phase + its new index. */
+	readonly move: readonly [phase: PhaseInterface, index: number]
+	/** A phase was patched — the patched phase. */
+	readonly update: readonly [phase: PhaseInterface]
 }
 
 /**
@@ -601,9 +677,12 @@ export type WorkflowEventMap = {
  * @remarks
  * `start` fires when the phase begins; `complete` when all its tasks settled
  * successfully; `fail` when a task failed under `bail` (carrying the
- * {@link TaskResult}); `stop` when the phase was ended. A throwing listener is
- * isolated by the emitter and routed to its `error` handler, not the domain surface
- * (AGENTS §13). A `type` alias (AGENTS §4.5) so it satisfies `EventMap`.
+ * {@link TaskResult}); `stop` when the phase was ended. `add` / `remove` / `move` /
+ * `update` fire on a successful structural or patch edit through
+ * {@link PhaseInterface.add} / `remove` / `move` / `update` (AGENTS §7) — never on a
+ * refused/gated one. A throwing listener is isolated by the emitter and routed to its
+ * `error` handler, not the domain surface (AGENTS §13). A `type` alias (AGENTS §4.5)
+ * so it satisfies `EventMap`.
  */
 export type PhaseEventMap = {
 	/** The phase began — its `id`. */
@@ -614,6 +693,14 @@ export type PhaseEventMap = {
 	readonly fail: readonly [result: TaskResult]
 	/** The phase was permanently stopped. */
 	readonly stop: readonly []
+	/** A task was inserted — the inserted task + its final index. */
+	readonly add: readonly [task: TaskInterface, index: number]
+	/** A task was removed — the removed task. */
+	readonly remove: readonly [task: TaskInterface]
+	/** A task was repositioned — the moved task + its new index. */
+	readonly move: readonly [task: TaskInterface, index: number]
+	/** A task was patched — the patched task. */
+	readonly update: readonly [task: TaskInterface]
 }
 
 /**
@@ -719,6 +806,14 @@ export interface WorkflowOptions {
 }
 
 // === Entity interfaces (AGENTS §7/§13 — the live W-b state machines)
+//
+// Mutation authority is BOTTOM-UP and NATIVE: `add` / `remove` / `move` / `update`
+// gate purely from the container's OWN derived status and the list's positions — no
+// runner-installed hook inverts that authority. The "pending suffix" of a positional
+// list is its contiguous trailing run of `pending` entries; its BOUNDARY (the index
+// of the first entry in that suffix) is a live run's de facto cursor, computed fresh
+// from statuses rather than tracked by an installed hook — see
+// {@link import('./helpers.js').deriveBoundary}.
 
 /**
  * The live leaf state machine (W-b) for one {@link TaskDefinition} — an observable
@@ -760,6 +855,22 @@ export interface TaskInterface {
 	fail(error: unknown): void
 	skip(): void
 	stop(): void
+	/**
+	 * Apply a validated declarative patch to SELF (`name` / `description`).
+	 *
+	 * @remarks
+	 * Defense-in-depth (AGENTS §12): the owning {@link TaskManagerInterface.update} gates
+	 * FIRST (target exists + `pending`), so a direct call here is the second, redundant
+	 * check — it THROWS a `MUTATION` {@link import('./errors.js').WorkflowError} unless
+	 * this task's own `status` is `pending`.
+	 *
+	 * @param value - The {@link TaskUpdate} fields to apply
+	 * @example
+	 * ```ts
+	 * task.patch({ name: 'Renamed task' })
+	 * ```
+	 */
+	patch(value: TaskUpdate): void
 	snapshot(): TaskSnapshot
 }
 
@@ -793,6 +904,8 @@ export interface PhaseInterface {
 	readonly status: PhaseStatus
 	/** The RESOLVED effective failure policy this phase runs under (`phase.bail ?? workflow.bail`); mirrors {@link WorkflowInterface.bail}. */
 	readonly bail: boolean
+	/** Max tasks in flight at once (a resource throttle); mirrors {@link PhaseSnapshot.concurrency}. `undefined` ⇒ unbounded. */
+	readonly concurrency: number | undefined
 	readonly tasks: TaskManagerInterface
 	/** Look up one live task by its `id`. */
 	task(id: string): TaskInterface | undefined
@@ -800,6 +913,79 @@ export interface PhaseInterface {
 	results(): readonly TaskResult[]
 	skip(): void
 	stop(): void
+	/**
+	 * Insert `task` into this phase (AGENTS §7 the entity structural API) — gated BEFORE
+	 * delegating to {@link tasks}' manager.
+	 *
+	 * @remarks
+	 * NATIVE gating, purely from this phase's own derived `status` (AGENTS §12 — no
+	 * runner-installed hook). While `pending`: any valid `index` is accepted (delegates to
+	 * {@link TaskManagerInterface.add} then emits `add`). While `running`: accepted ONLY as
+	 * a pure append (`index` omitted or `=== tasks.count`) — a live runner subscribed to
+	 * the `add` event picks the new task up for same-run execution; the derived-status
+	 * model guarantees this phase cannot reach a terminal status while the accepted task is
+	 * still `pending` (its status feeds `status` via {@link import('./helpers.js').derivePhaseStatus}).
+	 * While terminal: always refused.
+	 *
+	 * @param task - The live task to insert
+	 * @param index - The insertion position; omitted inserts at the end
+	 * @returns A {@link Result} boxing the inserted task, or a `MUTATION` failure
+	 */
+	add(task: TaskInterface, index?: number): Result<TaskInterface, WorkflowError>
+	/**
+	 * Remove the `pending` task `id` from this phase.
+	 *
+	 * @remarks
+	 * NATIVE gating: allowed only while this phase's own `status` is `pending`. While
+	 * `running` or terminal, always a `MUTATION` failure — a running phase's tasks are
+	 * already handed to the execution substrate and only a pure {@link add} append remains
+	 * possible.
+	 *
+	 * @param id - The task id to remove
+	 * @returns A {@link Result} boxing the removed task, or a `MUTATION` failure
+	 */
+	remove(id: string): Result<TaskInterface, WorkflowError>
+	/**
+	 * Reposition the `pending` task `id` to `index` within this phase.
+	 *
+	 * @remarks
+	 * NATIVE gating: allowed only while this phase's own `status` is `pending`; `running` /
+	 * terminal always fail (see {@link remove}).
+	 *
+	 * @param id - The task id to move
+	 * @param index - The destination position
+	 * @returns A {@link Result} boxing the moved task, or a `MUTATION` failure
+	 */
+	move(id: string, index: number): Result<TaskInterface, WorkflowError>
+	/**
+	 * Apply a validated {@link TaskUpdate} patch to the `pending` task `id` in this phase.
+	 *
+	 * @remarks
+	 * NATIVE gating: allowed only while this phase's own `status` is `pending`; `running` /
+	 * terminal always fail (see {@link remove}).
+	 *
+	 * @param id - The task id to patch
+	 * @param patch - The fields to update
+	 * @returns A {@link Result} boxing the patched task, or a `MUTATION` failure
+	 */
+	update(id: string, patch: TaskUpdate): Result<TaskInterface, WorkflowError>
+	/**
+	 * Apply a validated declarative patch to SELF (`name` / `description` /
+	 * `concurrency` / `bail`).
+	 *
+	 * @remarks
+	 * Defense-in-depth (AGENTS §12): the owning {@link WorkflowInterface.update} gates
+	 * FIRST, so a direct call here THROWS a `MUTATION`
+	 * {@link import('./errors.js').WorkflowError} unless this phase's own `status` is
+	 * `pending`.
+	 *
+	 * @param value - The {@link PhaseUpdate} fields to apply
+	 * @example
+	 * ```ts
+	 * phase.patch({ concurrency: 4 })
+	 * ```
+	 */
+	patch(value: PhaseUpdate): void
 	snapshot(): PhaseSnapshot
 }
 
@@ -842,6 +1028,64 @@ export interface WorkflowInterface {
 	skip(): void
 	stop(): void
 	complete(): void
+	/**
+	 * Insert `phase` into this workflow (AGENTS §7 the entity structural API) — gated
+	 * BEFORE delegating to {@link phases}' manager.
+	 *
+	 * @remarks
+	 * NATIVE gating, purely from this workflow's own derived `status` and the phase list's
+	 * positions (AGENTS §12 — no runner-installed hook). Refused outright while this
+	 * workflow's own `status` is terminal. Otherwise the effective target position
+	 * (`index ?? phases.count`) must fall within the PENDING SUFFIX — the contiguous
+	 * trailing run of `pending` phases (phases run sequentially, so every already-started
+	 * phase forms a contiguous leading prefix); its boundary is
+	 * {@link import('./helpers.js').deriveBoundary}. A `pending` workflow's phases are ALL
+	 * `pending`, so the boundary is `0` and every index is naturally accepted — no special
+	 * case needed. Delegates to {@link PhaseManagerInterface.add} then emits `add` on success.
+	 *
+	 * @param phase - The live phase to insert
+	 * @param index - The insertion position; omitted inserts at the end
+	 * @returns A {@link Result} boxing the inserted phase, or a `MUTATION` failure
+	 */
+	add(phase: PhaseInterface, index?: number): Result<PhaseInterface, WorkflowError>
+	/**
+	 * Remove the `pending` phase `id` from this workflow.
+	 *
+	 * @remarks
+	 * NATIVE gating: refused while this workflow's own `status` is terminal. Otherwise the
+	 * target must exist at an index within the pending suffix (at or past
+	 * {@link import('./helpers.js').deriveBoundary}) — the manager separately gates the
+	 * target's own `pending` status (AGENTS §9).
+	 *
+	 * @param id - The phase id to remove
+	 * @returns A {@link Result} boxing the removed phase, or a `MUTATION` failure
+	 */
+	remove(id: string): Result<PhaseInterface, WorkflowError>
+	/**
+	 * Reposition the `pending` phase `id` to `index` within this workflow.
+	 *
+	 * @remarks
+	 * NATIVE gating: refused while this workflow's own `status` is terminal. Otherwise BOTH
+	 * the target's current index and the destination `index` must fall within the pending
+	 * suffix (see {@link remove}).
+	 *
+	 * @param id - The phase id to move
+	 * @param index - The destination position
+	 * @returns A {@link Result} boxing the moved phase, or a `MUTATION` failure
+	 */
+	move(id: string, index: number): Result<PhaseInterface, WorkflowError>
+	/**
+	 * Apply a validated {@link PhaseUpdate} patch to the `pending` phase `id` in this workflow.
+	 *
+	 * @remarks
+	 * NATIVE gating: refused while this workflow's own `status` is terminal. Otherwise the
+	 * target must exist at an index within the pending suffix (see {@link remove}).
+	 *
+	 * @param id - The phase id to patch
+	 * @param patch - The fields to update
+	 * @returns A {@link Result} boxing the patched phase, or a `MUTATION` failure
+	 */
+	update(id: string, patch: PhaseUpdate): Result<PhaseInterface, WorkflowError>
 	snapshot(): WorkflowSnapshot
 }
 
@@ -856,11 +1100,61 @@ export interface WorkflowInterface {
  * `append` adds one live {@link TaskInterface} at the end (the build-time wiring path);
  * `task(id)` looks one up; `tasks()` lists them in positional order; `count` is the
  * tally. No batch matrix (AGENTS §9.2 is deliberately omitted — a phase's tasks are a
- * fixed positional set, not a bulk-mutated collection).
+ * fixed positional set, not a bulk-mutated collection). `add` / `remove` / `move` /
+ * `update` (AGENTS §12) are the GATED mutation counterparts a
+ * {@link PhaseInterface.add} / `remove` / `move` / `update` delegates to AFTER its own
+ * container-status/hook gating — the manager gates ONLY on the target's OWN
+ * existence/status/id/bounds and stays event-free (the entity emits on success).
  */
 export interface TaskManagerInterface {
 	readonly count: number
+	/**
+	 * Add `task` at the end (the build-time wiring path).
+	 *
+	 * @remarks
+	 * THROWS a `MUTATION` {@link import('./errors.js').WorkflowError} on a duplicate
+	 * `id` (a genuine programmer error — a build-time wiring bug, AGENTS §12) instead of
+	 * silently overwriting the existing entry.
+	 *
+	 * @param task - The live task to append
+	 */
 	append(task: TaskInterface): void
+	/**
+	 * Insert `task` at `index` (default the end) — the GATED mutation counterpart to
+	 * {@link append}: a duplicate `id` or an out-of-bounds `index` fails gracefully
+	 * instead of throwing.
+	 *
+	 * @param task - The live task to insert
+	 * @param index - The insertion position (`[0, count]`); omitted inserts at the end
+	 * @returns A {@link Result} boxing the inserted task, or a `MUTATION` failure
+	 */
+	add(task: TaskInterface, index?: number): Result<TaskInterface, WorkflowError>
+	/**
+	 * Remove the `pending` task `id`.
+	 *
+	 * @param id - The task id to remove
+	 * @returns A {@link Result} boxing the removed task, or a `MUTATION` failure when
+	 *   `id` is absent or not `pending`
+	 */
+	remove(id: string): Result<TaskInterface, WorkflowError>
+	/**
+	 * Reposition the `pending` task `id` to `index`.
+	 *
+	 * @param id - The task id to move
+	 * @param index - The destination position (`[0, count)`)
+	 * @returns A {@link Result} boxing the moved task, or a `MUTATION` failure when `id`
+	 *   is absent, not `pending`, or `index` is out of bounds
+	 */
+	move(id: string, index: number): Result<TaskInterface, WorkflowError>
+	/**
+	 * Apply a validated {@link TaskUpdate} patch to the `pending` task `id`.
+	 *
+	 * @param id - The task id to patch
+	 * @param patch - The fields to update
+	 * @returns A {@link Result} boxing the patched task, or a `MUTATION` failure when
+	 *   `id` is absent, not `pending`, or `patch` fails validation
+	 */
+	update(id: string, patch: TaskUpdate): Result<TaskInterface, WorkflowError>
 	task(id: string): TaskInterface | undefined
 	tasks(): readonly TaskInterface[]
 }
@@ -872,10 +1166,61 @@ export interface TaskManagerInterface {
  * @remarks
  * `append` adds one live {@link PhaseInterface} at the end; `phase(id)` looks one up;
  * `phases()` lists them in positional order; `count` is the tally. No batch matrix.
+ * `add` / `remove` / `move` / `update` (AGENTS §12) are the GATED mutation
+ * counterparts a {@link WorkflowInterface.add} / `remove` / `move` / `update`
+ * delegates to AFTER its own container-status/hook gating — the manager gates ONLY
+ * on the target's OWN existence/status/id/bounds and stays event-free (the entity
+ * emits on success).
  */
 export interface PhaseManagerInterface {
 	readonly count: number
+	/**
+	 * Add `phase` at the end (the build-time wiring path).
+	 *
+	 * @remarks
+	 * THROWS a `MUTATION` {@link import('./errors.js').WorkflowError} on a duplicate
+	 * `id` (a genuine programmer error — a build-time wiring bug, AGENTS §12) instead of
+	 * silently overwriting the existing entry.
+	 *
+	 * @param phase - The live phase to append
+	 */
 	append(phase: PhaseInterface): void
+	/**
+	 * Insert `phase` at `index` (default the end) — the GATED mutation counterpart to
+	 * {@link append}: a duplicate `id` or an out-of-bounds `index` fails gracefully
+	 * instead of throwing.
+	 *
+	 * @param phase - The live phase to insert
+	 * @param index - The insertion position (`[0, count]`); omitted inserts at the end
+	 * @returns A {@link Result} boxing the inserted phase, or a `MUTATION` failure
+	 */
+	add(phase: PhaseInterface, index?: number): Result<PhaseInterface, WorkflowError>
+	/**
+	 * Remove the `pending` phase `id`.
+	 *
+	 * @param id - The phase id to remove
+	 * @returns A {@link Result} boxing the removed phase, or a `MUTATION` failure when
+	 *   `id` is absent or not `pending`
+	 */
+	remove(id: string): Result<PhaseInterface, WorkflowError>
+	/**
+	 * Reposition the `pending` phase `id` to `index`.
+	 *
+	 * @param id - The phase id to move
+	 * @param index - The destination position (`[0, count)`)
+	 * @returns A {@link Result} boxing the moved phase, or a `MUTATION` failure when
+	 *   `id` is absent, not `pending`, or `index` is out of bounds
+	 */
+	move(id: string, index: number): Result<PhaseInterface, WorkflowError>
+	/**
+	 * Apply a validated {@link PhaseUpdate} patch to the `pending` phase `id`.
+	 *
+	 * @param id - The phase id to patch
+	 * @param patch - The fields to update
+	 * @returns A {@link Result} boxing the patched phase, or a `MUTATION` failure when
+	 *   `id` is absent, not `pending`, or `patch` fails validation
+	 */
+	update(id: string, patch: PhaseUpdate): Result<PhaseInterface, WorkflowError>
 	phase(id: string): PhaseInterface | undefined
 	phases(): readonly PhaseInterface[]
 }
@@ -1162,6 +1507,76 @@ export type WorkflowToolBinder = (
  * listeners, a `bail` override, per-node options); the Abort / Timeout / Budget bounds fold
  * per run via `AbortSignal.any`, halting the run and `stop`ping the workflow.
  */
+/**
+ * The push observation surface (AGENTS §13) of a {@link WorkflowRunInterface} — the
+ * run's OWN lifecycle moments, distinct from the driven {@link WorkflowInterface}'s
+ * OWN {@link WorkflowEventMap} (which still fires for its entity-level start/complete/
+ * fail/stop transitions).
+ *
+ * @remarks
+ * `start` / `pause` / `resume` / `stop` / `destroy` carry the driven
+ * {@link WorkflowInterface} (mirroring the {@link WorkflowEventMap} payload style);
+ * `spawn` carries a task a live `running` phase picked up (the run subscribes to each
+ * phase's own `add` event — the native bottom-up mutation authority, AGENTS — rather than
+ * installing any runner-side hook); `reject` carries the
+ * {@link import('./errors.js').WorkflowError} of a live structural edit the NATIVE
+ * pending-suffix-boundary gate refused. A throwing listener is isolated by the emitter and
+ * routed to its `error` handler, never this domain surface (AGENTS §13). A `type` alias
+ * (AGENTS §4.5) so it satisfies `EventMap`.
+ */
+export type WorkflowRunEventMap = {
+	/** The run began driving its workflow. */
+	readonly start: readonly [workflow: WorkflowInterface]
+	/** The run was suspended (resumable). */
+	readonly pause: readonly [workflow: WorkflowInterface]
+	/** A paused run resumed. */
+	readonly resume: readonly [workflow: WorkflowInterface]
+	/** The run was permanently stopped. */
+	readonly stop: readonly [workflow: WorkflowInterface]
+	/** The run was torn down. */
+	readonly destroy: readonly [workflow: WorkflowInterface]
+	/** A task was picked up LIVE by the running phase. */
+	readonly spawn: readonly [task: TaskInterface]
+	/** A live structural edit was refused by the run's cursor gate. */
+	readonly reject: readonly [error: WorkflowError]
+}
+
+/**
+ * A live, controllable handle on one {@link WorkflowRunnerInterface.start} run — the
+ * OBSERVABLE + PAUSABLE counterpart to the one-shot `execute`.
+ *
+ * @remarks
+ * `workflow` is the live tree the run drives (the same entity `execute`'s
+ * {@link WorkflowResult.workflow} would box); `result` is the run's terminal
+ * {@link WorkflowResult}, resolved once the run settles (mirrors `execute`'s return, as
+ * a `Promise` instead of an awaited value since `start` returns SYNCHRONOUSLY).
+ * `active` / `paused` / `stopped` are the run's current tri-state read (a run is never
+ * `active` AND `paused` AND `stopped` at once). `pause()` / `resume()` / `stop()` /
+ * `destroy()` are all `void` and IDEMPOTENT (AGENTS §10) — calling `pause()` on an
+ * already-paused run, or `stop()` twice, is a no-op, never a throw. `pause` is
+ * RUNTIME-ONLY (never a {@link LifecycleStatus}, never persisted in a
+ * {@link WorkflowSnapshot} — a paused run's entity tree still reports its ordinary
+ * `pending` / `running` status). Exposes a typed {@link emitter}
+ * ({@link WorkflowRunEventMap}) for fire-and-forget observers, ALONGSIDE the eventual
+ * `result`.
+ */
+export interface WorkflowRunInterface {
+	readonly workflow: WorkflowInterface
+	readonly emitter: EmitterInterface<WorkflowRunEventMap>
+	readonly result: Promise<WorkflowResult>
+	readonly active: boolean
+	readonly paused: boolean
+	readonly stopped: boolean
+	/** Suspend the run (resumable); idempotent. */
+	pause(): void
+	/** Continue a paused run; idempotent. */
+	resume(): void
+	/** Permanently end the run; idempotent. */
+	stop(): void
+	/** Tear the run down — `stop` plus release resources; idempotent. */
+	destroy(): void
+}
+
 export interface WorkflowRunnerInterface {
 	/**
 	 * Execute a workflow definition to completion — BUILD its live tree, run the phases
@@ -1191,6 +1606,24 @@ export interface WorkflowRunnerInterface {
 	 * @returns The run's terminal {@link WorkflowResult} (its `workflow` is the built tree)
 	 */
 	execute(definition: WorkflowDefinition, options?: WorkflowRunOptions): Promise<WorkflowResult>
+	/**
+	 * Start a workflow definition as a live, controllable run — the PAUSABLE +
+	 * OBSERVABLE counterpart to {@link execute}.
+	 *
+	 * @remarks
+	 * Builds the live tree exactly as `execute` does (the same {@link WorkflowRunOptions}
+	 * halves: construction + per-run bounds) and begins driving it, but returns
+	 * SYNCHRONOUSLY with a {@link WorkflowRunInterface} handle instead of awaiting the
+	 * terminal result — `run.result` resolves the same {@link WorkflowResult} `execute`
+	 * would. The handle additionally exposes `pause` / `resume` / `stop` / `destroy`
+	 * (AGENTS §10) and its own {@link WorkflowRunEventMap} `emitter`, on top of the
+	 * driven `workflow`'s own {@link WorkflowEventMap}.
+	 *
+	 * @param definition - The {@link WorkflowDefinition} to build the live tree from and drive
+	 * @param options - The same {@link WorkflowRunOptions} `execute` accepts
+	 * @returns A live {@link WorkflowRunInterface} handle on the run
+	 */
+	start(definition: WorkflowDefinition, options?: WorkflowRunOptions): WorkflowRunInterface
 }
 
 /**
@@ -1444,6 +1877,8 @@ export interface RunnerInterface<TInput, TResult> {
 	readonly emitter: EmitterInterface<RunnerEventMap<TResult>>
 	readonly active: number
 	readonly stopped: boolean
+	/** Whether the runner is currently paused (AGENTS §10 — resumable, no new dispatch); rides the backing queue's own `paused`. */
+	readonly paused: boolean
 	/**
 	 * Run all `inputs` — and anything they `spawn` — to completion; resolve their
 	 * results in order: the declared inputs first (in input order), then the spawned
@@ -1459,12 +1894,69 @@ export interface RunnerInterface<TInput, TResult> {
 	 */
 	execute(inputs: readonly TInput[]): Promise<readonly TResult[]>
 	/**
+	 * Inject one more unit into an IN-FLIGHT `execute` run — a LIVE counterpart to a
+	 * `Controller.spawn`, called from OUTSIDE any unit's handler (the seam a live
+	 * `running` {@link PhaseInterface}'s `add` event lets a subscribed run offer a newly
+	 * added task to the SAME execution substrate).
+	 *
+	 * @remarks
+	 * Returns `undefined` synchronously (graceful, non-throwing — AGENTS §12) when the
+	 * runner is not currently mid-`execute`, or the run has already fully drained — the
+	 * caller reads `undefined` as "not accepted". Otherwise the unit is routed through
+	 * the SAME backing queue as a declared/`spawn`ed unit (the runner's
+	 * outstanding-unit count gate keeps the in-flight `execute` awaiting it) and emits
+	 * the {@link RunnerEventMap.spawn} event; its result promise resolves once the unit
+	 * settles.
+	 *
+	 * @param input - The unit's work payload
+	 * @returns The unit's result promise, or `undefined` when no in-flight run can accept it
+	 */
+	spawn(input: TInput): Promise<TResult> | undefined
+	/**
 	 * Cancel every in-flight + pending unit (and the backing queue), making a running
 	 * `execute` reject.
 	 *
 	 * @param reason - An optional cancellation reason propagated to every unit's signal
 	 */
 	abort(reason?: unknown): void
+	/**
+	 * Suspend dispatch (AGENTS §10 — resumable): the backing queue holds the NEXT dispatch
+	 * while any in-flight unit finishes; idempotent.
+	 *
+	 * @example
+	 * ```ts
+	 * runner.pause()
+	 * runner.paused // true
+	 * ```
+	 */
+	pause(): void
+	/**
+	 * Continue a paused runner (AGENTS §10); idempotent.
+	 *
+	 * @example
+	 * ```ts
+	 * runner.resume()
+	 * runner.paused // false
+	 * ```
+	 */
+	resume(): void
+	/**
+	 * Permanently end the runner (AGENTS §10) — a GRACEFUL stop: no further unit is
+	 * dispatched, but every already-in-flight unit runs to completion and settles
+	 * normally. A never-dispatched (still-pending) unit is rejected by the backing queue
+	 * and is NOT recorded as a failure (it never trips fail-fast); a genuine in-flight
+	 * failure still is. `execute`'s promise RESOLVES (never rejects) once every unit has
+	 * settled, with whatever results actually completed. Idempotent.
+	 *
+	 * @example
+	 * ```ts
+	 * const runner = createRunner({ handler: (c) => c.input, concurrency: 1 })
+	 * const results = runner.execute([1, 2, 3])
+	 * runner.stop() // the in-flight unit finishes; the rest are gracefully dropped
+	 * await results // resolves with whatever settled — never rejects
+	 * ```
+	 */
+	stop(): void
 	/** Tear the runner down — `abort` plus stop the backing queue; idempotent. */
 	destroy(): void
 }

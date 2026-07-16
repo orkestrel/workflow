@@ -1,3 +1,4 @@
+import type { Result } from '@orkestrel/contract'
 import type { EmitterInterface } from '@orkestrel/emitter'
 import type {
 	PhaseContext,
@@ -6,14 +7,17 @@ import type {
 	PhaseOptions,
 	PhaseSnapshot,
 	PhaseStatus,
+	PhaseUpdate,
 	TaskInterface,
 	TaskManagerInterface,
 	TaskResult,
 	TaskSnapshot,
+	TaskUpdate,
 	WorkflowInterface,
 } from '../types.js'
 import { Emitter } from '@orkestrel/emitter'
-import { buildTaskContext, derivePhaseStatus } from '../helpers.js'
+import { WorkflowError } from '../errors.js'
+import { buildPhaseContext, buildTaskContext, derivePhaseStatus, isTerminalStatus } from '../helpers.js'
 import { Task } from '../tasks/Task.js'
 import { TaskManager } from '../tasks/TaskManager.js'
 
@@ -38,9 +42,23 @@ import { TaskManager } from '../tasks/TaskManager.js'
  *   `start` / `complete` / `fail` / `stop` on a derived-status CHANGE, strictly AFTER the
  *   recompute + escalate; the emitter isolates a listener throw and routes it to its `error`
  *   handler (the `error` option); `fail` carries the failing task's {@link TaskResult}.
+ * - **Structural API (AGENTS §7).** `add` / `remove` / `move` / `update` gate BEFORE
+ *   delegating to {@link tasks} (the manager gates the target's own existence/status/id/
+ *   bounds), then emit the matching {@link PhaseEventMap} event on success only. NATIVE
+ *   gating, purely from this phase's own derived `status` (no runner-installed hook): while
+ *   `pending`, any valid `index` is accepted; while `running`, `add` accepts ONLY a pure
+ *   append (a live runner subscribed to the `add` event picks it up), and `remove` / `move` /
+ *   `update` always fail gracefully (the tasks are already handed to the execution
+ *   substrate); while terminal, everything is refused.
+ * - **Patch (AGENTS §12).** `patch` applies a validated {@link PhaseUpdate} to SELF
+ *   (`name` / `description` / `concurrency` / `bail`) — defense-in-depth: it throws a
+ *   `MUTATION` {@link WorkflowError} unless this phase's own `status` is `pending`, mirroring
+ *   the owning {@link WorkflowInterface.update}'s gate.
  */
 export class Phase implements PhaseInterface {
-	readonly #context: PhaseContext
+	readonly #id: string
+	#name: string
+	#description: string | undefined
 	readonly #workflow: WorkflowInterface
 	// Escalate a derived-status change UP to the parent workflow (which re-derives under `bail`)
 	// — injected by the parent so the phase needs no back-reference plumbing of its own.
@@ -49,7 +67,11 @@ export class Phase implements PhaseInterface {
 	// The EFFECTIVE failure policy this phase runs under (`phase.bail ?? workflow.bail`, resolved
 	// at seed time and carried on the snapshot) — read by the runner to decide fail-fast vs
 	// settle-all for THIS phase, and by the workflow's per-phase-bail-aware status derivation.
-	readonly #bail: boolean
+	// Mutable (AGENTS §7): a `pending` phase's `patch` may override it before a run starts.
+	#bail: boolean
+	// Max tasks in flight at once (a resource throttle), seeded from the snapshot; mutable via a
+	// `pending` phase's `patch` (AGENTS §7). `undefined` ⇒ unbounded.
+	#concurrency: number | undefined
 	// The PUSH observation surface (§13) — owned, never inherited. The emitter isolates a
 	// listener throw (routing it to the `error` handler), never the cascade.
 	readonly #emitter: Emitter<PhaseEventMap>
@@ -65,10 +87,9 @@ export class Phase implements PhaseInterface {
 		options?: PhaseOptions,
 		bail?: boolean,
 	) {
-		this.#context = { id: snapshot.id, name: snapshot.name, workflow: workflow.context }
-		if (snapshot.description !== undefined) {
-			this.#context = { ...this.#context, description: snapshot.description }
-		}
+		this.#id = snapshot.id
+		this.#name = snapshot.name
+		this.#description = snapshot.description
 		this.#workflow = workflow
 		this.#escalateUp = escalate
 		// The effective per-phase policy: the explicit workflow `bail` OVERRIDE when supplied (a
@@ -78,6 +99,7 @@ export class Phase implements PhaseInterface {
 		// snapshot already resolved `phase.bail ?? workflowBail` at seed time, mirroring how Workflow
 		// reads its own `#bail`.
 		this.#bail = bail ?? snapshot.bail
+		this.#concurrency = snapshot.concurrency
 		this.#emitter = new Emitter<PhaseEventMap>({ on: options?.on, error: options?.error })
 		// Build the live tasks positionally from the snapshot — each wired to recompute THIS phase
 		// on a transition, and carrying its own restore state (status + result + metadata).
@@ -94,19 +116,25 @@ export class Phase implements PhaseInterface {
 	}
 
 	get id(): string {
-		return this.#context.id
+		return this.#id
 	}
 
 	get name(): string {
-		return this.#context.name
+		return this.#name
 	}
 
 	get description(): string | undefined {
-		return this.#context.description
+		return this.#description
 	}
 
 	get context(): PhaseContext {
-		return this.#context
+		// Computed fresh so a renamed phase's context reflects its CURRENT identity — the phase's
+		// own id/name/description plus the live parent workflow context.
+		return buildPhaseContext(this.#workflow.context, {
+			id: this.#id,
+			name: this.#name,
+			...(this.#description === undefined ? {} : { description: this.#description }),
+		})
 	}
 
 	get workflow(): WorkflowInterface {
@@ -115,6 +143,10 @@ export class Phase implements PhaseInterface {
 
 	get bail(): boolean {
 		return this.#bail
+	}
+
+	get concurrency(): number | undefined {
+		return this.#concurrency
 	}
 
 	get status(): PhaseStatus {
@@ -152,11 +184,102 @@ export class Phase implements PhaseInterface {
 		this.#force('stopped')
 	}
 
+	add(task: TaskInterface, index?: number): Result<TaskInterface, WorkflowError> {
+		const status = this.status
+		if (isTerminalStatus(status)) {
+			return {
+				success: false,
+				error: new WorkflowError('MUTATION', `phase '${this.#id}' is terminal`, {
+					id: this.#id,
+					status,
+				}),
+			}
+		}
+		if (status === 'running') {
+			// Running: only a pure append is eligible — a live runner subscribed to the `add`
+			// event picks the new task up for same-run execution.
+			const at = index ?? this.#tasks.count
+			if (at !== this.#tasks.count) {
+				return {
+					success: false,
+					error: new WorkflowError(
+						'MUTATION',
+						`phase '${this.#id}' only accepts an append while executing`,
+						{ id: this.#id, index: at },
+					),
+				}
+			}
+			return this.#addTo(task, index, at)
+		}
+		return this.#addTo(task, index, index ?? this.#tasks.count)
+	}
+
+	remove(id: string): Result<TaskInterface, WorkflowError> {
+		if (this.status !== 'pending') {
+			return {
+				success: false,
+				error: new WorkflowError('MUTATION', `phase '${this.#id}' is not pending`, {
+					id: this.#id,
+					status: this.status,
+				}),
+			}
+		}
+		const result = this.#tasks.remove(id)
+		if (result.success) this.#emitter.emit('remove', result.value)
+		return result
+	}
+
+	move(id: string, index: number): Result<TaskInterface, WorkflowError> {
+		if (this.status !== 'pending') {
+			return {
+				success: false,
+				error: new WorkflowError('MUTATION', `phase '${this.#id}' is not pending`, {
+					id: this.#id,
+					status: this.status,
+				}),
+			}
+		}
+		const result = this.#tasks.move(id, index)
+		if (result.success) this.#emitter.emit('move', result.value, index)
+		return result
+	}
+
+	update(id: string, patch: TaskUpdate): Result<TaskInterface, WorkflowError> {
+		if (this.status !== 'pending') {
+			return {
+				success: false,
+				error: new WorkflowError('MUTATION', `phase '${this.#id}' is not pending`, {
+					id: this.#id,
+					status: this.status,
+				}),
+			}
+		}
+		const result = this.#tasks.update(id, patch)
+		if (result.success) this.#emitter.emit('update', result.value)
+		return result
+	}
+
+	patch(value: PhaseUpdate): void {
+		// Defense-in-depth (AGENTS §12): the owning WorkflowInterface.update gates FIRST, so a
+		// direct call here THROWS unless this phase is genuinely `pending`.
+		if (this.status !== 'pending') {
+			throw new WorkflowError('MUTATION', `phase '${this.#id}' can only be patched while pending`, {
+				id: this.#id,
+				status: this.status,
+			})
+		}
+		if (value.name !== undefined) this.#name = value.name
+		if (value.description !== undefined) this.#description = value.description
+		if (value.concurrency !== undefined) this.#concurrency = value.concurrency
+		if (value.bail !== undefined) this.#bail = value.bail
+	}
+
 	snapshot(): PhaseSnapshot {
 		// Pure JSON: identity + the EFFECTIVE status (override-or-derived) + the ACTUAL override
 		// (emitted only when one is in force) + the effective `bail` this phase ran under (always —
-		// a REQUIRED field, like Workflow's) + the tasks' snapshots in positional order. Persisting
-		// the override + bail directly lets a restore reinstate them without guessing from a divergence.
+		// a REQUIRED field, like Workflow's) + the concurrency throttle (when set) + the tasks'
+		// snapshots in positional order. Persisting the override + bail + concurrency directly lets a
+		// restore reinstate them without guessing from a divergence.
 		return {
 			id: this.id,
 			name: this.name,
@@ -164,6 +287,7 @@ export class Phase implements PhaseInterface {
 			status: this.status,
 			...(this.#override === undefined ? {} : { override: this.#override }),
 			bail: this.#bail,
+			...(this.#concurrency === undefined ? {} : { concurrency: this.#concurrency }),
 			tasks: this.#tasks.tasks().map((task) => task.snapshot()),
 		}
 	}
@@ -217,10 +341,22 @@ export class Phase implements PhaseInterface {
 		throw new Error(`phase '${this.id}' derived failed with no failing task result`)
 	}
 
+	// Delegate an `add` to the task manager and emit `add` (the inserted task + its final
+	// `at` index) on success — the shared tail of the hooked and un-hooked `add` branches.
+	#addTo(
+		task: TaskInterface,
+		index: number | undefined,
+		at: number,
+	): Result<TaskInterface, WorkflowError> {
+		const result = this.#tasks.add(task, index)
+		if (result.success) this.#emitter.emit('add', result.value, at)
+		return result
+	}
+
 	// Build one live task from its snapshot, threading its per-task options (its own `on` /
 	// `metadata`, keyed by id under the phase options) and its restore state, then append it.
 	#append(task: TaskSnapshot, options: PhaseOptions | undefined): void {
-		const context = buildTaskContext(this.#context, task)
+		const context = buildTaskContext(this.context, task)
 		const created = new Task(
 			context,
 			this,

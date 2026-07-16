@@ -1,9 +1,11 @@
+import type { Result } from '@orkestrel/contract'
 import type { EmitterInterface } from '@orkestrel/emitter'
 import type {
 	PhaseDerivation,
 	PhaseInterface,
 	PhaseManagerInterface,
 	PhaseSnapshot,
+	PhaseUpdate,
 	TaskResult,
 	WorkflowContext,
 	WorkflowEventMap,
@@ -13,7 +15,14 @@ import type {
 	WorkflowStatus,
 } from './types.js'
 import { Emitter } from '@orkestrel/emitter'
-import { buildWorkflowContext, collectResults, deriveWorkflowStatus } from './helpers.js'
+import { WorkflowError } from './errors.js'
+import {
+	buildWorkflowContext,
+	collectResults,
+	deriveBoundary,
+	deriveWorkflowStatus,
+	isTerminalStatus,
+} from './helpers.js'
 import { Phase } from './phases/Phase.js'
 import { PhaseManager } from './phases/PhaseManager.js'
 
@@ -44,6 +53,15 @@ import { PhaseManager } from './phases/PhaseManager.js'
  *   `start` / `complete` / `fail` / `stop` on a derived-status CHANGE; the emitter isolates a
  *   listener throw and routes it to its `error` handler (the `error` option); `fail` carries
  *   the failing task's {@link TaskResult}.
+ * - **Structural API (AGENTS §7).** `add` / `remove` / `move` / `update` gate BEFORE
+ *   delegating to {@link phases} (the manager gates the target's own existence/status/id/
+ *   bounds), then emit the matching {@link WorkflowEventMap} event on success only. NATIVE,
+ *   bottom-up gating (no runner-installed hook): refused outright while this workflow's own
+ *   `status` is terminal; otherwise a target position must fall within the PENDING SUFFIX —
+ *   the contiguous trailing run of `pending` phases — whose boundary is
+ *   {@link import('./helpers.js').deriveBoundary} over the live phases' statuses. A `pending`
+ *   workflow's phases are all `pending`, so the boundary is `0` and every position is
+ *   naturally accepted.
  */
 export class Workflow implements WorkflowInterface {
 	readonly #context: WorkflowContext
@@ -151,6 +169,106 @@ export class Workflow implements WorkflowInterface {
 		this.#force('completed')
 	}
 
+	add(phase: PhaseInterface, index?: number): Result<PhaseInterface, WorkflowError> {
+		if (isTerminalStatus(this.status)) {
+			return {
+				success: false,
+				error: new WorkflowError('MUTATION', `workflow '${this.id}' is terminal`, {
+					id: this.id,
+					status: this.status,
+				}),
+			}
+		}
+		const at = index ?? this.#phases.count
+		if (at < this.#boundary()) {
+			return {
+				success: false,
+				error: new WorkflowError('MUTATION', `workflow '${this.id}' add index precedes boundary`, {
+					id: this.id,
+					index: at,
+				}),
+			}
+		}
+		return this.#addTo(phase, index, at)
+	}
+
+	remove(id: string): Result<PhaseInterface, WorkflowError> {
+		if (isTerminalStatus(this.status)) {
+			return {
+				success: false,
+				error: new WorkflowError('MUTATION', `workflow '${this.id}' is terminal`, {
+					id: this.id,
+					status: this.status,
+				}),
+			}
+		}
+		const at = this.#indexOf(id)
+		if (at === -1 || at < this.#boundary()) {
+			return {
+				success: false,
+				error: new WorkflowError('MUTATION', `workflow '${this.id}' cannot remove '${id}'`, {
+					id: this.id,
+					phase: id,
+				}),
+			}
+		}
+		const result = this.#phases.remove(id)
+		if (result.success) this.#emitter.emit('remove', result.value)
+		return result
+	}
+
+	move(id: string, index: number): Result<PhaseInterface, WorkflowError> {
+		if (isTerminalStatus(this.status)) {
+			return {
+				success: false,
+				error: new WorkflowError('MUTATION', `workflow '${this.id}' is terminal`, {
+					id: this.id,
+					status: this.status,
+				}),
+			}
+		}
+		const at = this.#indexOf(id)
+		const boundary = this.#boundary()
+		if (at === -1 || at < boundary || index < boundary) {
+			return {
+				success: false,
+				error: new WorkflowError('MUTATION', `workflow '${this.id}' cannot move '${id}'`, {
+					id: this.id,
+					phase: id,
+					index,
+				}),
+			}
+		}
+		const result = this.#phases.move(id, index)
+		if (result.success) this.#emitter.emit('move', result.value, index)
+		return result
+	}
+
+	update(id: string, patch: PhaseUpdate): Result<PhaseInterface, WorkflowError> {
+		if (isTerminalStatus(this.status)) {
+			return {
+				success: false,
+				error: new WorkflowError('MUTATION', `workflow '${this.id}' is terminal`, {
+					id: this.id,
+					status: this.status,
+				}),
+			}
+		}
+		const at = this.#indexOf(id)
+		if (at === -1 || at < this.#boundary()) {
+			return {
+				success: false,
+				error: new WorkflowError('MUTATION', `workflow '${this.id}' cannot update '${id}'`, {
+					id: this.id,
+					phase: id,
+				}),
+			}
+		}
+		const result = this.#phases.update(id, patch)
+		if (result.success) this.#emitter.emit('update', result.value)
+		return result
+	}
+
 	snapshot(): WorkflowSnapshot {
 		// Pure JSON: identity + the EFFECTIVE status + the ACTUAL override (emitted only when one is
 		// in force) + the `bail` policy this tree ran under + the phases' snapshots in positional
@@ -204,6 +322,30 @@ export class Workflow implements WorkflowInterface {
 	// `#emitFor('failed')` calls this: assert that invariant (§12 programmer-error guard, mirroring
 	// `Runner.#dispatch`) rather than fabricating a synthetic, lineage-degenerate result that would
 	// mask the true cause while still type-checking.
+	// Delegate an `add` to the phase manager and emit `add` (the inserted phase + its final
+	// `at` index) on success — the shared tail of the hooked and un-hooked `add` branches.
+	#addTo(
+		phase: PhaseInterface,
+		index: number | undefined,
+		at: number,
+	): Result<PhaseInterface, WorkflowError> {
+		const result = this.#phases.add(phase, index)
+		if (result.success) this.#emitter.emit('add', result.value, at)
+		return result
+	}
+
+	// The positional index of the live phase `id`, or `-1` when absent — the shared lookup
+	// behind the NATIVE `remove` / `move` / `update` boundary gate.
+	#indexOf(id: string): number {
+		return this.#phases.phases().findIndex((phase) => phase.id === id)
+	}
+
+	// The NATIVE pending-suffix boundary over the live phases' CURRENT statuses — reads
+	// instance state, so it stays a method; the pure reduction itself is `deriveBoundary`.
+	#boundary(): number {
+		return deriveBoundary(this.#phases.phases().map((phase) => phase.status))
+	}
+
 	#failure(): TaskResult {
 		for (const result of this.results()) {
 			if (result.result?.success === false) return result

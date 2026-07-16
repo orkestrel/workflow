@@ -270,3 +270,51 @@ export const workflowStepsShape = objectShape({
 		description: 'The ordered steps to run, one after another (each becomes a one-task phase).',
 	}),
 })
+
+// === Update (patch) shapes — the mutation API's `update` payload validation
+//
+// These shapes validate a {@link import('./types.js').TaskUpdate} /
+// {@link import('./types.js').PhaseUpdate} — a declarative PARTIAL edit to an
+// existing `pending` entity (AGENTS §12), never a full replacement. Every field is
+// therefore optional; a PROVIDED field still carries the same constraint as its
+// creation-time counterpart (`taskShape` / `phaseShape`) so a patch cannot smuggle in
+// an invalid value.
+
+/**
+ * The shape of a {@link import('./types.js').TaskUpdate} — a partial edit to a
+ * `pending` task's `name` / `description`, both optional.
+ *
+ * @remarks
+ * Mirrors {@link taskShape}'s `name` / `description` constraints exactly (a provided
+ * `name` still has `minLength: 1`); never `id` / `run` / `retries` / `timeout` (those
+ * are not patchable fields, AGENTS §12).
+ */
+export const taskUpdateShape = objectShape({
+	name: optionalShape(stringShape({ min: 1, description: 'New task name.' })),
+	description: optionalShape(stringShape({ description: 'New task description.' })),
+})
+
+/**
+ * The shape of a {@link import('./types.js').PhaseUpdate} — a partial edit to a
+ * `pending` phase's `name` / `description` / `concurrency` / `bail`, all optional.
+ *
+ * @remarks
+ * Mirrors {@link phaseShape}'s corresponding field constraints exactly; never `id` /
+ * `tasks` (structural children change through the phase's own `add` / `remove` /
+ * `move`, not a patch, AGENTS §12).
+ */
+export const phaseUpdateShape = objectShape({
+	name: optionalShape(stringShape({ min: 1, description: 'New phase name.' })),
+	description: optionalShape(stringShape({ description: 'New phase description.' })),
+	concurrency: optionalShape(
+		integerShape({
+			min: 1,
+			description: 'Max tasks in flight at once (a resource throttle); omitted leaves it unchanged.',
+		}),
+	),
+	bail: optionalShape(
+		literalShape([true, false], {
+			description: 'Per-phase failure-policy override; omitted leaves it unchanged.',
+		}),
+	),
+})

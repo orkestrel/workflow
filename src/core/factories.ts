@@ -231,10 +231,12 @@ export function restoreWorkflow(
  * untrusted JSON, so a status (or an override) outside
  * {@link import('./constants.js').WORKFLOW_STATUSES} /
  * {@link import('./constants.js').PHASE_STATUSES} / {@link import('./constants.js').TASK_STATUSES},
- * or a non-boolean `bail` (the workflow's OR any phase's — both are REQUIRED persisted policy),
+ * a non-boolean `bail` (the workflow's OR any phase's — both are REQUIRED persisted policy), or a
+ * present-but-invalid phase `concurrency` (not a positive integer),
  * is rejected loudly (naming the offending node) rather than silently producing a broken tree.
- * The `override` is optional, so it is only checked WHEN present. Structural shape beyond these
- * fields is the contract's concern; this guards exactly the fields the live state machine reads back.
+ * The `override` / `concurrency` are optional, so each is only checked WHEN present. Structural
+ * shape beyond these fields is the contract's concern; this guards exactly the fields the live
+ * state machine reads back.
  *
  * @param snapshot - The snapshot to validate
  */
@@ -274,6 +276,15 @@ export function assertSnapshot(snapshot: WorkflowSnapshot): void {
 			throw new WorkflowError('RESTORE', `phase '${phase.id}' has an invalid override`, {
 				phase: phase.id,
 				override: phase.override,
+			})
+		}
+		if (
+			phase.concurrency !== undefined &&
+			(!Number.isInteger(phase.concurrency) || phase.concurrency < 1)
+		) {
+			throw new WorkflowError('RESTORE', `phase '${phase.id}' has an invalid concurrency`, {
+				phase: phase.id,
+				concurrency: phase.concurrency,
 			})
 		}
 		for (const task of phase.tasks) {

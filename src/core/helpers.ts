@@ -210,6 +210,39 @@ export function deriveWorkflowStatus(phases: readonly PhaseDerivation[]): Workfl
 	return 'skipped'
 }
 
+// === Pending-suffix boundary (bottom-up NATIVE mutation gating)
+
+/**
+ * Derive the PENDING SUFFIX boundary of a positional list of {@link LifecycleStatus}es —
+ * the index of the first entry in the contiguous trailing run of `pending` entries.
+ *
+ * @remarks
+ * The native, hook-free replacement for a runner-installed cursor (AGENTS §12): a
+ * {@link import('./types.js').WorkflowInterface}'s `add` / `remove` / `move` / `update`
+ * reads this over its live phases' statuses to decide which positions are safe to edit.
+ * Because entries run SEQUENTIALLY (phases sequential, AGENTS determinism), every
+ * already-started entry forms a contiguous LEADING prefix and every still-`pending`
+ * entry forms the trailing suffix — so the boundary is simply the count of leading
+ * non-`pending` entries: the index of the first `pending` entry, or the full length when
+ * none is `pending` (nothing is safely editable). A `pending` container's entries are ALL
+ * `pending`, so the boundary is `0` and every position is naturally accepted — callers
+ * need no special case for that.
+ *
+ * @param statuses - The positional list of statuses to derive the boundary from
+ * @returns The index of the first `pending` entry, or `statuses.length` when none is `pending`
+ *
+ * @example
+ * ```ts
+ * deriveBoundary(['completed', 'running', 'pending', 'pending']) // 2
+ * deriveBoundary(['pending', 'pending']) // 0
+ * deriveBoundary(['completed', 'completed']) // 2 (nothing pending)
+ * ```
+ */
+export function deriveBoundary(statuses: readonly LifecycleStatus[]): number {
+	const index = statuses.findIndex((status) => status === 'pending')
+	return index === -1 ? statuses.length : index
+}
+
 // === Task state-machine guards (the W-b transition graph + override)
 
 /**
@@ -321,10 +354,12 @@ export function isWorkflowSnapshot(value: unknown): value is WorkflowSnapshot {
  *
  * @remarks
  * The structural fields (`id` / `name` / `description` + the ordered phases / tasks)
- * carry over verbatim; the W-b live tree is the DECLARATIVE state machine, so the
- * execution-only definition fields (per-phase `run` / `concurrency`, per-task `retries` /
- * `timeout`) are intentionally dropped (W-c reads them from the definition when it drives
- * transitions). The `bail` policy carries over — at the workflow tier AND, per phase, the
+ * carry over verbatim, as does each phase's `concurrency` (persisted on the
+ * {@link PhaseSnapshot} so a restore reinstates the same throttle); the W-b live tree is
+ * the DECLARATIVE state machine, so the remaining execution-only definition fields
+ * (per-task `run` / `retries` / `timeout`) are intentionally dropped (W-c reads them from
+ * the definition when it drives transitions). The `bail` policy carries over — at the
+ * workflow tier AND, per phase, the
  * EFFECTIVE policy (`phase.bail ?? workflowBail`) on each {@link PhaseSnapshot} — so the seeded
  * snapshot is self-contained; a fresh seed has no `override`. `created` / `updated` are stamped now.
  * {@link import('./factories.js').createWorkflow} builds from this.
@@ -369,6 +404,7 @@ export function definitionToSnapshot(
  * The snapshot persists the EFFECTIVE failure policy this phase runs under: the phase's own
  * `bail` when it declares one, else the `workflowBail` it inherits — so a restore reinstates
  * the same per-phase policy without a silent default (`effectiveBail = phase.bail ?? workflowBail`).
+ * `concurrency` (the resource throttle) carries over verbatim, omitted when undefined.
  *
  * @param phase - The phase definition to seed from
  * @param workflowBail - The workflow-level `bail` default the phase inherits when it declares none
@@ -384,6 +420,7 @@ export function phaseDefinitionToSnapshot(
 		...(phase.description === undefined ? {} : { description: phase.description }),
 		status: 'pending',
 		bail: phase.bail ?? workflowBail,
+		...(phase.concurrency === undefined ? {} : { concurrency: phase.concurrency }),
 		tasks: phase.tasks.map((task) => taskDefinitionToSnapshot(task)),
 	}
 }

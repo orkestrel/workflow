@@ -8,6 +8,7 @@ import type {
 	TaskResult,
 	TaskSnapshot,
 	TaskStatus,
+	TaskUpdate,
 	WorkflowInterface,
 } from '../types.js'
 import { Emitter } from '@orkestrel/emitter'
@@ -55,6 +56,11 @@ export class Task implements TaskInterface {
 	#status: TaskStatus
 	// The recorded outcome once the task settled with one (`completed` / `failed`), else undefined.
 	#result: TaskResult | undefined
+	// `name` / `description` seed from `#context` but live as independent fields (AGENTS §12) so
+	// `patch` can rename SELF without mutating the immutable lineage `#context` a `TaskResult`
+	// stamps.
+	#name: string
+	#description: string | undefined
 
 	constructor(
 		context: TaskContext,
@@ -77,6 +83,8 @@ export class Task implements TaskInterface {
 		// (`skipped` / `stopped`) already encodes a forced state, so the leaf needs no separate
 		// override field — the override round-trip lives on the DERIVED Phase / Workflow nodes.
 		this.#result = result
+		this.#name = context.name
+		this.#description = context.description
 	}
 
 	get emitter(): EmitterInterface<TaskEventMap> {
@@ -88,11 +96,11 @@ export class Task implements TaskInterface {
 	}
 
 	get name(): string {
-		return this.#context.name
+		return this.#name
 	}
 
 	get description(): string | undefined {
-		return this.#context.description
+		return this.#description
 	}
 
 	get context(): TaskContext {
@@ -164,6 +172,33 @@ export class Task implements TaskInterface {
 		this.#transition('stopped')
 		this.#emitter.emit('stop')
 		this.#escalate()
+	}
+
+	/**
+	 * Apply a validated declarative patch to SELF (`name` / `description`).
+	 *
+	 * @remarks
+	 * Defense-in-depth (AGENTS §12): the owning
+	 * {@link import('../types.js').TaskManagerInterface.update} gates FIRST (target
+	 * exists + `pending`), so this is the second, redundant check — it THROWS a
+	 * `MUTATION` {@link WorkflowError} unless this task's own `status` is `pending`.
+	 *
+	 * @param value - The {@link TaskUpdate} fields to apply
+	 * @example
+	 * ```ts
+	 * task.patch({ name: 'Renamed task' })
+	 * ```
+	 */
+	patch(value: TaskUpdate): void {
+		if (this.#status !== 'pending') {
+			throw new WorkflowError(
+				'MUTATION',
+				`task '${this.id}' cannot be patched while '${this.#status}'`,
+				{ task: this.id, status: this.#status },
+			)
+		}
+		if (value.name !== undefined) this.#name = value.name
+		if (value.description !== undefined) this.#description = value.description
 	}
 
 	snapshot(): TaskSnapshot {
