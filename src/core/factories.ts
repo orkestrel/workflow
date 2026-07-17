@@ -156,6 +156,12 @@ export function createWorkflowDraftContract(): ContractInterface<WorkflowDraft> 
  * `options.phases[id].tasks[id]` (the AGENTS §8 nested-by-id bag). The W-b tree is the
  * state machine ONLY — it does not execute tasks (W-c drives the transitions).
  *
+ * `options.definition` is NOT something a caller sets — {@link createWorkflow} injects the SAME
+ * `definition` it built the snapshot from as the runtime-seed channel, so every task's
+ * {@link import('./types.js').TaskInterface.run} / `retries` / `timeout` is seeded by id
+ * correlation automatically (the tree's declarative shape and its runtime behavior come from
+ * ONE `definition`, never two).
+ *
  * @param definition - The workflow definition to bring to life
  * @param options - Runtime options (initial listeners, `bail` override, per-node options)
  * @returns The live {@link WorkflowInterface} root
@@ -177,11 +183,13 @@ export function createWorkflow(
 	// Seed BOTH tiers of the snapshot with the effective bail (`definitionToSnapshot`'s second arg),
 	// so an `options.bail` override reaches each INHERITING phase's snapshot while a phase with its own
 	// `bail` still wins (`phase.bail ?? bail`) — the per-phase-bail-aware derivation reads each
-	// PhaseSnapshot's bail. `options` is forwarded UNCHANGED (NOT `{ ...options, bail }`): the snapshot
-	// already carries the resolved bail at both tiers, so `Workflow` reads `#bail` from it; injecting a
-	// resolved `bail` here would make `Workflow` treat it as an EXPLICIT uniform override and clobber
-	// per-phase overrides. A caller's genuine `options.bail` stays in `options` and cascades (uniform re-run).
-	return new Workflow(definitionToSnapshot(definition, bail), options)
+	// PhaseSnapshot's bail. `options.bail` itself is forwarded UNCHANGED (NOT overwritten with the
+	// resolved `bail`): the snapshot already carries the resolved bail at both tiers, so `Workflow`
+	// reads `#bail` from it; injecting a resolved `bail` here would make `Workflow` treat it as an
+	// EXPLICIT uniform override and clobber per-phase overrides. A caller's genuine `options.bail`
+	// stays as given and cascades (uniform re-run). `definition` IS injected — the runtime-seed
+	// channel {@link Workflow} threads down to each live task by id correlation.
+	return new Workflow(definitionToSnapshot(definition, bail), { ...options, definition })
 }
 
 /**

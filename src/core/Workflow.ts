@@ -1,6 +1,9 @@
 import type { Result } from '@orkestrel/contract'
+import type { AbortInterface } from '@orkestrel/abort'
 import type { EmitterInterface } from '@orkestrel/emitter'
 import type {
+	DeferredInterface,
+	PhaseDefinition,
 	PhaseDerivation,
 	PhaseInterface,
 	PhaseManagerInterface,
@@ -14,14 +17,18 @@ import type {
 	WorkflowSnapshot,
 	WorkflowStatus,
 } from './types.js'
+import { createAbort } from '@orkestrel/abort'
 import { Emitter } from '@orkestrel/emitter'
 import { WorkflowError } from './errors.js'
 import {
 	buildWorkflowContext,
 	collectResults,
+	createDeferred,
 	deriveBoundary,
 	deriveWorkflowStatus,
+	findPhaseDefinition,
 	isTerminalStatus,
+	phaseDefinitionToSnapshot,
 } from './helpers.js'
 import { Phase } from './phases/Phase.js'
 import { PhaseManager } from './phases/PhaseManager.js'
@@ -62,6 +69,11 @@ import { PhaseManager } from './phases/PhaseManager.js'
  *   {@link import('./helpers.js').deriveBoundary} over the live phases' statuses. A `pending`
  *   workflow's phases are all `pending`, so the boundary is `0` and every position is
  *   naturally accepted.
+ * - **Runtime lifecycle (AGENTS §10).** `pause` / `resume` / `wait` gate execution at the runner's
+ *   phase/task boundaries WITHOUT touching {@link status} — `paused` is runtime-only, never
+ *   persisted. `destroy` is a terminal teardown: it aborts {@link signal}, forces the `stop`
+ *   override when not already terminal, releases any parked {@link wait} waiter, and marks
+ *   {@link destroyed} — all four idempotent.
  */
 export class Workflow implements WorkflowInterface {
 	readonly #context: WorkflowContext
@@ -83,6 +95,15 @@ export class Workflow implements WorkflowInterface {
 	#status: WorkflowStatus
 	// The forced status of a `skip` / `stop`, overriding the derived value; `undefined` ⇒ derived.
 	#override: WorkflowStatus | undefined
+	// This workflow's own cancellation handle (AGENTS core precedent) — `signal` fires on `destroy`.
+	readonly #abort: AbortInterface
+	// RUNTIME-ONLY (never persisted): whether the workflow is currently paused.
+	#paused: boolean
+	// The parked `wait()` gate while paused; `undefined` when not paused — released (resolved) by
+	// `resume` / `stop` / `destroy`.
+	#gate: DeferredInterface<void> | undefined
+	// RUNTIME-ONLY (never persisted): whether `destroy` has torn this workflow down.
+	#destroyed: boolean
 
 	constructor(snapshot: WorkflowSnapshot, options?: WorkflowOptions) {
 		this.#context = buildWorkflowContext(snapshot)
@@ -95,8 +116,14 @@ export class Workflow implements WorkflowInterface {
 		this.#emitter = new Emitter<WorkflowEventMap>({ on: options?.on, error: options?.error })
 		this.#created = snapshot.created
 		this.#updated = snapshot.updated
+		this.#abort = createAbort()
+		this.#paused = false
+		this.#gate = undefined
+		this.#destroyed = false
 		// Build the live phases positionally from the snapshot — each wired to recompute THIS
-		// workflow on a derived-status change, carrying its own per-phase options + restore state.
+		// workflow on a derived-status change, carrying its own per-phase options + restore state,
+		// and — when `options.definition` was supplied (the build-time seed channel) — the
+		// correlated PhaseDefinition, so each of its tasks seeds `run` / `retries` / `timeout`.
 		for (const phase of snapshot.phases) this.#append(phase, options)
 		// Restore the override DIRECTLY from the snapshot's own field (present only when a whole-
 		// workflow skip / stop forced it) — no fragile status-divergence guess. Then seed the
@@ -129,6 +156,18 @@ export class Workflow implements WorkflowInterface {
 		return this.#bail
 	}
 
+	get paused(): boolean {
+		return this.#paused
+	}
+
+	get destroyed(): boolean {
+		return this.#destroyed
+	}
+
+	get signal(): AbortSignal {
+		return this.#abort.signal
+	}
+
 	get status(): WorkflowStatus {
 		// The override wins when forced; otherwise the status is derived from the live phases'
 		// derivations — each phase's status paired with the EFFECTIVE `bail` it ran under, so the
@@ -158,8 +197,11 @@ export class Workflow implements WorkflowInterface {
 
 	stop(): void {
 		// `stop` (AGENTS §10) FORCES the workflow to `stopped` — `stopped` IS a WorkflowEventMap
-		// event, so this emit fires.
+		// event, so this emit fires. Always releases a parked `wait()` waiter (AGENTS §10 — a
+		// permanently-ended workflow has nothing left to pause for).
 		this.#force('stopped')
+		this.#paused = false
+		this.#release()
 	}
 
 	complete(): void {
@@ -169,7 +211,40 @@ export class Workflow implements WorkflowInterface {
 		this.#force('completed')
 	}
 
-	add(phase: PhaseInterface, index?: number): Result<PhaseInterface, WorkflowError> {
+	pause(): void {
+		// Idempotent: a no-op when already paused, terminal, or destroyed — pausing a settled or
+		// torn-down workflow has nothing to suspend.
+		if (this.#paused || isTerminalStatus(this.status) || this.#destroyed) return
+		this.#paused = true
+		this.#gate = createDeferred<void>()
+	}
+
+	resume(): void {
+		// Idempotent: a no-op unless currently paused.
+		if (!this.#paused) return
+		this.#paused = false
+		this.#release()
+	}
+
+	destroy(): void {
+		// Idempotent terminal teardown — calling `destroy` twice never throws.
+		if (this.#destroyed) return
+		this.#destroyed = true
+		this.#abort.abort()
+		// Force the `stop` override unless the workflow already reached a terminal status on its
+		// own (a completed/failed/skipped/stopped tree needs no forced override).
+		if (!isTerminalStatus(this.status)) this.stop()
+		this.#paused = false
+		this.#release()
+	}
+
+	wait(): Promise<void> {
+		// Promise-parked (AGENTS §21), never a timer or busy-loop — resolves immediately when not
+		// paused; while paused, the shared gate resolves on `resume` / `stop` / `destroy`.
+		return this.#paused && this.#gate !== undefined ? this.#gate.promise : Promise.resolve()
+	}
+
+	add(definition: PhaseDefinition, index?: number): Result<PhaseInterface, WorkflowError> {
 		if (isTerminalStatus(this.status)) {
 			return {
 				success: false,
@@ -189,7 +264,7 @@ export class Workflow implements WorkflowInterface {
 				}),
 			}
 		}
-		return this.#addTo(phase, index, at)
+		return this.#addTo(this.#mint(definition), index, at)
 	}
 
 	remove(id: string): Result<PhaseInterface, WorkflowError> {
@@ -355,7 +430,9 @@ export class Workflow implements WorkflowInterface {
 
 	// Build one live phase from its snapshot, threading its per-phase options (keyed by id under
 	// the workflow options) + the explicit workflow bail override (when one was supplied — it
-	// overrides the phase's persisted per-phase bail) and wiring it to recompute THIS workflow on a
+	// overrides the phase's persisted per-phase bail) + the correlated PhaseDefinition (when
+	// `options.definition` was supplied — the build-time seed channel, so the phase's own tasks
+	// seed `run` / `retries` / `timeout` by id) and wiring it to recompute THIS workflow on a
 	// derived-status change.
 	#append(phase: PhaseSnapshot, options: WorkflowOptions | undefined): void {
 		const created = new Phase(
@@ -364,8 +441,33 @@ export class Workflow implements WorkflowInterface {
 			() => this.#recompute(),
 			options?.phases?.[phase.id],
 			this.#bailOverride,
+			findPhaseDefinition(options?.definition, phase.id),
 		)
 		this.#phases.append(created)
+	}
+
+	// MINT a live phase (and its tasks) from a PhaseDefinition for a live `add` — converts it to
+	// an initial PhaseSnapshot (`phaseDefinitionToSnapshot`'s per-phase step, resolving effective
+	// bail as `definition.bail ?? this.#bail`) then builds it via the Phase constructor's OWN
+	// definition-threading, so a live mint and a built/restored phase are wired IDENTICALLY —
+	// same recompute cascade, same emitter hooks, same per-task run/retries/timeout seeding.
+	#mint(definition: PhaseDefinition): Phase {
+		return new Phase(
+			phaseDefinitionToSnapshot(definition, this.#bail),
+			this,
+			() => this.#recompute(),
+			undefined,
+			this.#bailOverride,
+			definition,
+		)
+	}
+
+	// Resolve the parked `wait()` gate (when one exists) and clear it — the shared release step
+	// behind `resume` / `stop` / `destroy` (all three always release a parked waiter).
+	#release(): void {
+		if (this.#gate === undefined) return
+		this.#gate.resolve()
+		this.#gate = undefined
 	}
 
 	// The live phases' derivations, in positional order — each phase's status paired with its

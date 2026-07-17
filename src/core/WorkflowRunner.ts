@@ -3,16 +3,16 @@ import type { AgentInterface, ToolManagerInterface } from '@orkestrel/agent'
 import type { TimeoutInterface } from '@orkestrel/timeout'
 import type {
 	ControllerInterface,
-	PhaseDefinition,
 	PhaseInterface,
 	RunnerInterface,
 	SchedulerInterface,
-	TaskDefinition,
+	TaskForm,
 	TaskInterface,
 	WorkflowAgents,
 	WorkflowDefinition,
 	WorkflowFunctions,
 	WorkflowInterface,
+	WorkflowOptions,
 	WorkflowResult,
 	WorkflowRunOptions,
 	WorkflowRunnerInterface,
@@ -57,16 +57,30 @@ import { Workflow } from './Workflow.js'
  * - **Composes, never re-implements.** Per-phase bounded concurrency is one
  *   {@link createRunner} per phase (the substrate {@link RunnerInterface} over the workers
  *   `Queue`); `bail` maps onto that Runner's fail-fast vs settle-all; the run-level abort /
- *   timeout / budget fold through {@link createAbort} / {@link createTimeout} +
+ *   timeout / budget / entity `signal` fold through {@link createAbort} / {@link createTimeout} +
  *   `AbortSignal.any` (exactly as the agent runtime folds its bounds); pacing is the shipped
  *   {@link SchedulerInterface}. The runner writes ZERO concurrency / retry / abort logic of
  *   its own — it only sequences phases, dispatches a task, and drives the live entity.
- * - **Phases sequential, tasks concurrent.** `#execute` awaits the phases in order (phase
- *   N+1 starts only once phase N has fully settled). Within a phase, ALL its tasks are the
- *   one Runner's `inputs`, run at `concurrency` = the phase's
- *   {@link PhaseDefinition.concurrency} (default {@link DEFAULT_PHASE_CONCURRENCY}).
- * - **Dispatch by name.** `#dispatch` branches on the task's
- *   {@link import('./types.js').TaskForm} (read from the `definition`, correlated by `id`):
+ * - **Two `execute` forms, one engine.** `execute(definition, options)` BUILDS the live tree
+ *   from a {@link WorkflowDefinition} (single source of truth for the `run` / `concurrency`
+ *   metadata); `execute(workflow, options)` DRIVES a caller-owned, ALREADY-BUILT
+ *   {@link WorkflowInterface} instead — the entity-native control surface (AGENTS §10:
+ *   `pause` / `resume` / `add` / `stop` / `destroy` live on the entity itself). Both forms
+ *   converge on the SAME `#execute` engine: neither reads a `WorkflowDefinition` once the tree
+ *   exists — `#dispatch` reads each task's OWN {@link TaskInterface.run} / `retries` /
+ *   `timeout`, and `#runPhase` reads each phase's OWN {@link PhaseInterface.concurrency} /
+ *   `bail`, so a live `add`-minted phase or task (V5) runs under EXACTLY the same rules as one
+ *   built from the original definition.
+ * - **Phases sequential, tasks concurrent — LIVE continuity.** `#execute` drives the phases in
+ *   order, RE-READING `workflow.phases.phases()` every iteration (a cursor over the live
+ *   manager, not a one-time snapshot) so a caller's `workflow.add(phaseDefinition)` mid-run is
+ *   picked up. Within a phase, `#runPhase` subscribes to that phase's `add` event BEFORE
+ *   capturing its task list, then `spawn`s any task added mid-phase onto the SAME substrate
+ *   Runner (so it is actually dispatched, under the same `concurrency`); a task added too late
+ *   for `spawn` to accept (the runner already drained) is swept `skip`ped afterward so the
+ *   phase always reaches a coherent terminal state.
+ * - **Dispatch by name.** `#dispatch` branches on the live task's own
+ *   {@link import('./types.js').TaskInterface.run} ({@link import('./types.js').TaskForm}):
  *   `function` → the {@link WorkflowFunctions} registry, `tool` → the
  *   {@link ToolManagerInterface}, `agent` → the {@link WorkflowAgents} resolver (W-c2). A
  *   handler that is NOT found (an unregistered name for ANY form) AUTO-COMPLETES — the
@@ -86,7 +100,16 @@ import { Workflow } from './Workflow.js'
  *   Under `bail: false` (graceful) a failure `fail`s the leaf and RESOLVES (never throws), so
  *   the Runner settles every unit (allSettled) and the run finishes (the workflow derives
  *   `completed`, the failure recorded in the result tree).
- * - **Abort / Timeout / Budget fold.** `#execute` folds the run's external `signal`, a
+ * - **Pause / stop / destroy gates.** `workflow.pause()` is honoured at exactly two points —
+ *   the next phase boundary and each task's own pre-dispatch (before `task.start()`) — by
+ *   parking on {@link WorkflowInterface.wait}; an in-flight task body is NEVER suspended
+ *   mid-flight. A GRACEFUL `workflow.stop()` (no signal involved) is caught at those same two
+ *   gates: not-yet-started work is `skip`ped, in-flight work finishes naturally. A HARD
+ *   `workflow.destroy()` aborts {@link WorkflowInterface.signal}, which `#fold` has folded
+ *   into the run's composed signal — so it cancels the active phase Runner (and every
+ *   in-flight task) exactly like an external abort / timeout / budget fire.
+ * - **Abort / Timeout / Budget / entity-signal fold.** `#execute` folds the live workflow's
+ *   own {@link WorkflowInterface.signal}, the run's external `signal`, a
  *   {@link TimeoutInterface}, and the `@orkestrel/budget` package's `BudgetInterface`'s
  *   `signal` into one `runSignal` (`AbortSignal.any`); a fire aborts the active phase's Runner
  *   (cancelling every in-flight task) and HALTS the run — the remaining tasks / phases `skip`
@@ -122,7 +145,84 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 		this.#workflowTool = workflowTool
 	}
 
-	execute(definition: WorkflowDefinition, options?: WorkflowRunOptions): Promise<WorkflowResult> {
+	/**
+	 * Execute a workflow definition to completion — BUILD its live tree, run the phases
+	 * sequentially with each phase's tasks concurrent — resolving its terminal
+	 * {@link WorkflowResult} (whose `workflow` is the freshly-built live tree).
+	 *
+	 * @remarks
+	 * One-shot. The runner BUILDS the live tree from `definition` internally (one source of
+	 * truth — the per-task {@link TaskForm} (`run`) and per-phase `concurrency` come from the
+	 * same definition the tree is constructed from, so the executed tree can never drift from
+	 * the form/throttle metadata). The {@link WorkflowOptions} part of `options` (initial `on`
+	 * listeners, a `bail` override, the per-node `phases` bag) is forwarded to the build.
+	 * Under `bail: false` (graceful) every task settles (a failure is recorded on its
+	 * {@link TaskInterface}) and the workflow reaches `completed`; under `bail: true` (halt)
+	 * the first failure aborts the in-flight sibling tasks AND `skip`s the remaining tasks /
+	 * phases, settling the workflow `failed`. A {@link WorkflowRunOptions} abort / timeout /
+	 * budget fires every in-flight task's signal and `stop`s the run. `execute` resolves
+	 * (never rejects) on a cancel — the partial outcome is read from the returned
+	 * {@link WorkflowResult} (its `workflow` / `status` / `results`).
+	 *
+	 * @param definition - The {@link WorkflowDefinition} to build the live tree from and drive
+	 * @param options - The construction options ({@link WorkflowOptions}: `on` / `bail` /
+	 *   `phases`) PLUS the per-run bounds (`signal` / `timeout` / `budget`)
+	 * @returns The run's terminal {@link WorkflowResult} (its `workflow` is the built tree)
+	 * @example
+	 * ```ts
+	 * const result = await runner.execute(definition, { timeout: 5_000 })
+	 * result.status // 'completed' | 'failed' | 'stopped'
+	 * ```
+	 */
+	execute(definition: WorkflowDefinition, options?: WorkflowRunOptions): Promise<WorkflowResult>
+	/**
+	 * Drive an ALREADY-BUILT, CALLER-OWNED live {@link WorkflowInterface} — the entity-native
+	 * counterpart to the definition-building {@link execute} overload.
+	 *
+	 * @remarks
+	 * `createWorkflow` mints the live tree, this overload drives it, and the caller controls
+	 * the SAME entity mid-run via its own `pause` / `resume` / `add` / `stop` / `destroy`
+	 * (AGENTS §10). Requires `workflow.status === 'pending'` and `!workflow.destroyed` —
+	 * otherwise this is a programmer-timing error and it THROWS a `TRANSITION`
+	 * {@link WorkflowError} (AGENTS §12) rather than silently no-opping or building a second
+	 * tree. Once accepted, observable semantics are byte-identical to the `definition` form —
+	 * except the phase loop RE-READS the live tree every iteration, so a caller's live `add`
+	 * mid-run is picked up and actually dispatched. `options` carries only the per-run bounds
+	 * (`signal` / `timeout` / `budget` / `depth` / `ancestry`) — the construction half of
+	 * {@link WorkflowRunOptions} does not apply, since the tree already exists.
+	 *
+	 * @param workflow - The live {@link WorkflowInterface} to drive
+	 * @param options - The per-run bounds (`signal` / `timeout` / `budget`)
+	 * @returns The run's terminal {@link WorkflowResult} (its `workflow` is the SAME entity passed in)
+	 * @example
+	 * ```ts
+	 * const workflow = createWorkflow(definition)
+	 * const run = runner.execute(workflow)
+	 * workflow.pause()
+	 * workflow.resume()
+	 * await run
+	 * ```
+	 */
+	execute(
+		workflow: WorkflowInterface,
+		options?: Omit<WorkflowRunOptions, keyof WorkflowOptions>,
+	): Promise<WorkflowResult>
+	execute(
+		target: WorkflowDefinition | WorkflowInterface,
+		options?: WorkflowRunOptions,
+	): Promise<WorkflowResult> {
+		if (this.#isWorkflow(target)) {
+			if (target.status !== 'pending' || target.destroyed) {
+				throw new WorkflowError('TRANSITION', `workflow '${target.id}' is not drivable`, {
+					id: target.id,
+					status: target.status,
+					destroyed: target.destroyed,
+				})
+			}
+			const depth = options?.depth ?? 0
+			const ancestry = [...(options?.ancestry ?? []), workflowTag(target.id)]
+			return this.#execute(target, options, depth, ancestry)
+		}
 		// SINGLE SOURCE OF TRUTH: build the live tree from the SAME definition we drive, so the
 		// executed entity can never drift from the `run` form / `concurrency` metadata. The
 		// WorkflowOptions half (initial `on` listeners + a `bail` override + the per-node `phases`
@@ -132,36 +232,43 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 		// The tree is built DIRECTLY (not via `createWorkflow`) so the runner never imports its own
 		// module's factory — preserving this codebase's factories→classes direction (no
 		// class↔factory cycle).
-		const bail = options?.bail ?? definition.bail ?? DEFAULT_BAIL
+		const bail = options?.bail ?? target.bail ?? DEFAULT_BAIL
 		// Seed BOTH tiers of the snapshot with the effective bail (`definitionToSnapshot`'s 2nd arg) so
 		// an `options.bail` override reaches each INHERITING phase's snapshot (a per-phase `bail` still
-		// wins). `options` is forwarded UNCHANGED (NOT `{ ...options, bail }`): the snapshot already
-		// carries the resolved bail at both tiers, so `Workflow` reads `#bail` from it; injecting a
-		// resolved `bail` would make `Workflow` treat it as an EXPLICIT uniform override and clobber the
-		// per-phase overrides. A caller's genuine `options.bail` stays in `options` and cascades uniformly.
-		const workflow = new Workflow(definitionToSnapshot(definition, bail), options)
+		// wins). `options.bail` itself is forwarded UNCHANGED (NOT overwritten with the resolved
+		// `bail`): the snapshot already carries the resolved bail at both tiers, so `Workflow` reads
+		// `#bail` from it; injecting a resolved `bail` would make `Workflow` treat it as an EXPLICIT
+		// uniform override and clobber the per-phase overrides. A caller's genuine `options.bail` stays
+		// as given and cascades uniformly. `target` IS injected as `definition` — the runtime-seed
+		// channel (V4) `Workflow` threads down to each live task by id correlation, so `#dispatch`
+		// reading `task.run` (V7) sees exactly the same behavior the old definition-correlation did.
+		const workflow = new Workflow(definitionToSnapshot(target, bail), {
+			...options,
+			definition: target,
+		})
 		// This run's depth (default 0) and the ancestry every task inherits — the run's own
 		// `workflow:<id>` added so a nested workflow that re-enters this same id is a detectable
 		// cycle. A top-level caller omits both; the bound workflow tool supplies them, incremented.
 		const depth = options?.depth ?? 0
-		const ancestry = [...(options?.ancestry ?? []), workflowTag(definition.id)]
-		return this.#execute(workflow, definition, options, depth, ancestry)
+		const ancestry = [...(options?.ancestry ?? []), workflowTag(target.id)]
+		return this.#execute(workflow, options, depth, ancestry)
 	}
 
 	// Drive the whole tree: arm the run-level bounds (the folded abort), run the phases
-	// SEQUENTIALLY, then assemble the terminal result. A run-level cancel halts the loop and
-	// force-`stop`s the workflow; otherwise the workflow's derived status is the outcome. The
-	// active-Runner `holder` is LOCAL (re-entrant-safe — a nested execute gets its own).
+	// SEQUENTIALLY — re-reading the live phase list every iteration (live continuity, V7) — then
+	// assemble the terminal result. A run-level cancel (incl. `workflow.destroy()`, folded into
+	// `runSignal`) halts the loop and force-`stop`s the workflow; a graceful `workflow.stop()`
+	// (no signal) is caught at the same halt check without forcing anything (it is already the
+	// terminal status). The active-Runner `holder` is LOCAL (re-entrant-safe).
 	async #execute(
 		workflow: WorkflowInterface,
-		definition: WorkflowDefinition,
 		options: WorkflowRunOptions | undefined,
 		depth: number,
 		ancestry: readonly string[],
 	): Promise<WorkflowResult> {
-		// Arm the deadline + budget and fold every present bound into ONE run signal the tasks
-		// race against — the same fold the agent runtime uses (`AbortSignal.any` of external
-		// signal + deadline + budget), so a fire of any cancels every in-flight task.
+		// Arm the deadline + budget and fold every present bound — INCLUDING the live workflow's
+		// own `signal` (fires on `destroy`) — into ONE run signal the tasks race against, the same
+		// fold the agent runtime uses. A fire of any cancels every in-flight task.
 		// Arm the deadline ONLY for a strictly-positive `timeout`: a non-positive value (`0` or
 		// negative) means NO deadline (honouring the WorkflowRunOptions.timeout contract), so
 		// `0` must NOT cancel the run on the next tick.
@@ -169,54 +276,61 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 		const timeout = ms !== undefined && ms > 0 ? createTimeout({ ms }) : undefined
 		timeout?.start()
 		options?.budget?.start()
-		const runSignal = this.#fold(options, timeout)
+		const runSignal = this.#fold(workflow, options, timeout)
 		// On a run-level cancel, abort the ACTIVE phase's Runner (cancelling its in-flight tasks).
 		// The active Runner is swapped per phase via the LOCAL holder; a closure over it always
 		// fires the current one. A one-shot listener (the run halts once); cleared in the `finally`.
 		const holder: { runner: RunnerInterface<TaskInterface, void> | undefined } = {
 			runner: undefined,
 		}
-		const onCancel = (): void => holder.runner?.abort(runSignal?.reason)
-		if (runSignal !== undefined) {
-			if (runSignal.aborted) onCancel()
-			else runSignal.addEventListener('abort', onCancel, { once: true })
-		}
+		const onCancel = (): void => holder.runner?.abort(runSignal.reason)
+		if (runSignal.aborted) onCancel()
+		else runSignal.addEventListener('abort', onCancel, { once: true })
 		try {
-			const phases = workflow.phases.phases()
-			for (let index = 0; index < phases.length; index += 1) {
+			let index = 0
+			for (;;) {
+				// Re-read the live phase list every iteration (a cursor, not a one-time snapshot) —
+				// a caller's `workflow.add(phaseDefinition)` mid-run extends this and is picked up.
+				const phases = workflow.phases.phases()
+				if (index >= phases.length) break
 				const phase = phases[index]
-				if (phase === undefined) continue
-				// A run-level cancel (or a prior bail-true failure that left the workflow non-running)
-				// HALTS the loop: skip THIS and every remaining phase's tasks, then break. Read the
-				// cancel state fresh (the signal may have fired during the previous phase).
+				if (phase === undefined) {
+					index += 1
+					continue
+				}
+				// A run-level cancel, OR the workflow already reached a terminal status (a prior
+				// bail-true failure, or a GRACEFUL `workflow.stop()` the caller invoked directly):
+				// HALT the loop — skip THIS and every remaining phase's tasks, then break.
 				if (this.#cancelled(runSignal) || this.#halted(workflow)) {
 					this.#skipFrom(phases, index)
 					break
 				}
-				// Run the phase to settlement. Under bail-true it REJECTS on the first failure
-				// (fail-fast) — skip the remaining phases; otherwise it settles all and continues.
-				const failed = await this.#runPhase(
-					workflow,
-					phase,
-					this.#phaseOf(definition, phase.id),
-					runSignal,
-					holder,
-					depth,
-					ancestry,
-				)
-				if (failed) {
-					this.#skipFrom(phases, index + 1)
+				// The phase-boundary pause gate (AGENTS §10): park until resumed / stopped /
+				// destroyed, then re-check the halt state fresh (a `stop` / `destroy` may have
+				// landed while parked) before starting the phase.
+				if (workflow.paused) await workflow.wait()
+				if (this.#cancelled(runSignal) || this.#halted(workflow)) {
+					this.#skipFrom(workflow.phases.phases(), index)
 					break
 				}
-				// Pace BETWEEN phases (never after the last) — the cooperative host yield, the
-				// shipped scheduler honouring the run signal (an aborted yield rejects, handled). A
-				// cancel during the phase skips pacing (the next iteration's halt guard handles it).
-				if (index < phases.length - 1 && !this.#cancelled(runSignal)) {
+				// Run the phase to settlement. Under bail-true it REJECTS on the first failure
+				// (fail-fast) — skip the remaining phases; otherwise it settles all and continues.
+				const failed = await this.#runPhase(workflow, phase, runSignal, holder, depth, ancestry)
+				if (failed) {
+					this.#skipFrom(workflow.phases.phases(), index + 1)
+					break
+				}
+				index += 1
+				// Pace BETWEEN phases (never after the last, read from the LIVE count) — the
+				// cooperative host yield, the shipped scheduler racing the run signal. Only an
+				// abort-caused rejection is swallowed (the halt guard handles it next iteration);
+				// any other scheduler error is a genuine fault and re-thrown.
+				const remaining = workflow.phases.phases()
+				if (index < remaining.length && !this.#cancelled(runSignal)) {
 					try {
-						await this.#scheduler.yield(runSignal === undefined ? undefined : { signal: runSignal })
-					} catch {
-						// An aborted yield rejects with the run signal's reason — a cancel, not an error;
-						// the next loop iteration's halt guard skips the rest.
+						await this.#scheduler.yield({ signal: runSignal })
+					} catch (error) {
+						if (!runSignal.aborted) throw error
 					}
 				}
 			}
@@ -237,7 +351,7 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 			return { workflow, status: workflow.status, results: workflow.results() }
 		} finally {
 			timeout?.clear()
-			runSignal?.removeEventListener('abort', onCancel)
+			runSignal.removeEventListener('abort', onCancel)
 		}
 	}
 
@@ -246,83 +360,104 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 	// settle-all AND for a run-level cancel (which is NOT a phase failure; `#execute`'s halt
 	// guard handles the skip + the workflow `stop`). The Runner provides bounded concurrency +
 	// the fail-fast abort cascade; this handler only drives the live task entity.
+	//
+	// LIVE continuity (V7): subscribes to the phase's `add` event BEFORE capturing its task
+	// list, so a task minted onto this phase mid-run (`phase.add`) is picked up — `spawn`ed onto
+	// the SAME substrate Runner the declared tasks run on, under the same `concurrency`. A
+	// `spawn` that the Runner can no longer accept (the tight drain-race window its own doc
+	// describes) returns `undefined`, tolerated here — the `finally` sweep below `skip`s any
+	// task STILL `pending` after the phase settles, so the phase always reaches a coherent
+	// terminal state regardless of that race.
 	async #runPhase(
 		workflow: WorkflowInterface,
 		phase: PhaseInterface,
-		definition: PhaseDefinition | undefined,
-		runSignal: AbortSignal | undefined,
+		runSignal: AbortSignal,
 		holder: { runner: RunnerInterface<TaskInterface, void> | undefined },
 		depth: number,
 		ancestry: readonly string[],
 	): Promise<boolean> {
-		const tasks = phase.tasks.tasks()
-		if (tasks.length === 0) return false
-		// The EFFECTIVE per-phase failure policy: the phase definition's own `bail` when it declares
-		// one, else the workflow default (`effectiveBail = phase.bail ?? workflow.bail`). This single
-		// line drives the halt — `bail` is threaded into every `#runTask`, so a strict phase fail-fasts
-		// even under a graceful workflow, and a graceful phase settles-all even under a strict one.
-		const bail = definition?.bail ?? workflow.bail
-		// Clamp a non-positive `concurrency` (a hand-built definition not validated by the contract,
-		// which enforces `>= 1`, could carry `0` / negative) to the default — a non-positive throttle
-		// means "no throttle declared" ⇒ run them all, never a broken Runner (createRunner requires a
-		// positive integer, flooring at 1; passing 0 here would silently serialize, not "run all").
-		const concurrency =
-			definition?.concurrency !== undefined && definition.concurrency > 0
-				? definition.concurrency
-				: DEFAULT_PHASE_CONCURRENCY
-		// The substrate Queue retries a failed task by RE-INVOKING its handler (`#runTask`), so the
-		// leaf must survive a failed attempt to recover on a later one. This run-local map counts each
-		// task's attempts (by id) so `#runTask` can DEFER the leaf `fail` until the FINAL attempt
-		// (`attempt > retries`) — an intermediate failure re-throws (driving the Queue's retry) WITHOUT
-		// terminating the leaf, so a subsequent success can still `complete` it. A no-retry task's first
-		// attempt IS its final one, so this reduces to today's behavior exactly. Fresh per phase run.
-		const attempts = new Map<string, number>()
-		const runner = new Runner<TaskInterface, void>({
-			concurrency,
-			// Thread each task's per-entry `retries` / `timeout` overrides (Seam A) from its definition
-			// into the substrate unit — the Part-0 resolver. The phase Runner's defaults are the
-			// (unset) runner-level retries/timeout, so a task that declares neither behaves exactly as
-			// before; one that declares them OVERRIDES the queue default for that unit alone.
-			entries: (task) => {
-				const def = this.#taskOf(definition, task.id)
-				return { retries: def?.retries, timeout: def?.timeout }
-			},
-			handler: (controller) =>
-				this.#runTask(
-					workflow,
-					controller.input,
-					this.#taskOf(definition, controller.input.id),
-					controller,
-					runSignal,
-					bail,
-					attempts,
-					depth,
-					ancestry,
-				),
-		})
-		holder.runner = runner
+		const launched = new Set<string>()
+		let runner: RunnerInterface<TaskInterface, void> | undefined
+		const onAdd = (task: TaskInterface): void => {
+			if (launched.has(task.id)) return
+			launched.add(task.id)
+			runner?.spawn(task)
+		}
+		phase.emitter.on('add', onAdd)
 		try {
-			// The Runner sequences + bounds the work; its ordered results are unused (the OUTCOME
-			// lives on each live task). Under bail-true the FIRST failure rejects this — fail-fast.
-			await runner.execute(tasks)
-			return false
-		} catch {
-			// The phase Runner rejected. Two causes reject it: a bail-true fail-fast (a task threw,
-			// so the Runner aborted the siblings) — a genuine phase failure, report `true` so
-			// `#execute` skips the rest (the failing leaf already `fail`ed). OR a run-level cancel I
-			// forwarded (`onCancel` → `runner.abort`) — NOT a phase failure: report `false` and let
-			// `#execute`'s halt guard skip the remaining phases + force the workflow `stop`.
-			return !this.#cancelled(runSignal)
+			const tasks = phase.tasks.tasks()
+			for (const task of tasks) launched.add(task.id)
+			if (tasks.length === 0) return false
+			// The EFFECTIVE per-phase failure policy and resource throttle are read straight off the
+			// LIVE phase (V7): `phase.bail` is already the resolved `phase.bail ?? workflow.bail`, and
+			// `phase.concurrency` mirrors the definition/mint it was built from — no definition
+			// correlation needed. Clamp a non-positive concurrency (unbounded / not validated) to the
+			// default — a non-positive throttle means "no throttle declared" ⇒ run them all.
+			const bail = phase.bail
+			const concurrency =
+				phase.concurrency !== undefined && phase.concurrency > 0
+					? phase.concurrency
+					: DEFAULT_PHASE_CONCURRENCY
+			// The substrate Queue retries a failed task by RE-INVOKING its handler (`#runTask`), so the
+			// leaf must survive a failed attempt to recover on a later one. This run-local map counts each
+			// task's attempts (by id) so `#runTask` can DEFER the leaf `fail` until the FINAL attempt
+			// (`attempt > retries`) — an intermediate failure re-throws (driving the Queue's retry) WITHOUT
+			// terminating the leaf, so a subsequent success can still `complete` it. A no-retry task's first
+			// attempt IS its final one, so this reduces to today's behavior exactly. Fresh per phase run.
+			const attempts = new Map<string, number>()
+			const created = new Runner<TaskInterface, void>({
+				concurrency,
+				// Thread each task's OWN `retries` / `timeout` (seeded at construction, V3/V4) into the
+				// substrate unit. The phase Runner's defaults are the (unset) runner-level retries/timeout,
+				// so a task with neither behaves exactly as before; one that declares them OVERRIDES the
+				// queue default for that unit alone.
+				entries: (task) => ({ retries: task.retries, timeout: task.timeout }),
+				handler: (controller) =>
+					this.#runTask(
+						workflow,
+						controller.input,
+						controller,
+						runSignal,
+						bail,
+						attempts,
+						depth,
+						ancestry,
+					),
+			})
+			runner = created
+			holder.runner = created
+			try {
+				// The Runner sequences + bounds the work; its ordered results are unused (the OUTCOME
+				// lives on each live task). Under bail-true the FIRST failure rejects this — fail-fast.
+				await created.execute(tasks)
+				return false
+			} catch {
+				// The phase Runner rejected. Two causes reject it: a bail-true fail-fast (a task threw,
+				// so the Runner aborted the siblings) — a genuine phase failure, report `true` so
+				// `#execute` skips the rest (the failing leaf already `fail`ed). OR a run-level cancel I
+				// forwarded (`onCancel` → `runner.abort`) — NOT a phase failure: report `false` and let
+				// `#execute`'s halt guard skip the remaining phases + force the workflow `stop`.
+				return !this.#cancelled(runSignal)
+			} finally {
+				created.destroy()
+				holder.runner = undefined
+			}
 		} finally {
-			runner.destroy()
-			holder.runner = undefined
+			phase.emitter.off('add', onAdd)
+			// Coherent terminal state (V7): a task minted too late for `spawn` to accept (the
+			// drain-race window) is left `pending` with nothing driving it — sweep it `skip`ped now.
+			// A no-op for every task the substrate already settled (terminal statuses ignore `skip`).
+			for (const task of phase.tasks.tasks()) this.#skip(task)
 		}
 	}
 
 	// Run ONE task: drive the live entity through its transitions around a dispatch by name.
 	// `start` (once), dispatch, then `complete(value)` on a returned value or `fail(error)` on a
 	// FINAL-attempt failure. A genuine CANCEL (`#skipping` — a run-level bound, or a sibling's
-	// fail-fast under bail-true) `skip`s the task instead.
+	// fail-fast under bail-true) `skip`s the task instead; a GRACEFUL `workflow.stop()` reaching
+	// this pre-dispatch gate likewise `skip`s a not-yet-started task (V7) without touching an
+	// in-flight one (checked ONLY here, before `task.start()` — never in the post-dispatch
+	// checks below, so a task already running when `stop()` lands finishes naturally).
 	//
 	// THREE abort causes reach this task's signal and MUST be told apart (the substrate folds all
 	// three onto the attempt signal `controller.signal`):
@@ -330,8 +465,9 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 	//    the unit `Abort` (`controller.aborted`) nor `runSignal`;
 	//  • a SIBLING fail-fast under bail (the Runner aborts in-flight siblings on a failure) — aborts
 	//    the unit `Abort` ⇒ `controller.aborted`;
-	//  • a run-level CANCEL (abort / run-timeout / budget) — fires `runSignal` (and, forwarded through
-	//    the phase Runner's abort, the unit `Abort` too).
+	//  • a run-level CANCEL (abort / timeout / budget / `workflow.destroy()`, all folded into
+	//    `runSignal`) — fires `runSignal` (and, forwarded through the phase Runner's abort, the unit
+	//    `Abort` too).
 	// So `#skipping` (`controller.aborted || runSignal.aborted`) is the genuine-cancel discriminator,
 	// and a BARE timeout is `signal.aborted && !#skipping` — a RETRYABLE FAILURE of this attempt, NOT
 	// a skip: it joins the retry-cooperative path below (non-final ⇒ leaf stays `running` for the
@@ -350,9 +486,8 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 	async #runTask(
 		workflow: WorkflowInterface,
 		task: TaskInterface,
-		definition: TaskDefinition | undefined,
 		controller: ControllerInterface<TaskInterface, void>,
-		runSignal: AbortSignal | undefined,
+		runSignal: AbortSignal,
 		bail: boolean,
 		attempts: Map<string, number>,
 		depth: number,
@@ -370,15 +505,19 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 		// the final attempt, so an earlier failure/timeout leaves the leaf `running` to retry.
 		const attempt = (attempts.get(task.id) ?? 0) + 1
 		attempts.set(task.id, attempt)
-		const retries = Math.max(0, definition?.retries ?? 0)
+		const retries = Math.max(0, task.retries ?? 0)
 		const last = attempt > retries
+		// The per-task pause gate (AGENTS §10), BEFORE `start` — an in-flight task body is never
+		// suspended, so this is the only place a paused workflow holds a task back.
+		if (workflow.paused) await workflow.wait()
 		// `start` only the FIRST time (a retry re-invokes this on the still-`running` leaf — a second
 		// `start` would be an illegal `running → running` transition).
 		if (task.status === 'pending') task.start()
-		// A genuine CANCEL that landed BEFORE dispatch (a run-level bound, or a sibling fail-fast): skip
-		// without running the handler — the run is halting. A bare per-attempt timeout cannot precede
-		// dispatch (its deadline is armed as the attempt begins), so it is excluded from this skip.
-		if (this.#skipping(controller, runSignal)) {
+		// A genuine CANCEL that landed BEFORE dispatch (a run-level bound, or a sibling fail-fast), OR
+		// a GRACEFUL `workflow.stop()` the caller invoked directly (V7 — no signal involved): skip
+		// without running the handler. A bare per-attempt timeout cannot precede dispatch (its
+		// deadline is armed as the attempt begins), so it is excluded from this skip.
+		if (this.#skipping(controller, runSignal) || this.#halted(workflow)) {
 			this.#skip(task)
 			return
 		}
@@ -388,7 +527,7 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 			workflow.results(),
 		)
 		try {
-			const value = await this.#dispatch(definition, handle, depth, ancestry)
+			const value = await this.#dispatch(task.run, handle, depth, ancestry)
 			// A genuine cancel during the handler, OR the runner already swept this task terminal on a
 			// run-level cancel (the substrate raced this slow handler out): do NOT record a misleading
 			// `complete` — `#skip` is a guarded no-op on an already-settled task, and skips a
@@ -443,22 +582,23 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 		task.fail(new Error(`task '${task.id}' timed out`))
 	}
 
-	// Dispatch a task BY NAME on its `run.via` form:
+	// Dispatch a task BY NAME on its OWN `run` (TaskInterface.run — seeded at construction, V3/V4,
+	// never a separate definition correlation) via its `via` form:
 	//  • `function` → the WorkflowFunctions registry, invoked with the TaskController.
 	//  • `tool`     → the ToolManager, invoked with the task's input; a tool result's `error`
-	//                 (the manager isolates a throw into one) is re-thrown so the leaf `fail`s.
+	//                 (the manager isolates a throw into one) is re-thrown so the leaf `fail`s,
+	//                 preserving the original message as the thrown Error's `cause`.
 	//  • `agent`    → the WorkflowAgents resolver (W-c2), behind the depth + cycle guard; the
 	//                 resolved subagent runs to its result (folding the task's cancellation),
 	//                 returned as the task's completed value. An over-deep / cyclic agent task
 	//                 THROWS a typed `DEPTH` WorkflowError (→ the leaf `fail`s).
 	//  • not found  → AUTO-COMPLETE (resolve `undefined`): the ROADMAP no-handler rule.
 	async #dispatch(
-		definition: TaskDefinition | undefined,
+		form: TaskForm | undefined,
 		controller: TaskController,
 		depth: number,
 		ancestry: readonly string[],
 	): Promise<unknown> {
-		const form = definition?.run
 		if (form !== undefined && isFunctionTask(form)) {
 			const handler = this.#functions[form.name]
 			if (handler !== undefined) return handler(controller)
@@ -479,8 +619,8 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 			})
 			// A `tool` result NEVER throws — the manager isolates a handler throw into `result.error`.
 			// Surface that as a task failure (so a failing tool `fail`s the leaf, honouring `bail`),
-			// else return the value as the task's completed outcome.
-			if (result.error !== undefined) throw new Error(result.error)
+			// preserving the original message as `cause` so a catcher can inspect it directly.
+			if (result.error !== undefined) throw new Error(result.error, { cause: result.error })
 			return result.value
 		}
 		if (form !== undefined && isAgentTask(form)) {
@@ -568,29 +708,30 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 		}
 	}
 
-	// The per-task folded signal: ANY-combine the substrate per-unit signal with the run signal
-	// (when present), via the shipped `createAbort` parent-linking (`AbortSignal.any`). No
-	// hand-rolled listener wiring — the abort primitive owns the fold.
-	#taskSignal(unitSignal: AbortSignal, runSignal: AbortSignal | undefined): AbortSignal {
-		if (runSignal === undefined) return unitSignal
+	// The per-task folded signal: ANY-combine the substrate per-unit signal with the run signal, via
+	// the shipped `createAbort` parent-linking (`AbortSignal.any`). No hand-rolled listener wiring —
+	// the abort primitive owns the fold. `runSignal` is always present (V7 — it always folds in the
+	// live workflow's own signal), so there is no longer a bare-`unitSignal` shortcut to take.
+	#taskSignal(unitSignal: AbortSignal, runSignal: AbortSignal): AbortSignal {
 		const abort: AbortInterface = createAbort({ signal: AbortSignal.any([unitSignal, runSignal]) })
 		return abort.signal
 	}
 
-	// Fold the run-level bounds into ONE signal — the external `signal`, the deadline, and the
-	// budget combined via `AbortSignal.any` (the agent runtime's `#parents` pattern). A lone
-	// present bound is returned directly; none ⇒ `undefined` (no run-level cancellation).
+	// Fold the run-level bounds into ONE signal — the LIVE workflow's own `signal` (fires on
+	// `destroy`, V7), the run's external `signal`, the deadline, and the budget, combined via
+	// `AbortSignal.any` (the agent runtime's `#parents` pattern). The workflow's signal is always
+	// present, so this always returns a defined signal (never `undefined`) — a workflow that is
+	// never `destroy`ed simply never fires it, so a bounds-free run is unaffected.
 	#fold(
+		workflow: WorkflowInterface,
 		options: WorkflowRunOptions | undefined,
 		timeout: TimeoutInterface | undefined,
-	): AbortSignal | undefined {
-		const signals: AbortSignal[] = []
+	): AbortSignal {
+		const signals: AbortSignal[] = [workflow.signal]
 		if (options?.signal !== undefined) signals.push(options.signal)
 		if (timeout !== undefined) signals.push(timeout.signal)
 		if (options?.budget !== undefined) signals.push(options.budget.signal)
-		if (signals.length === 0) return undefined
-		if (signals.length === 1) return signals[0]
-		return AbortSignal.any(signals)
+		return signals.length === 1 ? signals[0] : AbortSignal.any(signals)
 	}
 
 	// Skip every not-yet-settled task across phases `index..end` — the halt path (a run-level
@@ -611,29 +752,26 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 	}
 
 	// Whether an in-flight task is being GENUINELY CANCELLED (and so should `skip`), as opposed to
-	// merely TIMED OUT (which retries / fails). Three causes can fire a task's attempt signal; only
-	// two are cancels: the unit `Abort` — `controller.aborted` — fired by a SIBLING fail-fast under
-	// bail OR by a run-level cancel I forwarded through the phase Runner's abort; and the run signal
-	// directly (`runSignal.aborted`). A per-attempt TIMEOUT fires NEITHER (it aborts only the deadline
-	// portion of the attempt signal, never the unit `Abort` nor the run signal), so it is excluded —
-	// the precise discriminator that keeps a timeout off the skip path. A fresh read each call so it
-	// reflects a cancel that landed mid-dispatch.
-	#skipping(
-		controller: ControllerInterface<TaskInterface, void>,
-		runSignal: AbortSignal | undefined,
-	): boolean {
-		return controller.aborted || runSignal?.aborted === true
+	// merely TIMED OUT (which retries / fails). Two causes fire a task's attempt signal as a genuine
+	// cancel: the unit `Abort` — `controller.aborted` — fired by a SIBLING fail-fast under bail OR by
+	// a run-level cancel I forwarded through the phase Runner's abort; and the run signal directly
+	// (`runSignal.aborted`, which now also covers `workflow.destroy()`, V7). A per-attempt TIMEOUT
+	// fires NEITHER (it aborts only the deadline portion of the attempt signal, never the unit `Abort`
+	// nor the run signal), so it is excluded — the precise discriminator that keeps a timeout off the
+	// skip path. A fresh read each call so it reflects a cancel that landed mid-dispatch.
+	#skipping(controller: ControllerInterface<TaskInterface, void>, runSignal: AbortSignal): boolean {
+		return controller.aborted || runSignal.aborted
 	}
 
-	// Whether the run-level signal has fired (a fresh read, so it reflects an abort that landed
-	// during a phase) — `false` when there is no run signal at all.
-	#cancelled(runSignal: AbortSignal | undefined): boolean {
-		return runSignal?.aborted === true
+	// Whether the run-level signal has fired (a fresh read, so it reflects an abort — incl. a
+	// `workflow.destroy()`, V7 — that landed during a phase).
+	#cancelled(runSignal: AbortSignal): boolean {
+		return runSignal.aborted
 	}
 
 	// Whether the workflow is no longer runnable — its derived status has reached a terminal
-	// state (a bail-true failure flipped it to `failed`, or a force `skip` / `stop`), so the
-	// remaining phases must not start.
+	// state (a bail-true failure flipped it to `failed`, a GRACEFUL `workflow.stop()` the caller
+	// invoked directly, or a force `skip`), so the remaining / not-yet-started work must not run.
 	#halted(workflow: WorkflowInterface): boolean {
 		const status = workflow.status
 		return status === 'failed' || status === 'skipped' || status === 'stopped'
@@ -641,9 +779,11 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 
 	// Whether a run-level cancel should force `stop` — yes UNLESS the workflow already settled a
 	// genuine `failed` (a bail-true failure: preserve it, never mask it with `stopped`) or is
-	// ALREADY `stopped` (idempotent). A `skipped` derived status is the CONSEQUENCE of the
-	// runner's own per-task skips on the cancel path, so `stop` SHOULD supersede it (the
-	// override wins) — the workflow settles `stopped`, the true outcome of a cancelled run.
+	// ALREADY `stopped` (idempotent — covers both a prior `workflow.stop()` and a prior
+	// `workflow.destroy()`, which itself forces `stop` when not already terminal). A `skipped`
+	// derived status is the CONSEQUENCE of the runner's own per-task skips on the cancel path, so
+	// `stop` SHOULD supersede it (the override wins) — the workflow settles `stopped`, the true
+	// outcome of a cancelled run.
 	#stoppable(workflow: WorkflowInterface): boolean {
 		const status = workflow.status
 		return status !== 'failed' && status !== 'stopped'
@@ -656,16 +796,10 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 		return workflow.status === 'pending'
 	}
 
-	// Correlate a live phase to its definition by positional `id` — the source of its
-	// `concurrency`. `undefined` when the definition has no matching phase (defensive — the
-	// caller passes the SAME definition the tree was built from).
-	#phaseOf(definition: WorkflowDefinition, id: string): PhaseDefinition | undefined {
-		return definition.phases.find((phase) => phase.id === id)
-	}
-
-	// Correlate a live task to its definition by positional `id` within its phase — the source
-	// of its `run` form. `undefined` ⇒ the no-handler auto-complete path in `#dispatch`.
-	#taskOf(phase: PhaseDefinition | undefined, id: string): TaskDefinition | undefined {
-		return phase?.tasks.find((task) => task.id === id)
+	// Discriminate the overloaded `execute` argument: a `WorkflowInterface` is the only one of the
+	// two carrying `destroyed` (RUNTIME-ONLY — V2 — never a field on the pure-JSON
+	// `WorkflowDefinition`), the cheapest direct discriminator between an entity and a definition.
+	#isWorkflow(target: WorkflowDefinition | WorkflowInterface): target is WorkflowInterface {
+		return 'destroyed' in target
 	}
 }

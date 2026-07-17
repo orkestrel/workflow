@@ -2,14 +2,17 @@ import type { Result } from '@orkestrel/contract'
 import type { EmitterInterface } from '@orkestrel/emitter'
 import type {
 	PhaseContext,
+	PhaseDefinition,
 	PhaseEventMap,
 	PhaseInterface,
 	PhaseOptions,
 	PhaseSnapshot,
 	PhaseStatus,
 	PhaseUpdate,
+	TaskDefinition,
 	TaskInterface,
 	TaskManagerInterface,
+	TaskOptions,
 	TaskResult,
 	TaskSnapshot,
 	TaskUpdate,
@@ -21,7 +24,9 @@ import {
 	buildPhaseContext,
 	buildTaskContext,
 	derivePhaseStatus,
+	findTaskDefinition,
 	isTerminalStatus,
+	taskDefinitionToSnapshot,
 } from '../helpers.js'
 import { Task } from '../tasks/Task.js'
 import { TaskManager } from '../tasks/TaskManager.js'
@@ -59,6 +64,13 @@ import { TaskManager } from '../tasks/TaskManager.js'
  *   (`name` / `description` / `concurrency` / `bail`) — defense-in-depth: it throws a
  *   `MUTATION` {@link WorkflowError} unless this phase's own `status` is `pending`, mirroring
  *   the owning {@link WorkflowInterface.update}'s gate.
+ * - **Minting (AGENTS §7).** {@link add} MINTS a live {@link Task} from a {@link TaskDefinition}
+ *   (converts it to a {@link TaskSnapshot}, builds the task wired to THIS phase) — the same
+ *   construction path {@link #append} uses at build time, so a live mint and a restored/built
+ *   task are wired IDENTICALLY. At construction, an optional correlated {@link PhaseDefinition}
+ *   (threaded from {@link import('../types.js').WorkflowOptions.definition}) seeds each task's
+ *   `run` / `retries` / `timeout` by id ({@link findTaskDefinition}); omitted (the restore path)
+ *   ⇒ every built task's runtime fields stay `undefined`.
  */
 export class Phase implements PhaseInterface {
 	readonly #id: string
@@ -91,6 +103,7 @@ export class Phase implements PhaseInterface {
 		escalate: () => void,
 		options?: PhaseOptions,
 		bail?: boolean,
+		definition?: PhaseDefinition,
 	) {
 		this.#id = snapshot.id
 		this.#name = snapshot.name
@@ -107,8 +120,9 @@ export class Phase implements PhaseInterface {
 		this.#concurrency = snapshot.concurrency
 		this.#emitter = new Emitter<PhaseEventMap>({ on: options?.on, error: options?.error })
 		// Build the live tasks positionally from the snapshot — each wired to recompute THIS phase
-		// on a transition, and carrying its own restore state (status + result + metadata).
-		for (const task of snapshot.tasks) this.#append(task, options)
+		// on a transition, carrying its own restore state (status + result + metadata) and, when a
+		// correlated `definition` was threaded in, its seeded `run` / `retries` / `timeout`.
+		for (const task of snapshot.tasks) this.#append(task, options, definition)
 		// Restore the override DIRECTLY from the snapshot's own field (present only when a whole-
 		// phase skip / stop forced it) — no fragile status-divergence guess. Then seed the baseline
 		// from the EFFECTIVE status so a recompute diffs against the right value.
@@ -189,7 +203,7 @@ export class Phase implements PhaseInterface {
 		this.#force('stopped')
 	}
 
-	add(task: TaskInterface, index?: number): Result<TaskInterface, WorkflowError> {
+	add(definition: TaskDefinition, index?: number): Result<TaskInterface, WorkflowError> {
 		const status = this.status
 		if (isTerminalStatus(status)) {
 			return {
@@ -200,6 +214,7 @@ export class Phase implements PhaseInterface {
 				}),
 			}
 		}
+		const created = this.#mint(definition)
 		if (status === 'running') {
 			// Running: only a pure append is eligible — a live runner subscribed to the `add`
 			// event picks the new task up for same-run execution.
@@ -214,9 +229,9 @@ export class Phase implements PhaseInterface {
 					),
 				}
 			}
-			return this.#addTo(task, index, at)
+			return this.#addTo(created, index, at)
 		}
-		return this.#addTo(task, index, index ?? this.#tasks.count)
+		return this.#addTo(created, index, index ?? this.#tasks.count)
 	}
 
 	remove(id: string): Result<TaskInterface, WorkflowError> {
@@ -359,19 +374,48 @@ export class Phase implements PhaseInterface {
 	}
 
 	// Build one live task from its snapshot, threading its per-task options (its own `on` /
-	// `metadata`, keyed by id under the phase options) and its restore state, then append it.
-	#append(task: TaskSnapshot, options: PhaseOptions | undefined): void {
-		const context = buildTaskContext(this.context, task)
-		const created = new Task(
+	// `metadata`, keyed by id under the phase options), its restore state, and — when a
+	// correlated `definition` was threaded in (the build-time seed channel) — its seeded
+	// `run` / `retries` / `timeout` by id, then append it.
+	#append(
+		task: TaskSnapshot,
+		options: PhaseOptions | undefined,
+		definition?: PhaseDefinition,
+	): void {
+		const seed = findTaskDefinition(definition, task.id)
+		const created = this.#create(task, options?.tasks?.[task.id], seed)
+		this.#tasks.append(created)
+	}
+
+	// Build one live task wired to THIS phase — the shared construction step behind both
+	// `#append` (build-time wiring, from a TaskSnapshot's restore state) and `#mint` (a live
+	// `add`, from a freshly-converted TaskDefinition snapshot) — so a mint and a built/restored
+	// task are wired IDENTICALLY (recompute cascade, emitter hooks, context stamping).
+	#create(
+		snapshot: TaskSnapshot,
+		options: TaskOptions | undefined,
+		seed: TaskDefinition | undefined,
+	): Task {
+		const context = buildTaskContext(this.context, snapshot)
+		return new Task(
 			context,
 			this,
 			this.#workflow,
 			() => this.#recompute(),
-			options?.tasks?.[task.id],
-			task.status,
-			task.result,
+			options,
+			snapshot.status,
+			snapshot.result,
+			seed?.run,
+			seed?.retries,
+			seed?.timeout,
 		)
-		this.#tasks.append(created)
+	}
+
+	// MINT a live task from a TaskDefinition for a live `add` — converts it to an initial
+	// TaskSnapshot (definitionToSnapshot's per-task step) then builds it via `#create`, seeding
+	// its `run` / `retries` / `timeout` from the SAME definition it was minted from.
+	#mint(definition: TaskDefinition): Task {
+		return this.#create(taskDefinitionToSnapshot(definition), undefined, definition)
 	}
 
 	// The live tasks' statuses, in positional order — the input to `derivePhaseStatus`.

@@ -445,6 +445,40 @@ export function taskDefinitionToSnapshot(
 	}
 }
 
+// === Definition correlation (the WorkflowOptions.definition / mint runtime-seed lookups)
+
+/**
+ * Look up one {@link PhaseDefinition} by `id` within a {@link WorkflowDefinition} — the
+ * by-id correlation step behind seeding a live phase's tasks' `run` / `retries` / `timeout`
+ * from {@link import('./types.js').WorkflowOptions.definition}.
+ *
+ * @param definition - The workflow definition to search (`undefined` on the restore path)
+ * @param id - The phase id to find
+ * @returns The matching {@link PhaseDefinition}, or `undefined` when absent (or `definition` itself is `undefined`)
+ */
+export function findPhaseDefinition(
+	definition: WorkflowDefinition | undefined,
+	id: string,
+): PhaseDefinition | undefined {
+	return definition?.phases.find((phase) => phase.id === id)
+}
+
+/**
+ * Look up one {@link TaskDefinition} by `id` within a {@link PhaseDefinition} — the per-task
+ * step of {@link findPhaseDefinition}, the source of a live task's seeded `run` / `retries` /
+ * `timeout`.
+ *
+ * @param phase - The phase definition to search (`undefined` when the phase itself was not found)
+ * @param id - The task id to find
+ * @returns The matching {@link TaskDefinition}, or `undefined` when absent (or `phase` itself is `undefined`)
+ */
+export function findTaskDefinition(
+	phase: PhaseDefinition | undefined,
+	id: string,
+): TaskDefinition | undefined {
+	return phase?.tasks.find((task) => task.id === id)
+}
+
 /**
  * Flatten a nested list of per-phase {@link TaskResult} lists into one positional list
  * — the workflow tier of the result tree, built from each phase's `results()`.

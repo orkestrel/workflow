@@ -3,6 +3,7 @@ import type {
 	PhaseInterface,
 	TaskContext,
 	TaskEventMap,
+	TaskForm,
 	TaskInterface,
 	TaskOptions,
 	TaskResult,
@@ -40,6 +41,12 @@ import { canTransitionTask } from '../helpers.js'
  *   matching event strictly AFTER the state change, BEFORE the cascade; the emitter isolates
  *   a listener throw and routes it to its `error` handler (the `error` option), so a buggy
  *   observer can never corrupt a transition.
+ * - **Runtime-only behavior (AGENTS §12).** `run` / `retries` / `timeout` mirror the matching
+ *   {@link import('../types.js').TaskDefinition} fields but are NEVER persisted in a
+ *   {@link TaskSnapshot} — seeded at construction (by id correlation against a
+ *   {@link import('../types.js').WorkflowOptions.definition} at build time, or a
+ *   {@link PhaseInterface.add} mint's own definition), `undefined` on the restore path (a
+ *   definition-less tree auto-completes its tasks, the existing no-handler rule).
  */
 export class Task implements TaskInterface {
 	readonly #context: TaskContext
@@ -61,6 +68,11 @@ export class Task implements TaskInterface {
 	// stamps.
 	#name: string
 	#description: string | undefined
+	// RUNTIME-ONLY (never persisted): seeded at construction from the matching TaskDefinition by
+	// id correlation; `undefined` on a definition-less (restore path) task.
+	readonly #run: TaskForm | undefined
+	readonly #retries: number | undefined
+	readonly #timeout: number | undefined
 
 	constructor(
 		context: TaskContext,
@@ -70,6 +82,9 @@ export class Task implements TaskInterface {
 		options?: TaskOptions,
 		status: TaskStatus = 'pending',
 		result?: TaskResult,
+		run?: TaskForm,
+		retries?: number,
+		timeout?: number,
 	) {
 		this.#context = context
 		this.#phase = phase
@@ -85,6 +100,11 @@ export class Task implements TaskInterface {
 		this.#result = result
 		this.#name = context.name
 		this.#description = context.description
+		// Seeded from the correlated TaskDefinition (by id) at construction; `undefined` on the
+		// restore path — never re-read afterward, never persisted in a TaskSnapshot.
+		this.#run = run
+		this.#retries = retries
+		this.#timeout = timeout
 	}
 
 	get emitter(): EmitterInterface<TaskEventMap> {
@@ -121,6 +141,18 @@ export class Task implements TaskInterface {
 
 	get result(): TaskResult | undefined {
 		return this.#result
+	}
+
+	get run(): TaskForm | undefined {
+		return this.#run
+	}
+
+	get retries(): number | undefined {
+		return this.#retries
+	}
+
+	get timeout(): number | undefined {
+		return this.#timeout
 	}
 
 	start(): void {

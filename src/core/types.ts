@@ -747,9 +747,11 @@ export type TaskHooks = EmitterHooks<TaskEventMap>
  *
  * @remarks
  * The reserved `on` (AGENTS §8) wires initial {@link TaskEventMap} listeners; a
- * {@link createTask}-built tree threads each level's `on` from its parent options.
- * `metadata` is the open consumer bag carried verbatim into a {@link TaskSnapshot}
- * (mirrors {@link TaskInput.metadata}), never interpreted by the workflow.
+ * {@link import('./factories.js').createWorkflow}-built tree threads each level's `on`
+ * from its parent options, the same way a {@link WorkflowInterface.add} /
+ * {@link PhaseInterface.add} mint threads a leaf's `on` from ITS options. `metadata` is
+ * the open consumer bag carried verbatim into a {@link TaskSnapshot} (mirrors
+ * {@link TaskInput.metadata}), never interpreted by the workflow.
  */
 export interface TaskOptions {
 	readonly on?: TaskHooks
@@ -803,6 +805,17 @@ export interface WorkflowOptions {
 	readonly error?: EmitterErrorHandler
 	/** Per-phase {@link PhaseOptions}, keyed by the phase's `id`. */
 	readonly phases?: Readonly<Record<string, PhaseOptions>>
+	/**
+	 * The RUNTIME-SEED channel {@link import('./factories.js').createWorkflow} uses ONLY
+	 * during construction to seed each live task's {@link TaskInterface.run} / `retries` /
+	 * `timeout` by id correlation (a phase id in `definition.phases` matches a live phase's
+	 * `id`; a task id within it matches a live task's `id`). Never read again after
+	 * construction and never persisted. Omitted (the restore path) ⇒ every built task's
+	 * `run` stays `undefined` — a tree with no run specs auto-completes its tasks (the
+	 * existing no-handler rule): its phases/tasks still reach a terminal status, just with
+	 * no dispatched behavior.
+	 */
+	readonly definition?: WorkflowDefinition
 }
 
 // === Entity interfaces (AGENTS §7/§13 — the live W-b state machines)
@@ -850,6 +863,28 @@ export interface TaskInterface {
 	readonly status: TaskStatus
 	/** The recorded outcome once the task settled with one (`completed` / `failed`), else `undefined`. */
 	readonly result: TaskResult | undefined
+	/**
+	 * The {@link TaskForm} naming this task's behavior — RUNTIME-ONLY (mirrors
+	 * {@link TaskDefinition.run}, never persisted in a {@link TaskSnapshot}). Seeded at
+	 * construction from the matching {@link TaskDefinition} by id (see
+	 * {@link WorkflowOptions.definition}); a task built on the restore path (no definition
+	 * supplied) carries `undefined` — a tree with no run specs auto-completes its tasks
+	 * (the existing no-handler rule), so a restored, definition-less task settles the same
+	 * way a task whose name is unregistered in a live registry does.
+	 */
+	readonly run: TaskForm | undefined
+	/**
+	 * Extra attempts after the first on failure — RUNTIME-ONLY (mirrors
+	 * {@link TaskDefinition.retries}, never persisted). Seeded at construction alongside
+	 * {@link run}; `undefined` on a definition-less (restore-path) task.
+	 */
+	readonly retries: number | undefined
+	/**
+	 * The per-attempt deadline in milliseconds — RUNTIME-ONLY (mirrors
+	 * {@link TaskDefinition.timeout}, never persisted). Seeded at construction alongside
+	 * {@link run}; `undefined` on a definition-less (restore-path) task.
+	 */
+	readonly timeout: number | undefined
 	start(): void
 	complete(value: unknown): void
 	fail(error: unknown): void
@@ -914,12 +949,22 @@ export interface PhaseInterface {
 	skip(): void
 	stop(): void
 	/**
-	 * Insert `task` into this phase (AGENTS §7 the entity structural API) — gated BEFORE
-	 * delegating to {@link tasks}' manager.
+	 * MINT a live {@link TaskInterface} from `definition` and insert it into this phase
+	 * (AGENTS §7 the entity structural API) — gated BEFORE delegating to {@link tasks}'
+	 * manager.
 	 *
 	 * @remarks
+	 * Converts `definition` → {@link TaskSnapshot} and constructs the live task (wired to
+	 * THIS phase, its recompute cascade, and its emitter hooks), seeding its
+	 * {@link TaskInterface.run} / `retries` / `timeout` from `definition` (runtime-only —
+	 * never persisted, mirrors the seed channel {@link WorkflowOptions.definition} threads
+	 * at build time). Requires `definition.id` to be UNIQUE among this phase's existing
+	 * task ids — a duplicate is a `MUTATION` failure (mirrors
+	 * {@link TaskManagerInterface.add}'s own duplicate-id gate).
+	 *
 	 * NATIVE gating, purely from this phase's own derived `status` (AGENTS §12 — no
-	 * runner-installed hook). While `pending`: any valid `index` is accepted (delegates to
+	 * runner-installed hook), UNCHANGED from the entity-taking predecessor. While
+	 * `pending`: any valid `index` is accepted (delegates the minted task to
 	 * {@link TaskManagerInterface.add} then emits `add`). While `running`: accepted ONLY as
 	 * a pure append (`index` omitted or `=== tasks.count`) — a live runner subscribed to
 	 * the `add` event picks the new task up for same-run execution; the derived-status
@@ -927,11 +972,11 @@ export interface PhaseInterface {
 	 * still `pending` (its status feeds `status` via {@link import('./helpers.js').derivePhaseStatus}).
 	 * While terminal: always refused.
 	 *
-	 * @param task - The live task to insert
+	 * @param definition - The {@link TaskDefinition} to mint a live task from
 	 * @param index - The insertion position; omitted inserts at the end
-	 * @returns A {@link Result} boxing the inserted task, or a `MUTATION` failure
+	 * @returns A {@link Result} boxing the minted, inserted task, or a `MUTATION` failure
 	 */
-	add(task: TaskInterface, index?: number): Result<TaskInterface, WorkflowError>
+	add(definition: TaskDefinition, index?: number): Result<TaskInterface, WorkflowError>
 	/**
 	 * Remove the `pending` task `id` from this phase.
 	 *
@@ -1021,6 +1066,19 @@ export interface WorkflowInterface {
 	readonly bail: boolean
 	readonly status: WorkflowStatus
 	readonly phases: PhaseManagerInterface
+	/**
+	 * Whether the workflow is currently paused (AGENTS §10 — resumable); RUNTIME-ONLY —
+	 * never a {@link WorkflowStatus}, never persisted in a {@link WorkflowSnapshot} (a
+	 * paused workflow's `status` still reports its ordinary `pending` / `running` value).
+	 */
+	readonly paused: boolean
+	/** Whether {@link destroy} has torn this workflow down; RUNTIME-ONLY, never persisted. */
+	readonly destroyed: boolean
+	/**
+	 * This workflow's own cancellation signal — fires on {@link destroy}. RUNTIME-ONLY
+	 * (implemented over `@orkestrel/abort`, AGENTS core precedent), never persisted.
+	 */
+	readonly signal: AbortSignal
 	/** Look up one live phase by its `id`. */
 	phase(id: string): PhaseInterface | undefined
 	/** Every settled task's result across all phases, in positional order — the workflow tier of the result tree. */
@@ -1029,25 +1087,92 @@ export interface WorkflowInterface {
 	stop(): void
 	complete(): void
 	/**
-	 * Insert `phase` into this workflow (AGENTS §7 the entity structural API) — gated
-	 * BEFORE delegating to {@link phases}' manager.
+	 * Suspend the workflow (AGENTS §10 — resumable); idempotent.
 	 *
 	 * @remarks
-	 * NATIVE gating, purely from this workflow's own derived `status` and the phase list's
-	 * positions (AGENTS §12 — no runner-installed hook). Refused outright while this
-	 * workflow's own `status` is terminal. Otherwise the effective target position
-	 * (`index ?? phases.count`) must fall within the PENDING SUFFIX — the contiguous
-	 * trailing run of `pending` phases (phases run sequentially, so every already-started
-	 * phase forms a contiguous leading prefix); its boundary is
-	 * {@link import('./helpers.js').deriveBoundary}. A `pending` workflow's phases are ALL
-	 * `pending`, so the boundary is `0` and every index is naturally accepted — no special
-	 * case needed. Delegates to {@link PhaseManagerInterface.add} then emits `add` on success.
+	 * A no-op when already `paused`, when `status` is terminal, or once {@link destroyed}.
+	 * RUNTIME-ONLY (AGENTS §10) — never a {@link WorkflowStatus}, never persisted in a
+	 * {@link WorkflowSnapshot}. A driving {@link WorkflowRunnerInterface.execute} gates at the
+	 * next phase boundary and before each task's own dispatch; an in-flight task body is
+	 * never suspended mid-flight.
 	 *
-	 * @param phase - The live phase to insert
-	 * @param index - The insertion position; omitted inserts at the end
-	 * @returns A {@link Result} boxing the inserted phase, or a `MUTATION` failure
+	 * @example
+	 * ```ts
+	 * workflow.pause()
+	 * workflow.paused // true
+	 * ```
 	 */
-	add(phase: PhaseInterface, index?: number): Result<PhaseInterface, WorkflowError>
+	pause(): void
+	/**
+	 * Continue a paused workflow (AGENTS §10); idempotent — a no-op unless {@link paused}.
+	 *
+	 * @example
+	 * ```ts
+	 * workflow.resume()
+	 * workflow.paused // false
+	 * ```
+	 */
+	resume(): void
+	/**
+	 * Tear this workflow down (AGENTS §10) — a TERMINAL teardown: aborts {@link signal},
+	 * forces the `stop` override if the workflow is not already terminal, resolves any
+	 * parked {@link wait} waiter, and marks {@link destroyed}; idempotent.
+	 *
+	 * @remarks
+	 * After `destroy`, every structural mutator (`add` / `remove` / `move` / `update` /
+	 * `patch`) and `pause` / `resume` reject (a `Result` failure) or no-op — never throws
+	 * for calling `destroy` itself twice.
+	 *
+	 * @example
+	 * ```ts
+	 * workflow.destroy()
+	 * workflow.destroyed // true
+	 * ```
+	 */
+	destroy(): void
+	/**
+	 * Park until this workflow is not paused — **promise-parked**, never a timer or
+	 * busy-loop (AGENTS §21; mirrors {@link ControllerInterface.wait}'s doc style).
+	 *
+	 * @remarks
+	 * Resolves IMMEDIATELY when not {@link paused}. While paused, parks until `resume` /
+	 * `stop` / `destroy` — all three always release a parked waiter. NEVER rejects.
+	 *
+	 * @returns A promise that resolves once the workflow is no longer paused
+	 */
+	wait(): Promise<void>
+	/**
+	 * MINT a live {@link PhaseInterface} (and its tasks) from `definition` and insert it
+	 * into this workflow (AGENTS §7 the entity structural API) — gated BEFORE delegating
+	 * to {@link phases}' manager.
+	 *
+	 * @remarks
+	 * Converts `definition` → {@link PhaseSnapshot} and constructs the live phase (wired to
+	 * THIS workflow, its recompute cascade, and its emitter hooks) plus each of its live
+	 * tasks — each task's {@link TaskInterface.run} / `retries` / `timeout` seeded from the
+	 * matching {@link TaskDefinition} by id (mirrors the {@link WorkflowOptions.definition}
+	 * seed channel {@link import('./factories.js').createWorkflow} uses at build time). The
+	 * phase's effective `bail` resolves exactly as the build path does
+	 * (`definition.bail ?? this.bail`). Requires `definition.id` to be UNIQUE among this
+	 * workflow's existing phase ids — a duplicate is a `MUTATION` failure (mirrors
+	 * {@link PhaseManagerInterface.add}'s own duplicate-id gate).
+	 *
+	 * NATIVE gating, purely from this workflow's own derived `status` and the phase list's
+	 * positions (AGENTS §12 — no runner-installed hook), UNCHANGED from the entity-taking
+	 * predecessor: refused outright while this workflow's own `status` is terminal or once
+	 * {@link destroyed}. Otherwise the effective target position (`index ?? phases.count`)
+	 * must fall within the PENDING SUFFIX — the contiguous trailing run of `pending` phases
+	 * (phases run sequentially, so every already-started phase forms a contiguous leading
+	 * prefix); its boundary is {@link import('./helpers.js').deriveBoundary}. A `pending`
+	 * workflow's phases are ALL `pending`, so the boundary is `0` and every index is
+	 * naturally accepted — no special case needed. Delegates the minted phase to
+	 * {@link PhaseManagerInterface.add} then emits `add` on success.
+	 *
+	 * @param definition - The {@link PhaseDefinition} to mint a live phase (and tasks) from
+	 * @param index - The insertion position; omitted inserts at the end
+	 * @returns A {@link Result} boxing the minted, inserted phase, or a `MUTATION` failure
+	 */
+	add(definition: PhaseDefinition, index?: number): Result<PhaseInterface, WorkflowError>
 	/**
 	 * Remove the `pending` phase `id` from this workflow.
 	 *
@@ -1505,78 +1630,11 @@ export type WorkflowToolBinder = (
  * the rest) vs settle-all (`bail: false` — failures are recorded and the run finishes). The
  * {@link WorkflowOptions} half of the options is forwarded to `createWorkflow` (initial
  * listeners, a `bail` override, per-node options); the Abort / Timeout / Budget bounds fold
- * per run via `AbortSignal.any`, halting the run and `stop`ping the workflow.
+ * per run via `AbortSignal.any`, halting the run and `stop`ping the workflow. A second
+ * `execute(workflow, options?)` overload drives a CALLER-BUILT live tree instead — the
+ * entity-native control surface (AGENTS §10: `pause` / `resume` / `add` / `stop` /
+ * `destroy` live on {@link WorkflowInterface} itself); see its own doc for details.
  */
-/**
- * The push observation surface (AGENTS §13) of a {@link WorkflowRunInterface} — the
- * run's OWN lifecycle moments, distinct from the driven {@link WorkflowInterface}'s
- * OWN {@link WorkflowEventMap} (which still fires for its entity-level start/complete/
- * fail/stop transitions).
- *
- * @remarks
- * `start` / `pause` / `resume` / `stop` / `destroy` carry the driven
- * {@link WorkflowInterface} (mirroring the {@link WorkflowEventMap} payload style);
- * `spawn` carries a task a live `running` phase picked up (the run subscribes to each
- * phase's own `add` event — the native bottom-up mutation authority, AGENTS — rather than
- * installing any runner-side hook); `reject` carries the
- * {@link import('./errors.js').WorkflowError} of a live structural edit the NATIVE
- * pending-suffix-boundary gate refused. A throwing listener is isolated by the emitter and
- * routed to its `error` handler, never this domain surface (AGENTS §13). A `type` alias
- * (AGENTS §4.5) so it satisfies `EventMap`.
- */
-export type WorkflowRunEventMap = {
-	/** The run began driving its workflow. */
-	readonly start: readonly [workflow: WorkflowInterface]
-	/** The run was suspended (resumable). */
-	readonly pause: readonly [workflow: WorkflowInterface]
-	/** A paused run resumed. */
-	readonly resume: readonly [workflow: WorkflowInterface]
-	/** The run was permanently stopped. */
-	readonly stop: readonly [workflow: WorkflowInterface]
-	/** The run was torn down. */
-	readonly destroy: readonly [workflow: WorkflowInterface]
-	/** A task was picked up LIVE by the running phase. */
-	readonly spawn: readonly [task: TaskInterface]
-	/** A live structural edit was refused by the run's cursor gate. */
-	readonly reject: readonly [error: WorkflowError]
-}
-
-/**
- * A live, controllable handle on one {@link WorkflowRunnerInterface.start} run — the
- * OBSERVABLE + PAUSABLE counterpart to the one-shot `execute`.
- *
- * @remarks
- * `workflow` is the live tree the run drives (the same entity `execute`'s
- * {@link WorkflowResult.workflow} would box); `result` is the run's terminal
- * {@link WorkflowResult}, resolved once the run settles (mirrors `execute`'s return, as
- * a `Promise` instead of an awaited value since `start` returns SYNCHRONOUSLY).
- * `active` / `paused` / `stopped` are the run's current tri-state read (a run is never
- * `active` AND `paused` AND `stopped` at once). `pause()` / `resume()` / `stop()` /
- * `destroy()` are all `void` and IDEMPOTENT (AGENTS §10) — calling `pause()` on an
- * already-paused run, or `stop()` twice, is a no-op, never a throw. `pause` is
- * RUNTIME-ONLY (never a {@link LifecycleStatus}, never persisted in a
- * {@link WorkflowSnapshot} — a paused run's entity tree still reports its ordinary
- * `pending` / `running` status). Exposes a typed {@link emitter}
- * ({@link WorkflowRunEventMap}) for fire-and-forget observers, ALONGSIDE the eventual
- * `result`.
- */
-export interface WorkflowRunInterface {
-	readonly workflow: WorkflowInterface
-	readonly emitter: EmitterInterface<WorkflowRunEventMap>
-	readonly result: Promise<WorkflowResult>
-	readonly active: boolean
-	readonly paused: boolean
-	readonly stopped: boolean
-	/** Suspend the run (resumable); idempotent. */
-	pause(): void
-	/** Continue a paused run; idempotent. */
-	resume(): void
-	/** Permanently end the run; idempotent. */
-	stop(): void
-	/** Tear the run down — `stop` plus release resources; idempotent. */
-	destroy(): void
-}
-
 export interface WorkflowRunnerInterface {
 	/**
 	 * Execute a workflow definition to completion — BUILD its live tree, run the phases
@@ -1607,23 +1665,39 @@ export interface WorkflowRunnerInterface {
 	 */
 	execute(definition: WorkflowDefinition, options?: WorkflowRunOptions): Promise<WorkflowResult>
 	/**
-	 * Start a workflow definition as a live, controllable run — the PAUSABLE +
-	 * OBSERVABLE counterpart to {@link execute}.
+	 * Drive an ALREADY-BUILT, CALLER-OWNED live {@link WorkflowInterface} — the
+	 * ENTITY-NATIVE counterpart to the definition-building {@link execute} overload.
 	 *
 	 * @remarks
-	 * Builds the live tree exactly as `execute` does (the same {@link WorkflowRunOptions}
-	 * halves: construction + per-run bounds) and begins driving it, but returns
-	 * SYNCHRONOUSLY with a {@link WorkflowRunInterface} handle instead of awaiting the
-	 * terminal result — `run.result` resolves the same {@link WorkflowResult} `execute`
-	 * would. The handle additionally exposes `pause` / `resume` / `stop` / `destroy`
-	 * (AGENTS §10) and its own {@link WorkflowRunEventMap} `emitter`, on top of the
-	 * driven `workflow`'s own {@link WorkflowEventMap}.
+	 * The entity itself is now the single control surface (no separate run handle):
+	 * `createWorkflow` mints the live tree, this overload drives it, and the caller
+	 * controls the SAME entity mid-run via its own `pause` / `resume` / `add` / `stop` /
+	 * `destroy` (AGENTS §10). Requires `workflow.status === 'pending'` and
+	 * `!workflow.destroyed` — otherwise this is a programmer-timing error and it THROWS a
+	 * `TRANSITION` {@link import('./errors.js').WorkflowError} (AGENTS §12) rather than
+	 * silently no-opping or building a second tree. Once accepted, phases run
+	 * SEQUENTIALLY and, within each phase, tasks CONCURRENTLY — byte-identical observable
+	 * semantics to the `definition`-form `execute` — except the phase loop RE-READS the
+	 * live `workflow.phases` / each phase's live `tasks` every iteration (a cursor over
+	 * the live managers, not a one-time snapshot), so a caller's live `add` mid-run is
+	 * picked up and actually dispatched. `workflow.pause()` gates the run at the next
+	 * phase boundary AND before each task's dispatch (an in-flight task body is never
+	 * suspended); `workflow.stop()` skips not-yet-started work gracefully; `workflow.destroy()`
+	 * folds `workflow.signal` into the run's cancellation, aborting in-flight work
+	 * immediately. `options` carries only the per-run BOUNDS (`signal` / `timeout` /
+	 * `budget` / `depth` / `ancestry`) — the construction half of {@link WorkflowRunOptions}
+	 * does not apply, since the tree already exists.
 	 *
-	 * @param definition - The {@link WorkflowDefinition} to build the live tree from and drive
-	 * @param options - The same {@link WorkflowRunOptions} `execute` accepts
-	 * @returns A live {@link WorkflowRunInterface} handle on the run
+	 * @param workflow - The live {@link WorkflowInterface} to drive (its own entity surface —
+	 *   `pause` / `resume` / `add` / `stop` / `destroy` — is the caller's control seam)
+	 * @param options - The per-run bounds (`signal` / `timeout` / `budget`); the construction
+	 *   half of {@link WorkflowRunOptions} does not apply (the tree already exists)
+	 * @returns The run's terminal {@link WorkflowResult} (its `workflow` is the SAME entity passed in)
 	 */
-	start(definition: WorkflowDefinition, options?: WorkflowRunOptions): WorkflowRunInterface
+	execute(
+		workflow: WorkflowInterface,
+		options?: Omit<WorkflowRunOptions, keyof WorkflowOptions>,
+	): Promise<WorkflowResult>
 }
 
 /**
