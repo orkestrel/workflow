@@ -656,20 +656,20 @@ describe('createScheduler', () => {
 
 describe('createRunner', () => {
 	it('returns a working runner — fan-out via spawn with ordered results', async () => {
-		const runner = createRunner<number, number>({
+		const created = createRunner<number, number>({
 			concurrency: 4,
 			handler: (controller) => {
 				if (controller.input < 10) controller.spawn(controller.input + 100)
 				return controller.input
 			},
 		})
-		const results = await runner.execute([1, 2, 3])
+		const results = await created.execute([1, 2, 3])
 		expect(results).toEqual([1, 2, 3, 101, 102, 103])
 	})
 
 	it('honours concurrency / retries options end to end', async () => {
 		let attempts = 0
-		const runner = createRunner<string, string>({
+		const created = createRunner<string, string>({
 			concurrency: 2,
 			retries: 1,
 			handler: (controller) => {
@@ -680,7 +680,7 @@ describe('createRunner', () => {
 				return controller.input.toUpperCase()
 			},
 		})
-		expect(await runner.execute(['a', 'flaky', 'b'])).toEqual(['A', 'FLAKY', 'B'])
+		expect(await created.execute(['a', 'flaky', 'b'])).toEqual(['A', 'FLAKY', 'B'])
 		expect(attempts).toBe(2)
 	})
 })
