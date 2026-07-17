@@ -1619,6 +1619,156 @@ export interface WorkflowRunnerInterface {
 	): Promise<WorkflowResult>
 }
 
+// === Manager (W-e — the store-backed registry seam, AGENTS §9 + the line's store standard)
+//
+// `WorkflowManager` is the additive registry tier mirroring the `@orkestrel/agent` line's
+// `ConversationManager` / `WorkspaceManager`: an insertion-ordered `Map` keyed by workflow
+// `id`, plus an optional durable `store` seam (`open` hydrates on a registry miss, `save`
+// persists). UNLIKE the twins there is no `active` / `switch` pointer — nothing in the
+// workflow domain renders "the current workflow" the way `AgentContext.build()` renders the
+// active conversation/workspace, so carrying it would be a speculative extra (AGENTS §21).
+// The workflow-specific nuance the twins don't have: a restored tree is INERT without
+// handlers, so the manager also carries an optional `functions` registry threaded into every
+// `createWorkflow` / `restoreWorkflow` it performs — including at `open` — so a hydrated
+// workflow is immediately RUNNABLE, not just a dead snapshot mirror.
+
+/**
+ * Options for `createWorkflowManager` — the optional durable {@link WorkflowStoreInterface}
+ * seam plus the {@link WorkflowFunctions} registry every workflow the manager mints or
+ * hydrates resolves its tasks' handlers against.
+ *
+ * @remarks
+ * `store` is the EXACT analogue of `ConversationManagerOptions.store` /
+ * `WorkspaceManagerOptions.store` (the `@orkestrel/agent` line's store standard) — omitted ⇒
+ * the manager is registry-only: {@link WorkflowManagerInterface.open} resolves only what is
+ * already registered, and {@link WorkflowManagerInterface.save} is a no-op (`false`). `functions`
+ * is the workflow-specific addition: the SAME {@link WorkflowFunctions} registry threaded into
+ * every {@link import('./factories.js').createWorkflow} ({@link WorkflowManagerInterface.add})
+ * and every {@link import('./factories.js').restoreWorkflow}
+ * ({@link WorkflowManagerInterface.open}'s hydration path) the manager performs — so a
+ * hydrated workflow carries real resolved `handler`s and is RUNNABLE, not merely a restored
+ * state mirror. Omitted ⇒ every minted/hydrated task resolves no `handler` (the no-handler
+ * rule — it auto-completes if driven).
+ */
+export interface WorkflowManagerOptions {
+	/**
+	 * The optional durable {@link WorkflowStoreInterface} backing
+	 * {@link WorkflowManagerInterface.open} / {@link WorkflowManagerInterface.save} — a memory
+	 * / JSON / SQLite / IndexedDB store a workflow is HYDRATED from (`open` a registry miss)
+	 * and PERSISTED to (`save`). Omitted ⇒ the manager is registry-only: `open` resolves only
+	 * what is already registered, and `save` is a no-op (`false`).
+	 */
+	readonly store?: WorkflowStoreInterface
+	/**
+	 * The {@link WorkflowFunctions} registry threaded into every workflow this manager mints
+	 * (`add`, via {@link import('./factories.js').createWorkflow}) or hydrates (`open`'s
+	 * registry-miss path, via {@link import('./factories.js').restoreWorkflow}) — so a
+	 * hydrated workflow is RUNNABLE, its tasks carrying real resolved `handler`s. Omitted ⇒
+	 * every task resolves no `handler` (the no-handler rule).
+	 */
+	readonly functions?: WorkflowFunctions
+}
+
+/**
+ * A store-backed registry of {@link WorkflowInterface}s keyed by their `id`, in insertion
+ * order — the additive manager tier mirroring `ConversationManagerInterface` /
+ * `WorkspaceManagerInterface` from the `@orkestrel/agent` line, adapted for the workflow
+ * domain: `add` mints from a {@link WorkflowDefinition} (not an empty `Input`, since a
+ * workflow only exists relative to a definition), and the optional `store` seam's `open`
+ * threads the manager's {@link WorkflowFunctions} registry so a HYDRATED workflow is
+ * immediately RUNNABLE, not merely a restored state mirror. NO `active` / `switch` pointer
+ * (AGENTS §21) — the workflow domain has no consumer that renders "the current workflow" the
+ * way an agent context renders the active conversation/workspace.
+ *
+ * @remarks
+ * - **Registry.** `count` is how many are stored. `add(definition)` mints a live
+ *   {@link WorkflowInterface} via {@link import('./factories.js').createWorkflow} (flowing
+ *   this manager's `functions` registry in) and registers it under `definition.id` — an
+ *   already-present id OVERWRITES (last write wins, since `createWorkflow` keys the tree by
+ *   the definition's own id). `workflow(id)` looks one up (`undefined` when absent);
+ *   `workflows()` lists them in insertion order.
+ * - **Durable open / save (the optional `store` seam).** When a {@link WorkflowStoreInterface}
+ *   is supplied (the `store` option), `open(id)` resolves an already-registered workflow
+ *   directly (no store hit); on a registry MISS it HYDRATES one from `store.get(id)` through
+ *   {@link import('./factories.js').restoreWorkflow} — flowing this manager's `functions`
+ *   registry in so the rehydrated tree is RUNNABLE — registers it, and returns it. `save(id)`
+ *   PERSISTS a registered workflow's {@link WorkflowInterface.snapshot} to the store. Both are
+ *   LENIENT without a store — `open` resolves only registered ids, `save` is a no-op
+ *   (`false`) — never a throw. The EXACT analogue of
+ *   `ConversationManagerInterface.open` / `.save` and `WorkspaceManagerInterface.open` /
+ *   `.save` — this is the workflow line's caller-driven persistence gaining the standard
+ *   open/save seam, ADDITIVE alongside direct {@link WorkflowStoreInterface} use and
+ *   {@link import('./factories.js').restoreWorkflow} (both remain valid).
+ * - **Removal.** `remove` drops one by id, or a batch (§9.2, array overload FIRST) — `true`
+ *   when any was removed. `clear` empties the registry.
+ * - **Event-free.** A purely registry store — no `Emitter`, no events (each
+ *   {@link WorkflowInterface} owns its own {@link WorkflowEventMap} emitter).
+ *
+ * @example
+ * ```ts
+ * import { createWorkflowManager } from '@src/core'
+ *
+ * const manager = createWorkflowManager({
+ * 	functions: { compile: async (controller) => `built ${controller.task.id}` },
+ * })
+ * const workflow = manager.add(definition) // minted, registered, RUNNABLE (functions flow in)
+ * manager.count // 1
+ * ```
+ */
+export interface WorkflowManagerInterface {
+	readonly count: number
+	workflow(id: string): WorkflowInterface | undefined
+	workflows(): readonly WorkflowInterface[]
+	/**
+	 * MINT a live {@link WorkflowInterface} from `definition` (via
+	 * {@link import('./factories.js').createWorkflow}, flowing this manager's `functions`
+	 * registry in) and register it under `definition.id`.
+	 *
+	 * @remarks
+	 * An already-registered `definition.id` OVERWRITES (last write wins) — `createWorkflow`
+	 * keys the live tree by the definition's own id, so a re-`add` under the same id is
+	 * indistinguishable from a fresh mint at the registry level.
+	 *
+	 * @param definition - The {@link WorkflowDefinition} to build the live tree from
+	 * @returns The minted, registered {@link WorkflowInterface}
+	 */
+	add(definition: WorkflowDefinition): WorkflowInterface
+	/**
+	 * Resolve a workflow by id — from the registry if present, else HYDRATED from the
+	 * optional {@link WorkflowStoreInterface} (`store`), RUNNABLE (this manager's `functions`
+	 * registry is threaded into the rehydration).
+	 *
+	 * @remarks
+	 * - If `id` is ALREADY registered, it is returned directly — no store hit.
+	 * - Else if a `store` is set, `store.get(id)` is awaited; on a HIT the snapshot is
+	 *   rehydrated into a fresh {@link WorkflowInterface} via
+	 *   {@link import('./factories.js').restoreWorkflow}, flowing this manager's `functions`
+	 *   registry in (so the rehydrated tree carries real resolved `handler`s and can RESUME
+	 *   real work), registers it, and returns it.
+	 * - Else (no store, or a store MISS) ⇒ `undefined` (lenient — no throw).
+	 *
+	 * @param id - The workflow id to open
+	 * @returns The resolved, RUNNABLE {@link WorkflowInterface}, or `undefined` when neither registered nor stored
+	 */
+	open(id: string): Promise<WorkflowInterface | undefined>
+	/**
+	 * Persist a REGISTERED workflow's {@link WorkflowInterface.snapshot} to the optional
+	 * {@link WorkflowStoreInterface} (`store`).
+	 *
+	 * @remarks
+	 * Lenient: when a `store` is set AND `id` is registered, `store.set(workflow.snapshot())`
+	 * is awaited and `true` is returned; otherwise (no store, OR an unknown id) it is a NO-OP
+	 * returning `false` — never a throw.
+	 *
+	 * @param id - The id of the registered workflow to persist
+	 * @returns `true` when the snapshot was persisted; `false` when no store / unknown id
+	 */
+	save(id: string): Promise<boolean>
+	remove(ids: readonly string[]): boolean
+	remove(id: string): boolean
+	clear(): void
+}
+
 /**
  * Relative urgency hint for cooperative scheduling. Honoured by environment
  * backends; the cross-environment default treats all priorities uniformly.

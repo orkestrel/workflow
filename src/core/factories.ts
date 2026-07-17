@@ -5,6 +5,8 @@ import type { DriverInterface, TableInterface } from '@orkestrel/database'
 import type {
 	WorkflowDefinition,
 	WorkflowInterface,
+	WorkflowManagerInterface,
+	WorkflowManagerOptions,
 	WorkflowOptions,
 	WorkflowRunnerInterface,
 	WorkflowRunnerOptions,
@@ -21,6 +23,7 @@ import { workflowShape } from './shapers.js'
 import { DatabaseWorkflowStore } from './stores/DatabaseWorkflowStore.js'
 import { MemoryWorkflowStore } from './stores/MemoryWorkflowStore.js'
 import { Workflow } from './Workflow.js'
+import { WorkflowManager } from './WorkflowManager.js'
 import { WorkflowRunner } from './WorkflowRunner.js'
 import { Runner } from './Runner.js'
 
@@ -395,6 +398,41 @@ export function createDatabaseWorkflowStore(
  */
 export function createWorkflowRunner(options?: WorkflowRunnerOptions): WorkflowRunnerInterface {
 	return new WorkflowRunner(options?.scheduler ?? createScheduler())
+}
+
+/**
+ * Create a {@link WorkflowManagerInterface} — the store-backed registry of
+ * {@link WorkflowInterface}s, the additive manager tier mirroring the `@orkestrel/agent`
+ * line's `createConversationManager` / `createWorkspaceManager`.
+ *
+ * @remarks
+ * `options.functions` flows into every workflow the manager mints (`add`, via
+ * {@link createWorkflow}) or hydrates (`open`'s registry-miss path, via
+ * {@link restoreWorkflow}), so a hydrated workflow is RUNNABLE rather than a dead snapshot
+ * mirror. `options.store` is the EXACT analogue of the twins' `store` seam — omitted ⇒ the
+ * manager is registry-only (`open` resolves only what is registered, `save` is a no-op). This
+ * is PURELY ADDITIVE: direct {@link WorkflowStoreInterface} use and
+ * {@link restoreWorkflow} remain valid — the manager is one more caller-driven persistence
+ * seam, not a replacement.
+ *
+ * @param options - The optional `store` seam and the `functions` registry threaded into every mint/hydrate
+ * @returns A working {@link WorkflowManagerInterface}
+ *
+ * @example
+ * ```ts
+ * import { createMemoryWorkflowStore, createWorkflowManager } from '@src/core'
+ *
+ * const manager = createWorkflowManager({
+ * 	store: createMemoryWorkflowStore(),
+ * 	functions: { compile: async (controller) => `built ${controller.task.id}` },
+ * })
+ * const workflow = manager.add(definition) // minted, registered, RUNNABLE
+ * await manager.save(workflow.id)          // persisted to the store
+ * const reopened = await manager.open(workflow.id) // already registered — no store hit
+ * ```
+ */
+export function createWorkflowManager(options?: WorkflowManagerOptions): WorkflowManagerInterface {
+	return new WorkflowManager(options)
 }
 
 /**
