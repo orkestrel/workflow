@@ -2,7 +2,7 @@ import type { Result } from '@orkestrel/contract'
 import type { TaskInterface, TaskManagerInterface, TaskUpdate } from '../types.js'
 import { compileGuard } from '@orkestrel/contract'
 import { WorkflowError } from '../errors.js'
-import { insertEntry, moveEntry } from '../helpers.js'
+import { failure, insertEntry, moveEntry, success } from '../helpers.js'
 import { taskUpdateShape } from '../shapers.js'
 
 /**
@@ -53,68 +53,49 @@ export class TaskManager implements TaskManagerInterface {
 
 	add(task: TaskInterface, index?: number): Result<TaskInterface, WorkflowError> {
 		if (this.#tasks.has(task.id)) {
-			return {
-				success: false,
-				error: new WorkflowError('MUTATION', `duplicate task id '${task.id}'`, { id: task.id }),
-			}
+			return failure(
+				new WorkflowError('MUTATION', `duplicate task id '${task.id}'`, { id: task.id }),
+			)
 		}
 		const at = index ?? this.#tasks.size
 		if (at < 0 || at > this.#tasks.size) {
-			return {
-				success: false,
-				error: new WorkflowError('MUTATION', `index '${at}' out of bounds`, { index: at }),
-			}
+			return failure(new WorkflowError('MUTATION', `index '${at}' out of bounds`, { index: at }))
 		}
 		this.#reorder(insertEntry([...this.#tasks.entries()], at, task.id, task))
-		return { success: true, value: task }
+		return success(task)
 	}
 
 	remove(id: string): Result<TaskInterface, WorkflowError> {
 		const target = this.#tasks.get(id)
 		if (target === undefined || target.status !== 'pending') {
-			return {
-				success: false,
-				error: new WorkflowError('MUTATION', `task '${id}' is not a pending task`, { id }),
-			}
+			return failure(new WorkflowError('MUTATION', `task '${id}' is not a pending task`, { id }))
 		}
 		this.#tasks.delete(id)
-		return { success: true, value: target }
+		return success(target)
 	}
 
 	move(id: string, index: number): Result<TaskInterface, WorkflowError> {
 		const target = this.#tasks.get(id)
 		if (target === undefined || target.status !== 'pending') {
-			return {
-				success: false,
-				error: new WorkflowError('MUTATION', `task '${id}' is not a pending task`, { id }),
-			}
+			return failure(new WorkflowError('MUTATION', `task '${id}' is not a pending task`, { id }))
 		}
 		if (index < 0 || index >= this.#tasks.size) {
-			return {
-				success: false,
-				error: new WorkflowError('MUTATION', `index '${index}' out of bounds`, { index }),
-			}
+			return failure(new WorkflowError('MUTATION', `index '${index}' out of bounds`, { index }))
 		}
 		this.#reorder(moveEntry([...this.#tasks.entries()], id, index))
-		return { success: true, value: target }
+		return success(target)
 	}
 
 	update(id: string, patch: TaskUpdate): Result<TaskInterface, WorkflowError> {
 		const target = this.#tasks.get(id)
 		if (target === undefined || target.status !== 'pending') {
-			return {
-				success: false,
-				error: new WorkflowError('MUTATION', `task '${id}' is not a pending task`, { id }),
-			}
+			return failure(new WorkflowError('MUTATION', `task '${id}' is not a pending task`, { id }))
 		}
 		if (!this.#isUpdate(patch)) {
-			return {
-				success: false,
-				error: new WorkflowError('MUTATION', `invalid patch for task '${id}'`, { id }),
-			}
+			return failure(new WorkflowError('MUTATION', `invalid patch for task '${id}'`, { id }))
 		}
 		target.patch(patch)
-		return { success: true, value: target }
+		return success(target)
 	}
 
 	task(id: string): TaskInterface | undefined {

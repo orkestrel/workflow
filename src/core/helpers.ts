@@ -23,6 +23,7 @@ import type {
 	WorkflowStep,
 	WorkflowSteps,
 } from './types.js'
+import type { Failure, Success } from '@orkestrel/contract'
 import { isArray, isBoolean, isNumber, isRecord, isString } from '@orkestrel/contract'
 import { DEFAULT_BAIL, TASK_TRANSITIONS } from './constants.js'
 
@@ -263,7 +264,69 @@ export function canTransitionTask(from: TaskStatus, to: TaskStatus): boolean {
 	return TASK_TRANSITIONS[from].includes(to)
 }
 
+// === Result construction (AGENTS §12 — `@orkestrel/contract` ships the `Result` /
+// `Success` / `Failure` TYPES but no `success`/`failure` constructors, so this module
+// provides the ones every gated Result-constructing site in this package's W-b entities
+// + managers uses instead of a hand-rolled `{ success: true/false, ... }` literal)
+
+/**
+ * Box a value as a {@link Success} — the graceful outcome half of a {@link Result}.
+ *
+ * @typeParam T - The boxed value's type
+ * @param value - The value to box
+ * @returns A {@link Success} wrapping `value`
+ *
+ * @example
+ * ```ts
+ * const result = success(task) // { success: true, value: task }
+ * ```
+ */
+export function success<T>(value: T): Success<T> {
+	return { success: true, value }
+}
+
+/**
+ * Box an error as a {@link Failure} — the graceful outcome half of a {@link Result}.
+ *
+ * @typeParam E - The boxed error's type
+ * @param error - The error to box
+ * @returns A {@link Failure} wrapping `error`
+ *
+ * @example
+ * ```ts
+ * const result = failure(new WorkflowError('MUTATION', 'refused')) // { success: false, error }
+ * ```
+ */
+export function failure<E>(error: E): Failure<E> {
+	return { success: false, error }
+}
+
 // === Result-tree collection
+
+/**
+ * Find the first {@link TaskResult} in a positional list whose boxed outcome is a
+ * `Failure` — the pure scan shared by a phase's and a workflow's derived-`failed`
+ * `fail`-event lookup.
+ *
+ * @remarks
+ * The shared leaf behind {@link import('./phases/Phase.js').Phase} and
+ * {@link import('./Workflow.js').Workflow}'s own `#failure` — each gathers ITS tier's
+ * results (a phase's own settled tasks, a workflow's flattened `results()`) and feeds
+ * them here; the tier-local method keeps the §12 invariant throw (a derived `failed`
+ * status guarantees a failing result exists) since throwing on `undefined` is
+ * orchestration, not a leaf concern.
+ *
+ * @param results - The results to scan, in any order
+ * @returns The first result whose `result.success` is `false`, or `undefined` if none
+ *
+ * @example
+ * ```ts
+ * findFailure([completedResult, failedResult]) // failedResult
+ * ```
+ */
+export function findFailure(results: readonly TaskResult[]): TaskResult | undefined {
+	return results.find((result) => result.result?.success === false)
+}
 
 // === Lineage context builders (the chain carried back UP the tree)
 

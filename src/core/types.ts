@@ -928,6 +928,12 @@ export interface TaskInterface {
  * - **Observable (AGENTS §13).** The owned {@link emitter} ({@link PhaseEventMap}) fires
  *   `start` / `complete` / `fail` / `stop` on a derived-status change; the emitter isolates a
  *   listener throw and routes it to its `error` handler (the `error` option).
+ * - **Runtime lifecycle (AGENTS §10).** `pause` / `resume` / `wait` mirror
+ *   {@link WorkflowInterface.pause} / `resume` / `wait`, scoped to this phase — a driving
+ *   {@link WorkflowRunnerInterface.execute} gates a task's own pre-dispatch on BOTH the
+ *   workflow's and its phase's gate. `paused` is RUNTIME-ONLY, never persisted; idempotent;
+ *   released by `resume` and by this phase's own `stop` / `skip` forcing a terminal status
+ *   (a permanently-ended phase has nothing left to pause for).
  */
 export interface PhaseInterface {
 	readonly emitter: EmitterInterface<PhaseEventMap>
@@ -941,6 +947,12 @@ export interface PhaseInterface {
 	readonly bail: boolean
 	/** Max tasks in flight at once (a resource throttle); mirrors {@link PhaseSnapshot.concurrency}. `undefined` ⇒ unbounded. */
 	readonly concurrency: number | undefined
+	/**
+	 * Whether the phase is currently paused (AGENTS §10 — resumable); RUNTIME-ONLY — never a
+	 * {@link PhaseStatus}, never persisted in a {@link PhaseSnapshot} (a paused phase's
+	 * `status` still reports its ordinary derived value).
+	 */
+	readonly paused: boolean
 	readonly tasks: TaskManagerInterface
 	/** Look up one live task by its `id`. */
 	task(id: string): TaskInterface | undefined
@@ -948,6 +960,44 @@ export interface PhaseInterface {
 	results(): readonly TaskResult[]
 	skip(): void
 	stop(): void
+	/**
+	 * Suspend the phase (AGENTS §10 — resumable); idempotent.
+	 *
+	 * @remarks
+	 * A no-op when already `paused` or when `status` is terminal. RUNTIME-ONLY (AGENTS §10) —
+	 * never a {@link PhaseStatus}, never persisted in a {@link PhaseSnapshot}. A driving
+	 * {@link WorkflowRunnerInterface.execute} gates a task's own pre-dispatch on this phase's
+	 * gate (after the workflow's own gate).
+	 *
+	 * @example
+	 * ```ts
+	 * phase.pause()
+	 * phase.paused // true
+	 * ```
+	 */
+	pause(): void
+	/**
+	 * Continue a paused phase (AGENTS §10); idempotent — a no-op unless {@link paused}.
+	 *
+	 * @example
+	 * ```ts
+	 * phase.resume()
+	 * phase.paused // false
+	 * ```
+	 */
+	resume(): void
+	/**
+	 * Park until this phase is not paused — **promise-parked**, never a timer or busy-loop
+	 * (AGENTS §21; mirrors {@link WorkflowInterface.wait}).
+	 *
+	 * @remarks
+	 * Resolves IMMEDIATELY when not {@link paused}. While paused, parks until `resume` or
+	 * this phase's own `stop` / `skip` forcing a terminal status — all release a parked
+	 * waiter. NEVER rejects.
+	 *
+	 * @returns A promise that resolves once the phase is no longer paused
+	 */
+	wait(): Promise<void>
 	/**
 	 * MINT a live {@link TaskInterface} from `definition` and insert it into this phase
 	 * (AGENTS §7 the entity structural API) — gated BEFORE delegating to {@link tasks}'
@@ -1115,8 +1165,10 @@ export interface WorkflowInterface {
 	resume(): void
 	/**
 	 * Tear this workflow down (AGENTS §10) — a TERMINAL teardown: aborts {@link signal},
-	 * forces the `stop` override if the workflow is not already terminal, resolves any
-	 * parked {@link wait} waiter, and marks {@link destroyed}; idempotent.
+	 * `stop`s every non-terminal live phase (so any engine parked on a phase's own gate
+	 * unparks and the tree lands coherent), forces the `stop` override on THIS workflow if
+	 * it is not already terminal, resolves any parked {@link wait} waiter, and marks
+	 * {@link destroyed}; idempotent.
 	 *
 	 * @remarks
 	 * After `destroy`, every structural mutator (`add` / `remove` / `move` / `update` /
@@ -1136,7 +1188,8 @@ export interface WorkflowInterface {
 	 *
 	 * @remarks
 	 * Resolves IMMEDIATELY when not {@link paused}. While paused, parks until `resume` /
-	 * `stop` / `destroy` — all three always release a parked waiter. NEVER rejects.
+	 * `skip` / `stop` / `destroy` — each always releases a parked waiter (a permanently
+	 * ended workflow has nothing left to pause for). NEVER rejects.
 	 *
 	 * @returns A promise that resolves once the workflow is no longer paused
 	 */

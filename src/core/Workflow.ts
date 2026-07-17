@@ -26,6 +26,8 @@ import {
 	createDeferred,
 	deriveBoundary,
 	deriveWorkflowStatus,
+	failure,
+	findFailure,
 	findPhaseDefinition,
 	isTerminalStatus,
 	phaseDefinitionToSnapshot,
@@ -71,9 +73,10 @@ import { PhaseManager } from './phases/PhaseManager.js'
  *   naturally accepted.
  * - **Runtime lifecycle (AGENTS §10).** `pause` / `resume` / `wait` gate execution at the runner's
  *   phase/task boundaries WITHOUT touching {@link status} — `paused` is runtime-only, never
- *   persisted. `destroy` is a terminal teardown: it aborts {@link signal}, forces the `stop`
- *   override when not already terminal, releases any parked {@link wait} waiter, and marks
- *   {@link destroyed} — all four idempotent.
+ *   persisted. `destroy` is a terminal teardown: it aborts {@link signal}, `stop`s every
+ *   non-terminal live phase (so an engine parked on a phase's own gate unparks and the tree
+ *   lands coherent), forces the `stop` override on THIS workflow when not already terminal,
+ *   releases any parked {@link wait} waiter, and marks {@link destroyed} — all four idempotent.
  */
 export class Workflow implements WorkflowInterface {
 	readonly #context: WorkflowContext
@@ -191,8 +194,11 @@ export class Workflow implements WorkflowInterface {
 
 	skip(): void {
 		// `skip` (AGENTS §10) FORCES the workflow to `skipped`, overriding the derived value — then
-		// recompute so the change is detected (no WorkflowEventMap event for a skip).
+		// recompute so the change is detected (no WorkflowEventMap event for a skip). Like `stop`,
+		// a skipped workflow is permanently ended, so a parked `wait()` waiter is always released.
 		this.#force('skipped')
+		this.#paused = false
+		this.#release()
 	}
 
 	stop(): void {
@@ -231,6 +237,12 @@ export class Workflow implements WorkflowInterface {
 		if (this.#destroyed) return
 		this.#destroyed = true
 		this.#abort.abort()
+		// Cascade: permanently end every non-terminal live phase FIRST, so an engine parked on a
+		// phase's own gate unparks (each phase's `stop` always releases its parked waiter) and the
+		// whole tree lands coherent — not just this workflow's own gate.
+		for (const phase of this.#phases.phases()) {
+			if (!isTerminalStatus(phase.status)) phase.stop()
+		}
 		// Force the `stop` override unless the workflow already reached a terminal status on its
 		// own (a completed/failed/skipped/stopped tree needs no forced override).
 		if (!isTerminalStatus(this.status)) this.stop()
@@ -240,52 +252,48 @@ export class Workflow implements WorkflowInterface {
 
 	wait(): Promise<void> {
 		// Promise-parked (AGENTS §21), never a timer or busy-loop — resolves immediately when not
-		// paused; while paused, the shared gate resolves on `resume` / `stop` / `destroy`.
+		// paused; while paused, the shared gate resolves on `resume` / `skip` / `stop` / `destroy`.
 		return this.#paused && this.#gate !== undefined ? this.#gate.promise : Promise.resolve()
 	}
 
 	add(definition: PhaseDefinition, index?: number): Result<PhaseInterface, WorkflowError> {
 		if (isTerminalStatus(this.status)) {
-			return {
-				success: false,
-				error: new WorkflowError('MUTATION', `workflow '${this.id}' is terminal`, {
+			return failure(
+				new WorkflowError('MUTATION', `workflow '${this.id}' is terminal`, {
 					id: this.id,
 					status: this.status,
 				}),
-			}
+			)
 		}
 		const at = index ?? this.#phases.count
 		if (at < this.#boundary()) {
-			return {
-				success: false,
-				error: new WorkflowError('MUTATION', `workflow '${this.id}' add index precedes boundary`, {
+			return failure(
+				new WorkflowError('MUTATION', `workflow '${this.id}' add index precedes boundary`, {
 					id: this.id,
 					index: at,
 				}),
-			}
+			)
 		}
 		return this.#addTo(this.#mint(definition), index, at)
 	}
 
 	remove(id: string): Result<PhaseInterface, WorkflowError> {
 		if (isTerminalStatus(this.status)) {
-			return {
-				success: false,
-				error: new WorkflowError('MUTATION', `workflow '${this.id}' is terminal`, {
+			return failure(
+				new WorkflowError('MUTATION', `workflow '${this.id}' is terminal`, {
 					id: this.id,
 					status: this.status,
 				}),
-			}
+			)
 		}
 		const at = this.#indexOf(id)
 		if (at === -1 || at < this.#boundary()) {
-			return {
-				success: false,
-				error: new WorkflowError('MUTATION', `workflow '${this.id}' cannot remove '${id}'`, {
+			return failure(
+				new WorkflowError('MUTATION', `workflow '${this.id}' cannot remove '${id}'`, {
 					id: this.id,
 					phase: id,
 				}),
-			}
+			)
 		}
 		const result = this.#phases.remove(id)
 		if (result.success) this.#emitter.emit('remove', result.value)
@@ -294,25 +302,23 @@ export class Workflow implements WorkflowInterface {
 
 	move(id: string, index: number): Result<PhaseInterface, WorkflowError> {
 		if (isTerminalStatus(this.status)) {
-			return {
-				success: false,
-				error: new WorkflowError('MUTATION', `workflow '${this.id}' is terminal`, {
+			return failure(
+				new WorkflowError('MUTATION', `workflow '${this.id}' is terminal`, {
 					id: this.id,
 					status: this.status,
 				}),
-			}
+			)
 		}
 		const at = this.#indexOf(id)
 		const boundary = this.#boundary()
 		if (at === -1 || at < boundary || index < boundary) {
-			return {
-				success: false,
-				error: new WorkflowError('MUTATION', `workflow '${this.id}' cannot move '${id}'`, {
+			return failure(
+				new WorkflowError('MUTATION', `workflow '${this.id}' cannot move '${id}'`, {
 					id: this.id,
 					phase: id,
 					index,
 				}),
-			}
+			)
 		}
 		const result = this.#phases.move(id, index)
 		if (result.success) this.#emitter.emit('move', result.value, index)
@@ -321,23 +327,21 @@ export class Workflow implements WorkflowInterface {
 
 	update(id: string, patch: PhaseUpdate): Result<PhaseInterface, WorkflowError> {
 		if (isTerminalStatus(this.status)) {
-			return {
-				success: false,
-				error: new WorkflowError('MUTATION', `workflow '${this.id}' is terminal`, {
+			return failure(
+				new WorkflowError('MUTATION', `workflow '${this.id}' is terminal`, {
 					id: this.id,
 					status: this.status,
 				}),
-			}
+			)
 		}
 		const at = this.#indexOf(id)
 		if (at === -1 || at < this.#boundary()) {
-			return {
-				success: false,
-				error: new WorkflowError('MUTATION', `workflow '${this.id}' cannot update '${id}'`, {
+			return failure(
+				new WorkflowError('MUTATION', `workflow '${this.id}' cannot update '${id}'`, {
 					id: this.id,
 					phase: id,
 				}),
-			}
+			)
 		}
 		const result = this.#phases.update(id, patch)
 		if (result.success) this.#emitter.emit('update', result.value)
@@ -422,10 +426,11 @@ export class Workflow implements WorkflowInterface {
 	}
 
 	#failure(): TaskResult {
-		for (const result of this.results()) {
-			if (result.result?.success === false) return result
+		const found = findFailure(this.results())
+		if (found === undefined) {
+			throw new Error(`workflow '${this.id}' derived failed with no failing task result`)
 		}
-		throw new Error(`workflow '${this.id}' derived failed with no failing task result`)
+		return found
 	}
 
 	// Build one live phase from its snapshot, threading its per-phase options (keyed by id under

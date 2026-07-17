@@ -2,7 +2,7 @@ import type { Result } from '@orkestrel/contract'
 import type { PhaseInterface, PhaseManagerInterface, PhaseUpdate } from '../types.js'
 import { compileGuard } from '@orkestrel/contract'
 import { WorkflowError } from '../errors.js'
-import { insertEntry, moveEntry } from '../helpers.js'
+import { failure, insertEntry, moveEntry, success } from '../helpers.js'
 import { phaseUpdateShape } from '../shapers.js'
 
 /**
@@ -52,68 +52,49 @@ export class PhaseManager implements PhaseManagerInterface {
 
 	add(phase: PhaseInterface, index?: number): Result<PhaseInterface, WorkflowError> {
 		if (this.#phases.has(phase.id)) {
-			return {
-				success: false,
-				error: new WorkflowError('MUTATION', `duplicate phase id '${phase.id}'`, { id: phase.id }),
-			}
+			return failure(
+				new WorkflowError('MUTATION', `duplicate phase id '${phase.id}'`, { id: phase.id }),
+			)
 		}
 		const at = index ?? this.#phases.size
 		if (at < 0 || at > this.#phases.size) {
-			return {
-				success: false,
-				error: new WorkflowError('MUTATION', `index '${at}' out of bounds`, { index: at }),
-			}
+			return failure(new WorkflowError('MUTATION', `index '${at}' out of bounds`, { index: at }))
 		}
 		this.#reorder(insertEntry([...this.#phases.entries()], at, phase.id, phase))
-		return { success: true, value: phase }
+		return success(phase)
 	}
 
 	remove(id: string): Result<PhaseInterface, WorkflowError> {
 		const target = this.#phases.get(id)
 		if (target === undefined || target.status !== 'pending') {
-			return {
-				success: false,
-				error: new WorkflowError('MUTATION', `phase '${id}' is not a pending phase`, { id }),
-			}
+			return failure(new WorkflowError('MUTATION', `phase '${id}' is not a pending phase`, { id }))
 		}
 		this.#phases.delete(id)
-		return { success: true, value: target }
+		return success(target)
 	}
 
 	move(id: string, index: number): Result<PhaseInterface, WorkflowError> {
 		const target = this.#phases.get(id)
 		if (target === undefined || target.status !== 'pending') {
-			return {
-				success: false,
-				error: new WorkflowError('MUTATION', `phase '${id}' is not a pending phase`, { id }),
-			}
+			return failure(new WorkflowError('MUTATION', `phase '${id}' is not a pending phase`, { id }))
 		}
 		if (index < 0 || index >= this.#phases.size) {
-			return {
-				success: false,
-				error: new WorkflowError('MUTATION', `index '${index}' out of bounds`, { index }),
-			}
+			return failure(new WorkflowError('MUTATION', `index '${index}' out of bounds`, { index }))
 		}
 		this.#reorder(moveEntry([...this.#phases.entries()], id, index))
-		return { success: true, value: target }
+		return success(target)
 	}
 
 	update(id: string, patch: PhaseUpdate): Result<PhaseInterface, WorkflowError> {
 		const target = this.#phases.get(id)
 		if (target === undefined || target.status !== 'pending') {
-			return {
-				success: false,
-				error: new WorkflowError('MUTATION', `phase '${id}' is not a pending phase`, { id }),
-			}
+			return failure(new WorkflowError('MUTATION', `phase '${id}' is not a pending phase`, { id }))
 		}
 		if (!this.#isUpdate(patch)) {
-			return {
-				success: false,
-				error: new WorkflowError('MUTATION', `invalid patch for phase '${id}'`, { id }),
-			}
+			return failure(new WorkflowError('MUTATION', `invalid patch for phase '${id}'`, { id }))
 		}
 		target.patch(patch)
-		return { success: true, value: target }
+		return success(target)
 	}
 
 	phase(id: string): PhaseInterface | undefined {

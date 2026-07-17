@@ -101,13 +101,17 @@ import { Workflow } from './Workflow.js'
  *   the Runner settles every unit (allSettled) and the run finishes (the workflow derives
  *   `completed`, the failure recorded in the result tree).
  * - **Pause / stop / destroy gates.** `workflow.pause()` is honoured at exactly two points —
- *   the next phase boundary and each task's own pre-dispatch (before `task.start()`) — by
- *   parking on {@link WorkflowInterface.wait}; an in-flight task body is NEVER suspended
- *   mid-flight. A GRACEFUL `workflow.stop()` (no signal involved) is caught at those same two
- *   gates: not-yet-started work is `skip`ped, in-flight work finishes naturally. A HARD
- *   `workflow.destroy()` aborts {@link WorkflowInterface.signal}, which `#fold` has folded
+ *   the next phase boundary (workflow-only) and each task's own pre-dispatch (before
+ *   `task.start()`, workflow gate FIRST then this task's own `phase.pause()`) — by parking on
+ *   {@link WorkflowInterface.wait} / {@link PhaseInterface.wait}; an in-flight task body is
+ *   NEVER suspended mid-flight. A GRACEFUL `workflow.stop()` (no signal involved) is caught at
+ *   those same gates: not-yet-started work is `skip`ped, in-flight work finishes naturally. A
+ *   HARD `workflow.destroy()` aborts {@link WorkflowInterface.signal}, which `#fold` has folded
  *   into the run's composed signal — so it cancels the active phase Runner (and every
- *   in-flight task) exactly like an external abort / timeout / budget fire.
+ *   in-flight task) exactly like an external abort / timeout / budget fire. EVERY park on a
+ *   `wait()` gate is RACED against that same run signal (`#raceWait`, S2) — so a cancel firing
+ *   WHILE parked unparks the engine promptly instead of hanging until `resume`; the existing
+ *   halt / abort re-checks after the gate then decide the outcome.
  * - **Abort / Timeout / Budget / entity-signal fold.** `#execute` folds the live workflow's
  *   own {@link WorkflowInterface.signal}, the run's external `signal`, a
  *   {@link TimeoutInterface}, and the `@orkestrel/budget` package's `BudgetInterface`'s
@@ -305,10 +309,12 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 					this.#skipFrom(phases, index)
 					break
 				}
-				// The phase-boundary pause gate (AGENTS §10): park until resumed / stopped /
-				// destroyed, then re-check the halt state fresh (a `stop` / `destroy` may have
-				// landed while parked) before starting the phase.
-				if (workflow.paused) await workflow.wait()
+				// The phase-boundary pause gate (AGENTS §10, workflow-only): park until resumed /
+				// stopped / destroyed, RACED against a run-level cancel (an abort/timeout/budget/
+				// destroy firing while parked unparks promptly rather than hanging until resume),
+				// then re-check the halt state fresh (a `stop` / `destroy` may have landed while
+				// parked) before starting the phase.
+				if (workflow.paused) await this.#raceWait(() => workflow.wait(), runSignal)
 				if (this.#cancelled(runSignal) || this.#halted(workflow)) {
 					this.#skipFrom(workflow.phases.phases(), index)
 					break
@@ -508,8 +514,12 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 		const retries = Math.max(0, task.retries ?? 0)
 		const last = attempt > retries
 		// The per-task pause gate (AGENTS §10), BEFORE `start` — an in-flight task body is never
-		// suspended, so this is the only place a paused workflow holds a task back.
-		if (workflow.paused) await workflow.wait()
+		// suspended, so this is the only place a paused workflow / phase holds a task back. The
+		// workflow's own gate is checked FIRST, then this task's phase's gate — either park is
+		// RACED against a run-level cancel (S2: an abort/timeout/budget/destroy firing while
+		// parked unparks promptly instead of hanging until `resume`).
+		if (workflow.paused) await this.#raceWait(() => workflow.wait(), runSignal)
+		if (task.phase.paused) await this.#raceWait(() => task.phase.wait(), runSignal)
 		// `start` only the FIRST time (a retry re-invokes this on the still-`running` leaf — a second
 		// `start` would be an illegal `running → running` transition).
 		if (task.status === 'pending') task.start()
@@ -705,6 +715,27 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 			return await agent.generate()
 		} finally {
 			signal.removeEventListener('abort', onAbort)
+		}
+	}
+
+	// RACE a parked entity `wait()` against a run-level cancel (S2 — the gate/signal race fix): an
+	// external abort / timeout / budget / `workflow.destroy()` firing WHILE the engine is parked on
+	// `workflow.wait()` / `phase.wait()` must unpark it PROMPTLY rather than leaving it hung until
+	// `resume` — the entity's own `wait()` never rejects and is only ever released by
+	// resume/stop/skip/destroy, so the runner (not the entity) is responsible for racing it against
+	// the run signal. A one-shot abort listener is wrapped in a promise and ALWAYS removed after the
+	// race settles (never leaked) — no polling either way. An already-aborted signal short-circuits.
+	async #raceWait(wait: () => Promise<void>, runSignal: AbortSignal): Promise<void> {
+		if (runSignal.aborted) return
+		let onAbort: (() => void) | undefined
+		const cancelled = new Promise<void>((resolve) => {
+			onAbort = () => resolve()
+			runSignal.addEventListener('abort', onAbort, { once: true })
+		})
+		try {
+			await Promise.race([wait(), cancelled])
+		} finally {
+			if (onAbort !== undefined) runSignal.removeEventListener('abort', onAbort)
 		}
 	}
 

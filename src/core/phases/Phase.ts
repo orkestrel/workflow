@@ -1,6 +1,7 @@
 import type { Result } from '@orkestrel/contract'
 import type { EmitterInterface } from '@orkestrel/emitter'
 import type {
+	DeferredInterface,
 	PhaseContext,
 	PhaseDefinition,
 	PhaseEventMap,
@@ -23,7 +24,10 @@ import { WorkflowError } from '../errors.js'
 import {
 	buildPhaseContext,
 	buildTaskContext,
+	createDeferred,
 	derivePhaseStatus,
+	failure,
+	findFailure,
 	findTaskDefinition,
 	isTerminalStatus,
 	taskDefinitionToSnapshot,
@@ -71,6 +75,14 @@ import { TaskManager } from '../tasks/TaskManager.js'
  *   (threaded from {@link import('../types.js').WorkflowOptions.definition}) seeds each task's
  *   `run` / `retries` / `timeout` by id ({@link findTaskDefinition}); omitted (the restore path)
  *   ⇒ every built task's runtime fields stay `undefined`.
+ * - **Runtime lifecycle (AGENTS §10).** `pause` / `resume` / `wait` mirror the workflow's own
+ *   quartet, scoped to this phase — a driving
+ *   {@link import('../types.js').WorkflowRunnerInterface.execute} gates a task's own
+ *   pre-dispatch on the workflow's gate FIRST, then this phase's gate, WITHOUT touching
+ *   {@link status} — `paused` is runtime-only, never persisted. `skip` / `stop` (this phase's
+ *   own terminal forcing) always release a parked {@link wait} waiter, mirroring
+ *   {@link import('../Workflow.js').Workflow.destroy}'s cascade — a permanently-ended phase
+ *   has nothing left to pause for.
  */
 export class Phase implements PhaseInterface {
 	readonly #id: string
@@ -96,6 +108,11 @@ export class Phase implements PhaseInterface {
 	#status: PhaseStatus
 	// The forced status of a `skip` / `stop`, overriding the derived value; `undefined` ⇒ derived.
 	#override: PhaseStatus | undefined
+	// RUNTIME-ONLY (never persisted): whether the phase is currently paused.
+	#paused: boolean
+	// The parked `wait()` gate while paused; `undefined` when not paused — released (resolved) by
+	// `resume` / `stop` / `skip`.
+	#gate: DeferredInterface<void> | undefined
 
 	constructor(
 		snapshot: PhaseSnapshot,
@@ -128,6 +145,8 @@ export class Phase implements PhaseInterface {
 		// from the EFFECTIVE status so a recompute diffs against the right value.
 		this.#override = snapshot.override
 		this.#status = this.status
+		this.#paused = false
+		this.#gate = undefined
 	}
 
 	get emitter(): EmitterInterface<PhaseEventMap> {
@@ -168,6 +187,10 @@ export class Phase implements PhaseInterface {
 		return this.#concurrency
 	}
 
+	get paused(): boolean {
+		return this.#paused
+	}
+
 	get status(): PhaseStatus {
 		// The override wins when forced; otherwise the status is derived from the live tasks.
 		return this.#override ?? derivePhaseStatus(this.#statuses())
@@ -194,25 +217,51 @@ export class Phase implements PhaseInterface {
 	skip(): void {
 		// `skip` (AGENTS §10) FORCES the phase to `skipped`, overriding the derived value — then
 		// recompute so the change is detected + escalated (no PhaseEventMap event for a skip).
+		// A permanently-ended phase has nothing left to pause for, so release a parked waiter.
 		this.#force('skipped')
+		this.#paused = false
+		this.#release()
 	}
 
 	stop(): void {
 		// `stop` (AGENTS §10) FORCES the phase to `stopped` — same override discipline as `skip`;
-		// `stopped` IS a PhaseEventMap event, so this emit fires.
+		// `stopped` IS a PhaseEventMap event, so this emit fires. Always releases a parked
+		// `wait()` waiter (AGENTS §10 — a permanently-ended phase has nothing left to pause for).
 		this.#force('stopped')
+		this.#paused = false
+		this.#release()
+	}
+
+	pause(): void {
+		// Idempotent: a no-op when already paused or terminal — pausing a settled phase has
+		// nothing to suspend.
+		if (this.#paused || isTerminalStatus(this.status)) return
+		this.#paused = true
+		this.#gate = createDeferred<void>()
+	}
+
+	resume(): void {
+		// Idempotent: a no-op unless currently paused.
+		if (!this.#paused) return
+		this.#paused = false
+		this.#release()
+	}
+
+	wait(): Promise<void> {
+		// Promise-parked (AGENTS §21), never a timer or busy-loop — resolves immediately when not
+		// paused; while paused, the shared gate resolves on `resume` / `stop` / `skip`.
+		return this.#paused && this.#gate !== undefined ? this.#gate.promise : Promise.resolve()
 	}
 
 	add(definition: TaskDefinition, index?: number): Result<TaskInterface, WorkflowError> {
 		const status = this.status
 		if (isTerminalStatus(status)) {
-			return {
-				success: false,
-				error: new WorkflowError('MUTATION', `phase '${this.#id}' is terminal`, {
+			return failure(
+				new WorkflowError('MUTATION', `phase '${this.#id}' is terminal`, {
 					id: this.#id,
 					status,
 				}),
-			}
+			)
 		}
 		const created = this.#mint(definition)
 		if (status === 'running') {
@@ -220,14 +269,13 @@ export class Phase implements PhaseInterface {
 			// event picks the new task up for same-run execution.
 			const at = index ?? this.#tasks.count
 			if (at !== this.#tasks.count) {
-				return {
-					success: false,
-					error: new WorkflowError(
+				return failure(
+					new WorkflowError(
 						'MUTATION',
 						`phase '${this.#id}' only accepts an append while executing`,
 						{ id: this.#id, index: at },
 					),
-				}
+				)
 			}
 			return this.#addTo(created, index, at)
 		}
@@ -236,13 +284,12 @@ export class Phase implements PhaseInterface {
 
 	remove(id: string): Result<TaskInterface, WorkflowError> {
 		if (this.status !== 'pending') {
-			return {
-				success: false,
-				error: new WorkflowError('MUTATION', `phase '${this.#id}' is not pending`, {
+			return failure(
+				new WorkflowError('MUTATION', `phase '${this.#id}' is not pending`, {
 					id: this.#id,
 					status: this.status,
 				}),
-			}
+			)
 		}
 		const result = this.#tasks.remove(id)
 		if (result.success) this.#emitter.emit('remove', result.value)
@@ -251,13 +298,12 @@ export class Phase implements PhaseInterface {
 
 	move(id: string, index: number): Result<TaskInterface, WorkflowError> {
 		if (this.status !== 'pending') {
-			return {
-				success: false,
-				error: new WorkflowError('MUTATION', `phase '${this.#id}' is not pending`, {
+			return failure(
+				new WorkflowError('MUTATION', `phase '${this.#id}' is not pending`, {
 					id: this.#id,
 					status: this.status,
 				}),
-			}
+			)
 		}
 		const result = this.#tasks.move(id, index)
 		if (result.success) this.#emitter.emit('move', result.value, index)
@@ -266,13 +312,12 @@ export class Phase implements PhaseInterface {
 
 	update(id: string, patch: TaskUpdate): Result<TaskInterface, WorkflowError> {
 		if (this.status !== 'pending') {
-			return {
-				success: false,
-				error: new WorkflowError('MUTATION', `phase '${this.#id}' is not pending`, {
+			return failure(
+				new WorkflowError('MUTATION', `phase '${this.#id}' is not pending`, {
 					id: this.#id,
 					status: this.status,
 				}),
-			}
+			)
 		}
 		const result = this.#tasks.update(id, patch)
 		if (result.success) this.#emitter.emit('update', result.value)
@@ -354,11 +399,19 @@ export class Phase implements PhaseInterface {
 	// than fabricating a synthetic result — a fake, lineage-degenerate `TaskResult` would mask the
 	// true cause while still type-checking.
 	#failure(): TaskResult {
-		for (const task of this.#tasks.tasks()) {
-			const result = task.result
-			if (result?.result?.success === false) return result
+		const found = findFailure(this.results())
+		if (found === undefined) {
+			throw new Error(`phase '${this.id}' derived failed with no failing task result`)
 		}
-		throw new Error(`phase '${this.id}' derived failed with no failing task result`)
+		return found
+	}
+
+	// Resolve the parked `wait()` gate (when one exists) and clear it — the shared release step
+	// behind `resume` / `stop` / `skip` (all three always release a parked waiter).
+	#release(): void {
+		if (this.#gate === undefined) return
+		this.#gate.resolve()
+		this.#gate = undefined
 	}
 
 	// Delegate an `add` to the task manager and emit `add` (the inserted task + its final
