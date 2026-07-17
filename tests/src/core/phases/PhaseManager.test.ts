@@ -189,7 +189,7 @@ describe('PhaseManager — add/remove/move/update Result matrix (via Workflow, A
 
 	it('emits add/move/remove/update only on success', () => {
 		const workflow = workflowWithPhases()
-		const events = [] as string[]
+		const events: string[] = []
 		workflow.emitter.on('add', () => events.push('add'))
 		workflow.emitter.on('move', () => events.push('move'))
 		workflow.emitter.on('remove', () => events.push('remove'))
