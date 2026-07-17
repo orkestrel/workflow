@@ -517,13 +517,19 @@ export function createToolFunction(tools: ToolManagerInterface, name: string): W
  * chain past {@link MAX_WORKFLOW_DEPTH}, OR when this agent is already an ancestor (a cycle) —
  * ported from the former engine-side guard. When {@link AgentFunctionOptions.runner} is
  * supplied, the adapter BINDS a depth/cycle-aware {@link createWorkflowTool} onto the agent's
- * `context.tools` (the propagation seam) — closed over `depth + 1` and the extended ancestry —
- * so the agent can author + run a NESTED workflow through it; the wrapped default is the
- * CURRENT task's own workflow id (used only on a no-args tool call). The task's cancellation
- * folds into the agent run: an already-aborted `controller.signal` cancels the agent up front;
- * otherwise a one-shot listener fires `agent.abort(reason)` when the task cancels, removed in
- * `finally`. `agent.generate()` resolves a partial `AgentResult` on a cancel (never rejects),
- * returned as the task's completed value.
+ * `context.tools` (the propagation seam) — closed over `depth` and the extended ancestry (the
+ * tool itself computes `depth + 1` internally) — so the agent can author + run a NESTED
+ * workflow through it; the wrapped default is the CURRENT task's own workflow id (used only on
+ * a no-args tool call). The task's cancellation folds into the agent run: an already-aborted
+ * `controller.signal` cancels the agent up front; otherwise a one-shot listener fires
+ * `agent.abort(reason)` when the task cancels, removed in `finally`. `agent.generate()` resolves
+ * a partial `AgentResult` on a cancel (never rejects), returned as the task's completed value.
+ *
+ * A bound agent is effectively SINGLE-RUN: `context.tools.add` binds one {@link ToolInterface}
+ * under the fixed {@link import('./constants.js').WORKFLOW_TOOL_NAME}, and `agent.generate()` /
+ * `agent.abort()` are per-agent state. Two CONCURRENT tasks sharing the SAME `agent` instance
+ * race on that one tool binding (last-write-wins) and on generate/abort — give each concurrent
+ * task its OWN agent instance.
  *
  * @param agent - The live `AgentInterface` to run
  * @param options - The nested-workflow binding + depth/cycle bookkeeping (see {@link AgentFunctionOptions})
@@ -639,6 +645,11 @@ export function createAgentFunction(
  *   handler, before ever calling `runner.execute` — the engine itself performs no such check.
  * - **Otherwise** ⇒ `runner.execute(target)`, RETURNING the plain summary of the terminal run
  *   (`{ status, count }`, via {@link workflowToolSummary}).
+ *
+ * The tool executes AUTHORED STRUCTURE, not consumer behavior: a nested tree authored through
+ * it (flat, draft, or full form) carries no {@link WorkflowFunctions} registry, so EVERY one of
+ * its tasks auto-completes under the no-handler rule. This handler validates and synthesizes
+ * shape — it never runs a caller's handlers.
  *
  * @param definition - The workflow the tool runs when called with no authored args
  * @param runner - The {@link WorkflowRunnerInterface} that executes the (nested) workflow

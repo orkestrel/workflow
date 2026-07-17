@@ -88,7 +88,9 @@ export class Workflow implements WorkflowInterface {
 	// resolved default), which is ALWAYS defined.
 	readonly #bailOverride: boolean | undefined
 	// The `function`-task behavior registry each live task's `run` name resolves against ONCE at
-	// construction — threaded to every Phase (and, transitively, every Task).
+	// construction — threaded to every Phase (and, transitively, every Task). Read at RESOLVE
+	// time (construction / a later live `add`'s mint), so mutating the object passed in AFTER
+	// construction changes only later mints, never tasks already resolved — do not mutate it.
 	readonly #functions: WorkflowFunctions | undefined
 	readonly #phases: PhaseManager = new PhaseManager()
 	// The PUSH observation surface (§13) — owned, never inherited. The emitter isolates a

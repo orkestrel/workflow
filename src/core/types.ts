@@ -41,14 +41,18 @@ export interface TaskDefinition {
 	 * @remarks
 	 * Extra attempts after the first on failure (a non-negative integer); the runner threads it
 	 * to this task's substrate unit, OVERRIDING the phase Runner's `retries` default. Omitted ⇒
-	 * the default (no extra attempts). Execution-only: it is NOT persisted in a snapshot.
+	 * the default (no extra attempts). PERSISTED in a {@link TaskSnapshot} (like `bail` and
+	 * `concurrency`), so `restoreWorkflow(snapshot, { functions })` resumes with the same
+	 * reliability config; only the resolved handler itself is runtime-only.
 	 */
 	readonly retries?: number
 	/**
 	 * @remarks
 	 * The per-attempt deadline in milliseconds (a non-negative integer); the runner threads it to
 	 * this task's substrate unit, OVERRIDING the phase Runner's `timeout` default. Omitted (or a
-	 * non-positive value) ⇒ no deadline. Execution-only: it is NOT persisted in a snapshot.
+	 * non-positive value) ⇒ no deadline. PERSISTED in a {@link TaskSnapshot} (like `bail` and
+	 * `concurrency`), so `restoreWorkflow(snapshot, { functions })` resumes with the same
+	 * reliability config; only the resolved handler itself is runtime-only.
 	 */
 	readonly timeout?: number
 }
@@ -1740,17 +1744,19 @@ export interface WorkflowRunnerInterface {
 	 * suspended); `workflow.stop()` skips not-yet-started work gracefully; `workflow.destroy()`
 	 * folds `workflow.signal` into the run's cancellation, aborting in-flight work
 	 * immediately. `options` carries only the per-run BOUNDS (`signal` / `timeout` /
-	 * `budget` / `depth` / `ancestry`) — the construction half of {@link WorkflowRunOptions}
+	 * `budget`) — the construction half of {@link WorkflowRunOptions}
 	 * does not apply, since the tree already exists.
 	 *
-	 * **Restored trees run DECLARATIVELY.** Driving a tree rebuilt by
-	 * {@link import('./factories.js').restoreWorkflow} (no correlated
-	 * {@link WorkflowDefinition} was supplied at that build) means every task's
-	 * {@link TaskInterface.run} is `undefined` — the no-handler rule therefore AUTO-COMPLETES
-	 * each one (no dispatch ever occurs) rather than replaying whatever originally ran it. A
-	 * PARTIALLY-run restored tree (any live phase/task not `pending`) is rejected outright by
-	 * the `workflow.status === 'pending'` guard above — only a wholly `pending` restored tree
-	 * is drivable.
+	 * **Run round-trips through the snapshot.** Driving a tree rebuilt by
+	 * {@link import('./factories.js').restoreWorkflow} behaves according to whether a
+	 * {@link WorkflowFunctions} registry was supplied at that build: WITH a registry,
+	 * each task's `run` name is re-resolved against it, so a matched task carries a real
+	 * handler and this overload actually DISPATCHES it, resuming real work. WITHOUT a
+	 * registry (or when a task's `run` name has no match in it), the task's
+	 * {@link TaskInterface.run} is `undefined` — the no-handler rule then AUTO-COMPLETES
+	 * that task (no dispatch occurs). A PARTIALLY-run restored tree (any live phase/task
+	 * not `pending`) is rejected outright by the `workflow.status === 'pending'` guard
+	 * above — only a wholly `pending` restored tree is drivable.
 	 *
 	 * @param workflow - The live {@link WorkflowInterface} to drive (its own entity surface —
 	 *   `pause` / `resume` / `add` / `stop` / `destroy` — is the caller's control seam)

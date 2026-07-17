@@ -95,6 +95,9 @@ export class Phase implements PhaseInterface {
 	readonly #tasks: TaskManager = new TaskManager()
 	// The workflow-level function registry each task's `run` name resolves against ONCE at
 	// construction (build, restore, or a live mint) — threaded from Workflow, never re-read.
+	// Because resolution happens at THAT construction/mint moment, mutating the registry object
+	// after this phase (or an earlier task) has resolved changes only later mints, never
+	// already-resolved tasks — do not mutate it.
 	readonly #functions: WorkflowFunctions | undefined
 	// The EFFECTIVE failure policy this phase runs under (`phase.bail ?? workflow.bail`, resolved
 	// at seed time and carried on the snapshot) — read by the runner to decide fail-fast vs

@@ -92,17 +92,23 @@ export const TASK_TRANSITIONS: Readonly<Record<TaskStatus, readonly TaskStatus[]
 /**
  * The default per-phase task concurrency the {@link import('./factories.js').createWorkflowRunner}
  * runner applies when a {@link import('./types.js').PhaseDefinition} omits its `concurrency`
- * throttle — a large cap that is effectively unbounded for any realistic phase.
+ * throttle — a cap that is effectively unbounded for any realistic phase.
  *
  * @remarks
  * The determinism principle fixes that a phase's tasks run CONCURRENTLY; `concurrency` is
  * only an optional resource throttle (max-in-flight). With none declared, the runner runs
- * all of a phase's tasks at once — modelled as this large finite cap so the value flows
- * straight into the substrate {@link import('./types.js').RunnerInterface}'s
- * `concurrency` (which expects a positive integer) without a special unbounded branch. No
- * realistic phase declares enough tasks to reach it, so it behaves as "run them all".
+ * all of a phase's tasks at once — modelled as this finite cap so the value flows straight
+ * into the substrate {@link import('./types.js').RunnerInterface}'s `concurrency` (which
+ * expects a positive integer) without a special unbounded branch. No realistic phase
+ * declares enough tasks to reach it, so it behaves as "run them all".
+ *
+ * WHY `1024` and not a huge sentinel like `1_000_000`: the backing `@orkestrel/queue` Runner
+ * EAGERLY spawns one parked worker loop per concurrency unit AT CONSTRUCTION, so this default
+ * must be a value whose eager allocation cost is negligible for every default-concurrency
+ * phase — a million-unit default meant ~1e6 promise/closure allocations per such phase. A
+ * phase may still DECLARE a larger explicit `concurrency` and pays that allocation knowingly.
  */
-export const DEFAULT_PHASE_CONCURRENCY = 1_000_000
+export const DEFAULT_PHASE_CONCURRENCY = 1024
 
 /**
  * The maximum nesting depth a workflow → agent → workflow chain may reach — the bound
@@ -188,7 +194,11 @@ export const WORKFLOW_TOOL_NESTED_EXAMPLE: WorkflowDefinition = Object.freeze({
  * ({@link WORKFLOW_TOOL_NESTED_EXAMPLE}). Both examples are interpolated VERBATIM from the
  * validated constants, so a parity test pins them — the description can never drift from a
  * real, contract-valid example. The `parameters` the tool advertises are the FLAT shape's
- * schema; the nested form is the documented escape-hatch (the tool accepts both).
+ * schema; the nested form is the documented escape-hatch (the tool accepts both). NOTE: a step's
+ * "registered behavior name" is authored STRUCTURE only —
+ * {@link import('./factories.js').createWorkflowTool} runs the authored tree with no
+ * {@link WorkflowFunctions} registry of its own, so every one of its tasks auto-completes under
+ * the no-handler rule; the tool validates/synthesizes shape, it does not dispatch behavior.
  */
 export const WORKFLOW_TOOL_DESCRIPTION = [
 	'Author and run a workflow (phases run sequentially, the tasks within a phase run concurrently) in one call.',

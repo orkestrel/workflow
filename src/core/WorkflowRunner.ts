@@ -1,4 +1,3 @@
-import type { AbortInterface } from '@orkestrel/abort'
 import type { TimeoutInterface } from '@orkestrel/timeout'
 import type {
 	ControllerInterface,
@@ -13,7 +12,6 @@ import type {
 	WorkflowRunOptions,
 	WorkflowRunnerInterface,
 } from './types.js'
-import { createAbort } from '@orkestrel/abort'
 import { createTimeout } from '@orkestrel/timeout'
 import { DEFAULT_BAIL, DEFAULT_PHASE_CONCURRENCY } from './constants.js'
 import { WorkflowError } from './errors.js'
@@ -583,13 +581,12 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 		}
 	}
 
-	// The per-task folded signal: ANY-combine the substrate per-unit signal with the run signal, via
-	// the shipped `createAbort` parent-linking (`AbortSignal.any`). No hand-rolled listener wiring —
-	// the abort primitive owns the fold. `runSignal` is always present (V7 — it always folds in the
+	// The per-task folded signal: ANY-combine the substrate per-unit signal with the run signal via
+	// the native `AbortSignal.any`. No hand-rolled listener wiring, no extra wrapping — `AbortSignal.any`
+	// already returns a plain `AbortSignal`. `runSignal` is always present (V7 — it always folds in the
 	// live workflow's own signal), so there is no longer a bare-`unitSignal` shortcut to take.
 	#taskSignal(unitSignal: AbortSignal, runSignal: AbortSignal): AbortSignal {
-		const abort: AbortInterface = createAbort({ signal: AbortSignal.any([unitSignal, runSignal]) })
-		return abort.signal
+		return AbortSignal.any([unitSignal, runSignal])
 	}
 
 	// Fold the run-level bounds into ONE signal — the LIVE workflow's own `signal` (fires on
