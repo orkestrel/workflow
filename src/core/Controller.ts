@@ -1,5 +1,6 @@
 import type { AbortInterface } from '@orkestrel/abort'
 import type { ControllerInterface } from './types.js'
+import { parkSignal } from './helpers.js'
 
 /**
  * The per-unit handle a runner handler receives — wraps the unit's identity,
@@ -55,12 +56,9 @@ export class Controller<TInput, TResult> implements ControllerInterface<TInput, 
 	}
 
 	wait(): Promise<void> {
-		// Promise-park on the unit's signal — resolve immediately if already aborted,
-		// else on the one-shot 'abort' event. No timer, no poll (the B1 fix).
-		if (this.signal.aborted) return Promise.resolve()
-		return new Promise<void>((resolve) => {
-			this.signal.addEventListener('abort', () => resolve(), { once: true })
-		})
+		// Promise-park on the unit's signal — the shared `parkSignal` leaf (resolves immediately
+		// if already aborted, else on the one-shot 'abort' event). No timer, no poll (the B1 fix).
+		return parkSignal(this.signal)
 	}
 
 	spawn(input: TInput): Promise<TResult> {

@@ -2,10 +2,13 @@
 
 A typed workflow engine for the `@orkestrel` line — a serializable
 `Workflow → Phase → Task` tree that a UI or an LLM authors as pure JSON, and
-a thin `WorkflowRunner` executes by COMPOSING the shipped substrate (a
+a PURE `WorkflowRunner` engine executes by COMPOSING the shipped substrate (a
 per-phase `Runner`, `Abort`, `Timeout`, `Budget`, and a cooperative
 cross-environment `Scheduler`) rather than re-implementing its own
-concurrency / retry / abort machinery.
+concurrency / retry / abort machinery. Each task's `run` is a plain
+behavior-name string resolved once into a `handler`; wiring a task to a tool
+or an agent is an opt-in `createToolFunction` / `createAgentFunction`
+adapter composed into the caller's own `functions` registry.
 
 ## Install
 
@@ -23,7 +26,8 @@ npm install @orkestrel/workflow
 ## Status
 
 Pre-release (`0.0.1`): the definition contract, the live entity tree, the
-thin runner (with the `function` / `tool` / `agent` task forms and the
+pure-engine runner (with a `run`-string / `handler` model, the opt-in
+`createToolFunction` / `createAgentFunction` adapters, and the
 depth/cycle-bounded agent-native recursion), the durable `WorkflowStore`
 (in-memory + driver-pluggable), and the cooperative `Scheduler` (the
 cross-environment default plus the browser and Node environment backends)

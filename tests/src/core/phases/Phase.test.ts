@@ -19,7 +19,7 @@ function buildPhaseWorkflow(count: number): WorkflowDefinition {
 				tasks: Array.from({ length: count }, (_unused, index) => ({
 					id: `t${index}`,
 					name: `T${index}`,
-					run: { via: 'function', name: 'f' } as const,
+					run: 'f' as const,
 				})),
 			},
 		],
@@ -267,12 +267,12 @@ describe('Phase — the effective bail (per-phase override) round-trips', () => 
 					id: 'strict',
 					name: 'Strict',
 					bail: true,
-					tasks: [{ id: 't', name: 'T', run: { via: 'function', name: 'f' } }],
+					tasks: [{ id: 't', name: 'T', run: 'f' }],
 				},
 				{
 					id: 'inherit',
 					name: 'Inherit',
-					tasks: [{ id: 't', name: 'T', run: { via: 'function', name: 'f' } }],
+					tasks: [{ id: 't', name: 'T', run: 'f' }],
 				},
 			],
 		}
@@ -375,7 +375,7 @@ describe('Phase — wait()', () => {
 describe('Phase — structural API: add() mints a live task', () => {
 	it('add returns the created task in the Result and it is live + navigable in the tree', () => {
 		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(1)))
-		const result = phase.add({ id: 't1', name: 'T1', run: { via: 'function', name: 'f' } })
+		const result = phase.add({ id: 't1', name: 'T1', run: 'f' })
 		expect(result.success).toBe(true)
 		if (!result.success) throw new Error('expected add to succeed')
 		expect(result.value.id).toBe('t1')
@@ -387,7 +387,7 @@ describe('Phase — structural API: add() mints a live task', () => {
 	it('a minted task cascades status recomputes via start()/complete()', () => {
 		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(0)))
 		expect(phase.status).toBe('pending')
-		const result = phase.add({ id: 't0', name: 'T0', run: { via: 'function', name: 'f' } })
+		const result = phase.add({ id: 't0', name: 'T0', run: 'f' })
 		if (!result.success) throw new Error('expected add to succeed')
 		result.value.start()
 		expect(phase.status).toBe('running')
@@ -397,7 +397,7 @@ describe('Phase — structural API: add() mints a live task', () => {
 
 	it('duplicate task id fails with MUTATION', () => {
 		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(1)))
-		const result = phase.add({ id: 't0', name: 'Dup', run: { via: 'function', name: 'f' } })
+		const result = phase.add({ id: 't0', name: 'Dup', run: 'f' })
 		expect(result.success).toBe(false)
 		if (result.success) throw new Error('expected add to fail')
 		expect(result.error.code).toBe('MUTATION')
@@ -405,7 +405,7 @@ describe('Phase — structural API: add() mints a live task', () => {
 
 	it('an out-of-bounds index fails with MUTATION', () => {
 		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(1)))
-		const result = phase.add({ id: 't9', name: 'T9', run: { via: 'function', name: 'f' } }, 99)
+		const result = phase.add({ id: 't9', name: 'T9', run: 'f' }, 99)
 		expect(result.success).toBe(false)
 		if (result.success) throw new Error('expected add to fail')
 		expect(result.error.code).toBe('MUTATION')
@@ -414,7 +414,7 @@ describe('Phase — structural API: add() mints a live task', () => {
 	it('a terminal phase refuses add', () => {
 		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(1)))
 		phase.stop()
-		const result = phase.add({ id: 't9', name: 'T9', run: { via: 'function', name: 'f' } })
+		const result = phase.add({ id: 't9', name: 'T9', run: 'f' })
 		expect(result.success).toBe(false)
 		if (result.success) throw new Error('expected add to fail')
 		expect(result.error.code).toBe('MUTATION')
@@ -424,11 +424,11 @@ describe('Phase — structural API: add() mints a live task', () => {
 		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(2)))
 		phase.task('t0')?.start() // phase is now running
 		expect(phase.status).toBe('running')
-		const positioned = phase.add({ id: 't2', name: 'T2', run: { via: 'function', name: 'f' } }, 0)
+		const positioned = phase.add({ id: 't2', name: 'T2', run: 'f' }, 0)
 		if (positioned.success) throw new Error('expected positioned add to fail')
 		expect(positioned.error.code).toBe('MUTATION')
 		const events = recordEmitterEvents(phase.emitter, ['add'])
-		const appended = phase.add({ id: 't2', name: 'T2', run: { via: 'function', name: 'f' } })
+		const appended = phase.add({ id: 't2', name: 'T2', run: 'f' })
 		expect(appended.success).toBe(true)
 		expect(events.add.count).toBe(1)
 		// The phase stays non-terminal until the newly-added, still-pending task settles too — the
@@ -442,6 +442,23 @@ describe('Phase — structural API: add() mints a live task', () => {
 		appended.value.start()
 		appended.value.complete('ok')
 		expect(phase.status).toBe('completed')
+	})
+})
+
+describe('Phase — add() resolves a minted task’s handler against the workflow functions registry', () => {
+	it('a known run name resolves to its handler on mint; an unknown/absent one resolves to none', () => {
+		const handler = () => 'value'
+		const workflow = createWorkflow(buildPhaseWorkflow(0), { functions: { known: handler } })
+		const phase = lonePhase(workflow)
+		const known = phase.add({ id: 'k', name: 'K', run: 'known' })
+		if (!known.success) throw new Error('expected add to succeed')
+		expect(known.value.handler).toBe(handler)
+		const unknown = phase.add({ id: 'u', name: 'U', run: 'missing' })
+		if (!unknown.success) throw new Error('expected add to succeed')
+		expect(unknown.value.handler).toBeUndefined()
+		const absent = phase.add({ id: 'a', name: 'A' })
+		if (!absent.success) throw new Error('expected add to succeed')
+		expect(absent.value.handler).toBeUndefined()
 	})
 })
 
@@ -474,11 +491,11 @@ describe('Phase — add/remove/move/update events fire on success only', () => {
 	it('emits add with the created task + index on success, nothing on refusal', () => {
 		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(1)))
 		const events = recordEmitterEvents(phase.emitter, ['add'])
-		const result = phase.add({ id: 't1', name: 'T1', run: { via: 'function', name: 'f' } })
+		const result = phase.add({ id: 't1', name: 'T1', run: 'f' })
 		if (!result.success) throw new Error('expected add to succeed')
 		expect(events.add.count).toBe(1)
 		expect(events.add.calls[0]).toEqual([result.value, 1])
-		phase.add({ id: 't0', name: 'Dup', run: { via: 'function', name: 'f' } })
+		phase.add({ id: 't0', name: 'Dup', run: 'f' })
 		expect(events.add.count).toBe(1)
 	})
 

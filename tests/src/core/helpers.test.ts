@@ -1,10 +1,7 @@
 import type {
 	LifecycleStatus,
-	PhaseDefinition,
 	PhaseDerivation,
 	PhaseStatus,
-	TaskDefinition,
-	TaskForm,
 	TaskResult,
 	TaskStatus,
 	WorkflowDefinition,
@@ -31,17 +28,12 @@ import {
 	expandSteps,
 	failure,
 	findFailure,
-	findPhaseDefinition,
-	findTaskDefinition,
 	insertEntry,
-	isAgentTask,
-	isFunctionTask,
 	isTerminalStatus,
-	isToolTask,
 	isWorkflowSnapshot,
 	moveEntry,
+	parkSignal,
 	phaseDefinitionToSnapshot,
-	stepToForm,
 	success,
 	taskDefinitionToSnapshot,
 	workflowTag,
@@ -465,12 +457,21 @@ describe('definitionToSnapshot — the initial, all-pending construction input',
 				id: 'p',
 				name: 'P',
 				concurrency: 2,
-				tasks: [{ id: 't', name: 'T', description: 'leaf', run: { via: 'tool', name: 'x' } }],
+				tasks: [
+					{
+						id: 't',
+						name: 'T',
+						description: 'leaf',
+						run: 'x',
+						retries: 2,
+						timeout: 500,
+					},
+				],
 			},
 		],
 	}
 
-	it('seeds every node pending, persists declarative fields (concurrency), drops execution-only fields (run)', () => {
+	it('seeds every node pending, and PERSISTS declarative fields (concurrency, and the task trio run/retries/timeout)', () => {
 		const snapshot = definitionToSnapshot(definition)
 		expect(snapshot.status).toBe('pending')
 		expect(snapshot.description).toBe('top')
@@ -479,8 +480,12 @@ describe('definitionToSnapshot — the initial, all-pending construction input',
 		expect(snapshot.phases[0]?.tasks[0]?.metadata).toEqual({})
 		// Concurrency is declarative phase configuration and persists, like bail.
 		expect(snapshot.phases[0]?.concurrency).toBe(2)
-		// The snapshot tree carries no execution fields.
-		expect(JSON.stringify(snapshot)).not.toContain('"run"')
+		// The declarative task trio PERSISTS in the snapshot (like bail/concurrency) — no longer
+		// execution-only.
+		expect(snapshot.phases[0]?.tasks[0]?.run).toBe('x')
+		expect(snapshot.phases[0]?.tasks[0]?.retries).toBe(2)
+		expect(snapshot.phases[0]?.tasks[0]?.timeout).toBe(500)
+		expect(JSON.stringify(snapshot)).toContain('"run"')
 	})
 
 	it('is pure JSON and preserves identity + order', () => {
@@ -501,9 +506,9 @@ describe('definitionToSnapshot — the initial, all-pending construction input',
 		const task = taskDefinitionToSnapshot({
 			id: 't',
 			name: 'T',
-			run: { via: 'function', name: 'f' },
+			run: 'f',
 		})
-		expect(task).toEqual({ id: 't', name: 'T', status: 'pending', metadata: {} })
+		expect(task).toEqual({ id: 't', name: 'T', status: 'pending', metadata: {}, run: 'f' })
 	})
 
 	it('persists the EFFECTIVE per-phase bail — a phase override wins, else it inherits the workflow', () => {
@@ -525,34 +530,59 @@ describe('definitionToSnapshot — the initial, all-pending construction input',
 	})
 })
 
-describe('task-form guards (narrow on the `via` discriminant)', () => {
-	const fn: TaskForm = { via: 'function', name: 'compute' }
-	const tool: TaskForm = { via: 'tool', name: 'search' }
-	const agent: TaskForm = { via: 'agent', name: 'planner' }
-
-	it('isFunctionTask narrows only the function form', () => {
-		expect(isFunctionTask(fn)).toBe(true)
-		expect(isFunctionTask(tool)).toBe(false)
-		expect(isFunctionTask(agent)).toBe(false)
+describe('taskDefinitionToSnapshot — the declarative trio copies verbatim, omits when absent', () => {
+	it('copies run/retries/timeout when the definition declares them', () => {
+		const snapshot = taskDefinitionToSnapshot({
+			id: 't',
+			name: 'T',
+			run: 'x',
+			retries: 3,
+			timeout: 250,
+		})
+		expect(snapshot.run).toBe('x')
+		expect(snapshot.retries).toBe(3)
+		expect(snapshot.timeout).toBe(250)
 	})
 
-	it('isToolTask narrows only the tool form', () => {
-		expect(isToolTask(tool)).toBe(true)
-		expect(isToolTask(fn)).toBe(false)
-		expect(isToolTask(agent)).toBe(false)
+	it('omits run/retries/timeout when the definition declares none (no undefined keys)', () => {
+		const snapshot = taskDefinitionToSnapshot({ id: 't', name: 'T' })
+		expect('run' in snapshot).toBe(false)
+		expect('retries' in snapshot).toBe(false)
+		expect('timeout' in snapshot).toBe(false)
 	})
 
-	it('isAgentTask narrows only the agent form', () => {
-		expect(isAgentTask(agent)).toBe(true)
-		expect(isAgentTask(fn)).toBe(false)
-		expect(isAgentTask(tool)).toBe(false)
+	it('accepts retries/timeout of 0 (the boundary is meaningful, not falsy-omitted)', () => {
+		const snapshot = taskDefinitionToSnapshot({ id: 't', name: 'T', retries: 0, timeout: 0 })
+		expect(snapshot.retries).toBe(0)
+		expect(snapshot.timeout).toBe(0)
+	})
+})
+
+describe('parkSignal — a one-shot promise-park on an AbortSignal, never rejects', () => {
+	it('resolves immediately when the signal is already aborted', async () => {
+		const controller = new AbortController()
+		controller.abort()
+		await expect(parkSignal(controller.signal)).resolves.toBeUndefined()
 	})
 
-	it('exactly one guard matches each form (mutually exclusive)', () => {
-		for (const form of [fn, tool, agent]) {
-			const matches = [isFunctionTask(form), isToolTask(form), isAgentTask(form)].filter(Boolean)
-			expect(matches).toHaveLength(1)
-		}
+	it('resolves once the signal aborts (parks across real macrotasks first)', async () => {
+		const controller = new AbortController()
+		let settled = false
+		const parked = parkSignal(controller.signal).then(() => {
+			settled = true
+		})
+		await new Promise((resolve) => setTimeout(resolve, 5))
+		expect(settled).toBe(false)
+		controller.abort()
+		await parked
+		expect(settled).toBe(true)
+	})
+
+	it('never rejects, even when the signal aborts with a reason', async () => {
+		const controller = new AbortController()
+		const parked = parkSignal(controller.signal)
+		controller.abort(new Error('boom'))
+		await expect(parked).resolves.toBeUndefined()
 	})
 })
 
@@ -596,10 +626,7 @@ describe('workflow-tool result mapping (W-c2 — WorkflowResult → the handler 
 describe('completeDraft — synthesize omitted ids/names into a strict definition', () => {
 	it('fills EVERY missing id positionally + defaults each name to its (resolved) id', () => {
 		const draft: WorkflowDraft = {
-			phases: [
-				{ tasks: [{ run: { via: 'function', name: 'a' } }, { run: { via: 'tool', name: 'b' } }] },
-				{ tasks: [{ run: { via: 'agent', name: 'c' } }] },
-			],
+			phases: [{ tasks: [{ run: 'a' }, { run: 'b' }] }, { tasks: [{ run: 'c' }] }],
 		}
 		const definition = completeDraft(draft)
 		// The completed tree satisfies the STRICT contract (the soundness anchor).
@@ -616,16 +643,14 @@ describe('completeDraft — synthesize omitted ids/names into a strict definitio
 		expect(definition.phases[0]?.tasks[0]?.name).toBe('phase-0-task-0')
 		expect(definition.phases[1]?.tasks[0]?.id).toBe('phase-1-task-0')
 		// `run` carries over verbatim.
-		expect(definition.phases[0]?.tasks[0]?.run).toEqual({ via: 'function', name: 'a' })
-		expect(definition.phases[1]?.tasks[0]?.run).toEqual({ via: 'agent', name: 'c' })
+		expect(definition.phases[0]?.tasks[0]?.run).toBe('a')
+		expect(definition.phases[1]?.tasks[0]?.run).toBe('c')
 	})
 
 	it('PRESERVES a provided id/name verbatim and nests synthesized task ids under a provided phase id', () => {
 		const definition = completeDraft({
 			id: 'mine',
-			phases: [
-				{ id: 'p', name: 'Phase', tasks: [{ name: 'T', run: { via: 'function', name: 'f' } }] },
-			],
+			phases: [{ id: 'p', name: 'Phase', tasks: [{ name: 'T', run: 'f' }] }],
 		})
 		expect(definition.id).toBe('mine')
 		expect(definition.name).toBe('mine') // name defaulted to the PROVIDED id
@@ -649,23 +674,21 @@ describe('completeDraft — synthesize omitted ids/names into a strict definitio
 	})
 
 	it('is deterministic — the same draft always yields the same definition', () => {
-		const draft: WorkflowDraft = { phases: [{ tasks: [{ run: { via: 'function', name: 'x' } }] }] }
+		const draft: WorkflowDraft = { phases: [{ tasks: [{ run: 'x' }] }] }
 		expect(completeDraft(draft)).toEqual(completeDraft(draft))
 	})
 
 	it('completePhaseDraft / completeTaskDraft synthesize at their own positional index', () => {
 		expect(completePhaseDraft({ tasks: [] }, 2).id).toBe('phase-2')
-		expect(completeTaskDraft({ run: { via: 'tool', name: 't' } }, 'phase-2', 5).id).toBe(
-			'phase-2-task-5',
-		)
+		expect(completeTaskDraft({ run: 't' }, 'phase-2', 5).id).toBe('phase-2-task-5')
 	})
 })
 
 describe('expandSteps — flatten a steps blob into a one-task-phase-per-step definition', () => {
-	it('maps each step to a one-task phase IN ORDER (run.name = name, via default function)', () => {
+	it('maps each step to a one-task phase IN ORDER (a step`s name becomes the task`s run)', () => {
 		const flat: WorkflowSteps = {
 			name: 'pipeline',
-			steps: [{ name: 'fetch' }, { name: 'scan', via: 'tool' }, { name: 'audit', via: 'agent' }],
+			steps: [{ name: 'fetch' }, { name: 'scan' }, { name: 'audit' }],
 		}
 		const definition = expandSteps(flat)
 		expect(createWorkflowContract().is(definition)).toBe(true)
@@ -675,21 +698,16 @@ describe('expandSteps — flatten a steps blob into a one-task-phase-per-step de
 		expect(definition.phases.map((phase) => phase.tasks.length)).toEqual([1, 1, 1])
 		expect(definition.phases.map((phase) => phase.id)).toEqual(['phase-0', 'phase-1', 'phase-2'])
 		expect(definition.phases[0]?.tasks[0]?.id).toBe('phase-0-task-0')
-		// a step's `name` → the task's run.name; an omitted `via` defaults to 'function'.
-		expect(definition.phases[0]?.tasks[0]?.run).toEqual({ via: 'function', name: 'fetch' })
-		expect(definition.phases[1]?.tasks[0]?.run).toEqual({ via: 'tool', name: 'scan' })
-		expect(definition.phases[2]?.tasks[0]?.run).toEqual({ via: 'agent', name: 'audit' })
+		// a step's `name` → the task's `run`.
+		expect(definition.phases[0]?.tasks[0]?.run).toBe('fetch')
+		expect(definition.phases[1]?.tasks[0]?.run).toBe('scan')
+		expect(definition.phases[2]?.tasks[0]?.run).toBe('audit')
 	})
 
 	it('defaults the workflow id (and name) when no name is supplied', () => {
 		const definition = expandSteps({ steps: [{ name: 'only' }] })
 		expect(definition.id).toBe('wf')
 		expect(definition.name).toBe('wf')
-	})
-
-	it('stepToForm maps name→run.name and defaults via to function', () => {
-		expect(stepToForm({ name: 'x' })).toEqual({ via: 'function', name: 'x' })
-		expect(stepToForm({ name: 'y', via: 'agent' })).toEqual({ via: 'agent', name: 'y' })
 	})
 })
 
@@ -704,7 +722,7 @@ describe('isWorkflowSnapshot — the §14 boundary narrow for an opaque snapshot
 			{
 				id: 'build',
 				name: 'Build',
-				tasks: [{ id: 't', name: 'T', run: { via: 'function', name: 'f' } }],
+				tasks: [{ id: 't', name: 'T', run: 'f' }],
 			},
 		],
 	}
@@ -923,46 +941,5 @@ describe('deriveBoundary — the index of the first pending status (the pending-
 		// Mixed statuses are not expected in practice (a pending prefix-of-suffix invariant is
 		// upheld elsewhere), but the helper itself is a pure `findIndex` — pin that behavior.
 		expect(deriveBoundary(['completed', 'pending', 'completed'])).toBe(1)
-	})
-})
-
-describe('findPhaseDefinition / findTaskDefinition — by-id correlation (the mint-time seed lookup)', () => {
-	const definition: WorkflowDefinition = {
-		id: 'wf',
-		name: 'WF',
-		phases: [
-			{
-				id: 'p1',
-				name: 'P1',
-				tasks: [{ id: 't1', name: 'T1', run: { via: 'function', name: 'f' }, retries: 2 }],
-			},
-		],
-	}
-
-	it('findPhaseDefinition finds a phase by id', () => {
-		expect(findPhaseDefinition(definition, 'p1')?.id).toBe('p1')
-	})
-
-	it('findPhaseDefinition returns undefined for a missing id', () => {
-		expect(findPhaseDefinition(definition, 'missing')).toBeUndefined()
-	})
-
-	it('findPhaseDefinition returns undefined when the definition itself is undefined', () => {
-		expect(findPhaseDefinition(undefined, 'p1')).toBeUndefined()
-	})
-
-	it('findTaskDefinition finds a task by id within a phase definition', () => {
-		const phase: PhaseDefinition | undefined = findPhaseDefinition(definition, 'p1')
-		expect(findTaskDefinition(phase, 't1')?.retries).toBe(2)
-	})
-
-	it('findTaskDefinition returns undefined for a missing id', () => {
-		const phase: PhaseDefinition | undefined = findPhaseDefinition(definition, 'p1')
-		expect(findTaskDefinition(phase, 'missing')).toBeUndefined()
-	})
-
-	it('findTaskDefinition returns undefined when the phase itself is undefined', () => {
-		const task: TaskDefinition | undefined = findTaskDefinition(undefined, 't1')
-		expect(task).toBeUndefined()
 	})
 })

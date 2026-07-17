@@ -6,7 +6,6 @@ import {
 	phaseShape,
 	stepShape,
 	taskDraftShape,
-	taskFormShape,
 	taskShape,
 	workflowDraftShape,
 	workflowShape,
@@ -18,33 +17,15 @@ import { describe, expect, it } from 'vitest'
 // that mirror the hand-written definition interfaces (types.ts). Structural checks
 // on the descriptors — the four-way-parity behavior is covered in factories.test.ts.
 
-describe('taskFormShape — the `via` tagged union', () => {
-	it('is a union of three object variants', () => {
-		expect(taskFormShape.type).toBe('union')
-		expect(taskFormShape.variants).toHaveLength(3)
-	})
-
-	it('each variant discriminates on a `via` literal + carries a `name`', () => {
-		const vias = taskFormShape.variants.map((variant) => {
-			expect(variant.type).toBe('object')
-			const via = variant.type === 'object' ? variant.properties.via : undefined
-			expect(variant.type === 'object' ? variant.properties.name : undefined).toMatchObject({
-				type: 'string',
-				min: 1,
-			})
-			return via && via.type === 'literal' ? via.values[0] : undefined
-		})
-		expect(vias).toEqual(['function', 'tool', 'agent'])
-	})
-})
-
 describe('taskShape', () => {
-	it('requires id / name / run and makes description optional', () => {
+	it('requires id / name and makes description / run optional', () => {
 		expect(taskShape.type).toBe('object')
 		expect(taskShape.properties.id).toMatchObject({ type: 'string', min: 1 })
 		expect(taskShape.properties.name).toMatchObject({ type: 'string', min: 1 })
 		expect(taskShape.properties.description.type).toBe('optional')
-		expect(taskShape.properties.run).toBe(taskFormShape)
+		const run = taskShape.properties.run
+		expect(run.type).toBe('optional')
+		expect(run.type === 'optional' && run.inner).toMatchObject({ type: 'string', min: 1 })
 	})
 
 	it('carries optional non-negative-integer retries / timeout (the per-task reliability overrides)', () => {
@@ -109,18 +90,8 @@ describe('literalShape — a literal shape carrying a description', () => {
 	})
 })
 
-// Rank 1 — per-field descriptions ride INSIDE the shapes (and thus the emitted JSON Schema),
-// especially on the `via` discriminant + the `run` union and the flat `name` / `via` fields.
+// Rank 1 — per-field descriptions ride INSIDE the shapes (and thus the emitted JSON Schema).
 describe('per-field descriptions (Rank 1)', () => {
-	it('each task-form variant describes its `via` discriminant + its `name`', () => {
-		for (const variant of taskFormShape.variants) {
-			const via = variant.type === 'object' ? variant.properties.via : undefined
-			const name = variant.type === 'object' ? variant.properties.name : undefined
-			expect(typeof (via && via.type === 'literal' ? via.description : undefined)).toBe('string')
-			expect(typeof (name && name.type === 'string' ? name.description : undefined)).toBe('string')
-		}
-	})
-
 	it('the strict shapes describe their key identity + structural fields', () => {
 		expect(
 			typeof (
@@ -138,20 +109,26 @@ describe('per-field descriptions (Rank 1)', () => {
 			typeof (bail.type === 'optional' && bail.inner.type === 'literal' && bail.inner.description),
 		).toBe('string')
 	})
+
+	it('the run field describes itself (a registry key, not a label)', () => {
+		const run = taskShape.properties.run
+		expect(
+			typeof (run.type === 'optional' && run.inner.type === 'string' && run.inner.description),
+		).toBe('string')
+	})
 })
 
-// Rank 2 — the draft shapes mirror the strict shapes EXCEPT id/name are optional (run stays
-// required); a provided id/name still carries minLength:1.
+// Rank 2 — the draft shapes mirror the strict shapes EXCEPT id/name are optional; run stays optional
+// in both, mirroring taskShape.
 describe('workflowDraftShape / phaseDraftShape / taskDraftShape — id/name optional', () => {
-	it('makes id and name OPTIONAL at all three levels, run still required', () => {
+	it('makes id and name OPTIONAL at all three levels, run stays optional (mirrors taskShape)', () => {
 		expect(workflowDraftShape.properties.id.type).toBe('optional')
 		expect(workflowDraftShape.properties.name.type).toBe('optional')
 		expect(phaseDraftShape.properties.id.type).toBe('optional')
 		expect(phaseDraftShape.properties.name.type).toBe('optional')
 		expect(taskDraftShape.properties.id.type).toBe('optional')
 		expect(taskDraftShape.properties.name.type).toBe('optional')
-		// `run` stays required (not wrapped in optional), pointing at the shared taskFormShape.
-		expect(taskDraftShape.properties.run).toBe(taskFormShape)
+		expect(taskDraftShape.properties.run.type).toBe('optional')
 	})
 
 	it('a PROVIDED id still carries minLength:1 (so an explicit empty id is rejected upstream)', () => {
@@ -167,23 +144,18 @@ describe('workflowDraftShape / phaseDraftShape / taskDraftShape — id/name opti
 	})
 })
 
-// Rank 3 — the FLAT advertised shape: `{ name?, steps: [{ name, via? }] }`.
+// Rank 3 — the FLAT advertised shape: `{ name?, steps: [{ name }] }`.
 describe('workflowStepsShape / stepShape — the flat advertised surface', () => {
-	it('holds an optional name and an array of {name, via?} steps', () => {
+	it('holds an optional name and an array of {name} steps', () => {
 		expect(workflowStepsShape.properties.name.type).toBe('optional')
 		const steps = workflowStepsShape.properties.steps
 		expect(steps.type).toBe('array')
 		expect(steps.type === 'array' && steps.items).toBe(stepShape)
 	})
 
-	it('a step requires a non-empty `name` and an optional `via` literal', () => {
+	it('a step requires a non-empty `name` (the registered behavior it runs) and carries no other field', () => {
 		expect(stepShape.properties.name).toMatchObject({ type: 'string', min: 1 })
-		const via = stepShape.properties.via
-		expect(via.type).toBe('optional')
-		expect(via.type === 'optional' && via.inner).toMatchObject({
-			type: 'literal',
-			values: ['function', 'tool', 'agent'],
-		})
+		expect(Object.keys(stepShape.properties)).toEqual(['name'])
 	})
 })
 
@@ -208,7 +180,7 @@ describe('the new optional fields flow through the compiled contract', () => {
 					{
 						id: 't',
 						name: 'T',
-						run: { via: 'function', name: 'f' },
+						run: 'f',
 						...(overrides.retries === undefined ? {} : { retries: overrides.retries }),
 						...(overrides.timeout === undefined ? {} : { timeout: overrides.timeout }),
 					},
@@ -243,5 +215,35 @@ describe('the new optional fields flow through the compiled contract', () => {
 	it('accepts BOTH bail literals on a phase', () => {
 		expect(contract.is(withFields({ bail: true }))).toBe(true)
 		expect(contract.is(withFields({ bail: false }))).toBe(true)
+	})
+
+	it('accepts an omitted run (no handler), and rejects an empty-string run', () => {
+		const noRun: WorkflowDefinition = {
+			id: 'w',
+			name: 'W',
+			phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T' }] }],
+		}
+		expect(contract.is(noRun)).toBe(true)
+		const emptyRun: WorkflowDefinition = {
+			id: 'w',
+			name: 'W',
+			phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', run: '' }] }],
+		}
+		expect(contract.is(emptyRun)).toBe(false)
+	})
+
+	it('rejects the old object-form run ({ via, name }) — run is now a plain string', () => {
+		const oldForm = {
+			id: 'w',
+			name: 'W',
+			phases: [
+				{
+					id: 'p',
+					name: 'P',
+					tasks: [{ id: 't', name: 'T', run: { via: 'function', name: 'f' } }],
+				},
+			],
+		}
+		expect(contract.is(oldForm)).toBe(false)
 	})
 })

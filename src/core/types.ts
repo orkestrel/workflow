@@ -1,4 +1,3 @@
-import type { AgentInterface, ToolInterface, ToolManagerInterface } from '@orkestrel/agent'
 import type { BudgetInterface, TokenUsage } from '@orkestrel/budget'
 import type { EmitterErrorHandler, EmitterHooks, EmitterInterface } from '@orkestrel/emitter'
 import type { Result } from '@orkestrel/contract'
@@ -18,52 +17,26 @@ import type { WorkflowError } from './errors.js'
 // knob is `concurrency` — an optional resource throttle (max-in-flight), never a
 // sequencing control.
 
-// === Task forms (the definition's behavior reference)
-
-/**
- * A {@link TaskDefinition}'s behavior reference — a descriptive tagged union over
- * the three execution forms a task can take, discriminated by `via` (the axis is
- * the execution MECHANISM, never a bare `kind`; AGENTS §4.4). Each form references
- * its behavior BY NAME through a registry (the runner resolves the name at W-b);
- * a definition NEVER inlines a function, so the whole tree stays JSON-serializable.
- *
- * @remarks
- * - `function` — a registered function the runner invokes directly.
- * - `tool` — a registered {@link ToolInterface} the
- *   runner executes as a tool call.
- * - `agent` — a registered agent (a subagent). It will later carry a depth/cycle
- *   guard (W-c, bounded by {@link import('./constants.js').MAX_WORKFLOW_DEPTH}); in
- *   W-a it is purely the typed reference.
- *
- * `name` is the registry key (it identifies the behavior the form runs). A
- * descriptive `via` literal (not `kind`) names the axis that varies, and the
- * `is*` guards narrow on `run.via` cleanly.
- */
-export type TaskForm =
-	| { readonly via: 'function'; readonly name: string }
-	| { readonly via: 'tool'; readonly name: string }
-	| { readonly via: 'agent'; readonly name: string }
-
-/** The discriminant literal of a {@link TaskForm} — the execution mechanism axis. */
-export type TaskVia = TaskForm['via']
-
 // === Definition family (pure serializable JSON DATA)
 
 /**
- * The serializable definition of one task — its identity plus the behavior it runs
- * (a {@link TaskForm}, referenced by name).
+ * The serializable definition of one task — its identity plus an optional reference to
+ * the behavior it runs.
  *
  * @remarks
  * Pure JSON DATA: a UI or an LLM authors it, it round-trips through the contract
- * (factories.ts), and it carries NO functions. `id` is the positional identity
- * within its phase; `name` is the human label; `description` is optional prose;
- * `run` is the {@link TaskForm} naming the registered behavior.
+ * (factories.ts), and it carries NO functions. `id` is the positional identity within
+ * its phase; `name` is the human label; `description` is optional prose. `run` is a
+ * PLAIN NAME — a key resolved ONCE at construction against a workflow-level
+ * {@link WorkflowFunctions} registry into a runtime {@link TaskInterface.handler}
+ * carried on the live task. A task whose `run` is omitted, or whose name is unregistered,
+ * has no handler and AUTO-COMPLETES (the no-handler rule).
  */
 export interface TaskDefinition {
 	readonly id: string
 	readonly name: string
 	readonly description?: string
-	readonly run: TaskForm
+	readonly run?: string
 	/**
 	 * @remarks
 	 * Extra attempts after the first on failure (a non-negative integer); the runner threads it
@@ -137,7 +110,8 @@ export interface WorkflowDefinition {
 // has `minLength: 1`, so an explicitly-empty `id: ''` is REJECTED, not "absent"), and
 // `completeDraft` synthesizes any MISSING id positionally + defaults a missing name to
 // its id, yielding a strict `WorkflowDefinition` that is THEN re-validated against the
-// strict contract before running (soundness preserved). `run` stays required.
+// strict contract before running (soundness preserved). `run` stays optional (a plain
+// name string), mirroring the definition family.
 
 /**
  * A draft task — a {@link TaskDefinition} with OPTIONAL `id` / `name`.
@@ -151,7 +125,8 @@ export interface TaskDraft {
 	readonly id?: string
 	readonly name?: string
 	readonly description?: string
-	readonly run: TaskForm
+	/** The behavior reference — a registry key resolved against {@link WorkflowFunctions} at construction; omitted ⇒ no handler. */
+	readonly run?: string
 	/** Extra attempts after the first on failure (a non-negative integer); overrides the phase Runner default. Execution-only. */
 	readonly retries?: number
 	/** The per-attempt deadline in milliseconds (a non-negative integer); overrides the phase Runner default. Execution-only. */
@@ -177,7 +152,8 @@ export interface PhaseDraft {
  * @remarks
  * The lenient authoring form `createWorkflowDraftContract` validates and
  * {@link import('./helpers.js').completeDraft} completes into a strict
- * {@link WorkflowDefinition}. `run` stays required; the `bail` policy carries over.
+ * {@link WorkflowDefinition}. `run` stays optional (a plain name string); the `bail`
+ * policy carries over.
  */
 export interface WorkflowDraft {
 	readonly id?: string
@@ -191,24 +167,22 @@ export interface WorkflowDraft {
 // === Flat-steps family (the tool's ADVERTISED authoring surface — the simplest form)
 //
 // The deliberately-reduced surface (AGENTS §21) `createWorkflowTool` advertises as its
-// `parameters`: a flat ordered list of steps, each a `{ name, via? }`. The tool expands
+// `parameters`: a flat ordered list of steps, each a `{ name }`. The tool expands
 // each step (via `expandSteps`) into its own one-task phase, in order, then validates
 // against the STRICT contract. The full nested form is still accepted (the tool
 // branches on the args' shape).
 
 /**
- * One flat step — `{ name, via? }` — the building block of a {@link WorkflowSteps} blob.
+ * One flat step — `{ name }` — the building block of a {@link WorkflowSteps} blob.
  *
  * @remarks
- * `name` is the REGISTERED behavior name the step runs (it becomes the task's `run.name`,
- * NOT a human label). `via` is the optional execution mechanism — `'function'` (the
- * default when omitted), `'tool'`, or `'agent'`.
+ * `name` is the REGISTERED behavior name the step runs (it becomes the task's `run`,
+ * NOT a human label) — resolved against a workflow-level {@link WorkflowFunctions}
+ * registry at construction.
  */
 export interface WorkflowStep {
-	/** The registered behavior name this step runs (becomes the task's `run.name`). */
+	/** The registered behavior name this step runs (becomes the task's `run`). */
 	readonly name: string
-	/** How to run it — `'function'` (default), `'tool'`, or `'agent'`. */
-	readonly via?: TaskVia
 }
 
 /**
@@ -490,6 +464,12 @@ export interface TaskResult {
  * Pure JSON DATA (no class instances, no functions). `result` is the task's
  * {@link TaskResult} when it has settled with an outcome, else `undefined`.
  * `metadata` is the open consumer bag carried from the task's {@link TaskInput}.
+ * `run` / `retries` / `timeout` are the DECLARATIVE config the task carries — persisted
+ * like a {@link PhaseSnapshot}'s `bail` / `concurrency`, so a restore reinstates the same
+ * behavior reference and reliability overrides (`run` re-resolves against the
+ * {@link WorkflowOptions.functions} registry supplied to
+ * {@link import('./factories.js').restoreWorkflow}); each omitted ⇒ the corresponding
+ * unset default.
  */
 export interface TaskSnapshot {
 	readonly id: string
@@ -498,6 +478,12 @@ export interface TaskSnapshot {
 	readonly status: TaskStatus
 	readonly result?: TaskResult
 	readonly metadata: Readonly<Record<string, unknown>>
+	/** The behavior reference — a registry key resolved against {@link WorkflowFunctions} on restore/build. */
+	readonly run?: string
+	/** Extra attempts after the first on failure (a non-negative integer); overrides the phase Runner default. */
+	readonly retries?: number
+	/** The per-attempt deadline in milliseconds (a non-negative integer); overrides the phase Runner default. */
+	readonly timeout?: number
 }
 
 /**
@@ -806,16 +792,18 @@ export interface WorkflowOptions {
 	/** Per-phase {@link PhaseOptions}, keyed by the phase's `id`. */
 	readonly phases?: Readonly<Record<string, PhaseOptions>>
 	/**
-	 * The RUNTIME-SEED channel {@link import('./factories.js').createWorkflow} uses ONLY
-	 * during construction to seed each live task's {@link TaskInterface.run} / `retries` /
-	 * `timeout` by id correlation (a phase id in `definition.phases` matches a live phase's
-	 * `id`; a task id within it matches a live task's `id`). Never read again after
-	 * construction and never persisted. Omitted (the restore path) ⇒ every built task's
-	 * `run` stays `undefined` — a tree with no run specs auto-completes its tasks (the
-	 * existing no-handler rule): its phases/tasks still reach a terminal status, just with
-	 * no dispatched behavior.
+	 * The `function`-task behavior registry ({@link WorkflowFunctions}) each live task's
+	 * {@link TaskDefinition.run} / {@link TaskSnapshot.run} name resolves against ONCE at
+	 * construction into its runtime {@link TaskInterface.handler} — the SAME registry a
+	 * fresh build ({@link import('./factories.js').createWorkflow}) and a restore
+	 * ({@link import('./factories.js').restoreWorkflow}) both consume, and the same shape a
+	 * live {@link WorkflowInterface.add} / {@link PhaseInterface.add} mint resolves a newly
+	 * minted task against. A `run` name absent from `functions` (or omitted entirely)
+	 * resolves to no handler — that task AUTO-COMPLETES (the no-handler rule): its
+	 * phase/workflow still reaches a terminal status, just with no dispatched behavior.
+	 * Omitted ⇒ an empty registry (every task auto-completes).
 	 */
-	readonly definition?: WorkflowDefinition
+	readonly functions?: WorkflowFunctions
 }
 
 // === Entity interfaces (AGENTS §7/§13 — the live W-b state machines)
@@ -864,25 +852,28 @@ export interface TaskInterface {
 	/** The recorded outcome once the task settled with one (`completed` / `failed`), else `undefined`. */
 	readonly result: TaskResult | undefined
 	/**
-	 * The {@link TaskForm} naming this task's behavior — RUNTIME-ONLY (mirrors
-	 * {@link TaskDefinition.run}, never persisted in a {@link TaskSnapshot}). Seeded at
-	 * construction from the matching {@link TaskDefinition} by id (see
-	 * {@link WorkflowOptions.definition}); a task built on the restore path (no definition
-	 * supplied) carries `undefined` — a tree with no run specs auto-completes its tasks
-	 * (the existing no-handler rule), so a restored, definition-less task settles the same
-	 * way a task whose name is unregistered in a live registry does.
+	 * The behavior reference — a plain registry key name, PERSISTED (mirrors
+	 * {@link TaskDefinition.run} / {@link TaskSnapshot.run}), like {@link PhaseInterface.bail}.
+	 * `undefined` when this task has no behavior reference.
 	 */
-	readonly run: TaskForm | undefined
+	readonly run: string | undefined
 	/**
-	 * Extra attempts after the first on failure — RUNTIME-ONLY (mirrors
-	 * {@link TaskDefinition.retries}, never persisted). Seeded at construction alongside
-	 * {@link run}; `undefined` on a definition-less (restore-path) task.
+	 * The RESOLVED runtime handler — RUNTIME-ONLY, NEVER persisted in a {@link TaskSnapshot}.
+	 * Resolved ONCE at construction (build, restore, or a live mint) by looking `run` up in the
+	 * workflow-level {@link WorkflowOptions.functions} registry: `functions?.[run]` when `run`
+	 * is defined, else `undefined`. A task with no `handler` (an omitted `run`, or a `run` name
+	 * absent from the registry) AUTO-COMPLETES (the no-handler rule) — its phase/workflow still
+	 * reaches a terminal status, just with no dispatched behavior.
+	 */
+	readonly handler: WorkflowFunction | undefined
+	/**
+	 * Extra attempts after the first on failure — PERSISTED (mirrors {@link TaskDefinition.retries}
+	 * / {@link TaskSnapshot.retries}), like {@link PhaseInterface.concurrency}. `undefined` ⇒ none.
 	 */
 	readonly retries: number | undefined
 	/**
-	 * The per-attempt deadline in milliseconds — RUNTIME-ONLY (mirrors
-	 * {@link TaskDefinition.timeout}, never persisted). Seeded at construction alongside
-	 * {@link run}; `undefined` on a definition-less (restore-path) task.
+	 * The per-attempt deadline in milliseconds — PERSISTED (mirrors {@link TaskDefinition.timeout}
+	 * / {@link TaskSnapshot.timeout}). `undefined` ⇒ no deadline.
 	 */
 	readonly timeout: number | undefined
 	start(): void
@@ -1023,10 +1014,11 @@ export interface PhaseInterface {
 	 *
 	 * @remarks
 	 * Converts `definition` → {@link TaskSnapshot} and constructs the live task (wired to
-	 * THIS phase, its recompute cascade, and its emitter hooks), seeding its
-	 * {@link TaskInterface.run} / `retries` / `timeout` from `definition` (runtime-only —
-	 * never persisted, mirrors the seed channel {@link WorkflowOptions.definition} threads
-	 * at build time). Requires `definition.id` to be UNIQUE among this phase's existing
+	 * THIS phase, its recompute cascade, and its emitter hooks), carrying its `run` /
+	 * `retries` / `timeout` from `definition` and resolving its {@link TaskInterface.handler}
+	 * against the workflow-level {@link WorkflowOptions.functions} registry — the SAME
+	 * resolution {@link import('./factories.js').createWorkflow} performs at build time.
+	 * Requires `definition.id` to be UNIQUE among this phase's existing
 	 * task ids — a duplicate is a `MUTATION` failure (mirrors
 	 * {@link TaskManagerInterface.add}'s own duplicate-id gate).
 	 *
@@ -1253,9 +1245,10 @@ export interface WorkflowInterface {
 	 * @remarks
 	 * Converts `definition` → {@link PhaseSnapshot} and constructs the live phase (wired to
 	 * THIS workflow, its recompute cascade, and its emitter hooks) plus each of its live
-	 * tasks — each task's {@link TaskInterface.run} / `retries` / `timeout` seeded from the
-	 * matching {@link TaskDefinition} by id (mirrors the {@link WorkflowOptions.definition}
-	 * seed channel {@link import('./factories.js').createWorkflow} uses at build time). The
+	 * tasks — each task's `run` / `retries` / `timeout` carried from its {@link TaskDefinition}
+	 * and its {@link TaskInterface.handler} resolved against the workflow-level
+	 * {@link WorkflowOptions.functions} registry (mirrors
+	 * {@link import('./factories.js').createWorkflow}'s build-time resolution). The
 	 * phase's effective `bail` resolves exactly as the build path does
 	 * (`definition.bail ?? this.bail`). Requires `definition.id` to be UNIQUE among this
 	 * workflow's existing phase ids — a duplicate is a `MUTATION` failure (mirrors
@@ -1487,38 +1480,12 @@ export type WorkflowFunction = (controller: TaskControllerInterface) => Promise<
  * {@link WorkflowFunction} handlers.
  *
  * @remarks
- * The runner resolves a `function`-form {@link TaskForm}'s `name` here. A name absent
- * from the registry is the no-handler case — the task AUTO-COMPLETES (the ROADMAP rule),
- * exactly like an unsupported form. A plain record (not a manager) — the registry is a
- * lookup, with no lifecycle of its own.
+ * A live {@link TaskInterface} resolves its `run` name against this registry ONCE at
+ * construction into its {@link TaskInterface.handler}. A name absent from the registry (or
+ * an omitted `run`) is the no-handler case — the task AUTO-COMPLETES (the ROADMAP rule). A
+ * plain record (not a manager) — the registry is a lookup, with no lifecycle of its own.
  */
 export type WorkflowFunctions = Readonly<Record<string, WorkflowFunction>>
-
-/**
- * The `agent`-task behavior resolver (W-c2) — resolves a registered agent BY NAME to a
- * live {@link AgentInterface} the runner runs as a subagent.
- *
- * @remarks
- * The `agent` analogue of the {@link WorkflowFunctions} registry / the
- * {@link ToolManagerInterface} the other two forms dispatch through: the runner resolves
- * an `agent`-form {@link TaskForm}'s `name` here. A name absent from the resolver is the
- * no-handler case — the task AUTO-COMPLETES (the ROADMAP rule), exactly like an
- * unregistered `function` / `tool`.
- *
- * **Resolve a FRESH agent per call.** A phase's tasks run CONCURRENTLY, so two `agent`
- * tasks naming the same agent are resolved concurrently — and the runner BINDS a
- * depth/cycle-aware workflow tool onto each resolved agent's `context.tools` (the
- * propagation seam — see {@link WorkflowToolOptions}). An implementation that returns the
- * SAME instance for both would have them race on that mutation, so it must mint a fresh
- * agent each call (exactly as `AgentRegistry.build` does). A function resolver
- * (`(name) => …`) is the minimal shape; the agents module's `AgentRegistry` is not a
- * direct fit (its `build` rehydrates from a serializable `AgentJobInput`, not a bare
- * name), so a small adapter `(name) => registry.build({ provider, ... })` bridges it.
- *
- * @param name - The agent's registry key (the `agent`-form's `name`)
- * @returns The resolved live agent, or `undefined` when the name is unregistered
- */
-export type WorkflowAgents = (name: string) => AgentInterface | undefined
 
 /**
  * The per-task handle a {@link WorkflowFunction} receives — the running task's
@@ -1599,49 +1566,28 @@ export interface WorkflowResult {
  *   `signal` and `start`s it. (A `max: 0` budget is exhausted from its first `start`, so it
  *   cancels the run at entry — a DIFFERENT primitive from the `timeout: 0` "no deadline" case.)
  *
- * The last two are the W-c2 DEPTH / CYCLE bookkeeping — the run's position in a nested
- * workflow→agent→workflow chain, threaded across the
- * `execute → agent-task → createWorkflowTool → nested execute` boundary so the guard can
- * bound recursion. A TOP-LEVEL `execute` omits both (depth `0`, empty ancestry); only the
- * runner-bound workflow tool ({@link import('./factories.js').createWorkflowTool}) supplies
- * them, incrementing the depth and extending the ancestry for each nested run.
- * - `depth` — the run's nesting depth (default `0`). An `agent` task is REJECTED (a typed
- *   `DEPTH` `task.fail`) when running it would push the chain past
- *   {@link import('./constants.js').MAX_WORKFLOW_DEPTH}.
- * - `ancestry` — the identifiers of the workflows + agents already in this run chain
- *   (e.g. `workflow:<id>` / `agent:<name>`). An `agent` task whose target agent — or the
- *   workflow it would author — is already present is a CYCLE and is likewise rejected.
- *   Default empty.
+ * The engine itself carries NO nesting bookkeeping — the depth / cycle guard for a nested
+ * `agent` → workflow-tool → workflow chain lives entirely in the OPT-IN adapter factories
+ * ({@link import('./factories.js').createAgentFunction}, {@link import('./factories.js').createWorkflowTool}),
+ * closed over their own `depth` / `ancestry`, never threaded through `execute`'s options.
  */
 export type WorkflowRunOptions = WorkflowOptions & {
 	readonly signal?: AbortSignal
 	readonly timeout?: number
 	readonly budget?: BudgetInterface<TokenUsage>
-	/** The run's nesting depth (W-c2); default `0`. Threaded by the bound workflow tool, never by a top-level caller. */
-	readonly depth?: number
-	/** The workflow / agent identifiers already in this run chain (W-c2 cycle guard); default empty. */
-	readonly ancestry?: readonly string[]
 }
 
 /**
- * The options for `createWorkflowRunner` — the behavior registries the runner dispatches
- * a task BY NAME through, plus the optional pacing scheduler.
+ * The options for `createWorkflowRunner` — the optional pacing scheduler the runner
+ * paces phase boundaries with.
  *
  * @remarks
- * - `functions` — the {@link WorkflowFunctions} registry for `function`-form tasks. A name
- *   absent here is the no-handler case (the task auto-completes). Omitted ⇒ an empty
- *   registry (every `function` task auto-completes).
- * - `tools` — the {@link ToolManagerInterface} (the shipped tool registry) a `tool`-form
- *   task is dispatched through: the runner resolves `run.name` via `tools.tool(name)` and
- *   invokes it with the task's input. An unregistered tool name is the no-handler case
- *   (auto-completes). Omitted ⇒ every `tool` task auto-completes.
- * - `agents` — the {@link WorkflowAgents} resolver (W-c2) an `agent`-form task is dispatched
- *   through: the runner resolves `run.name` to a live
- *   {@link AgentInterface}, BINDS a depth/cycle-aware workflow
- *   tool onto its `context.tools` (the propagation seam), folds the task's cancellation into
- *   the agent run, and drives it (success → `complete`, throw → `fail`), all behind the
- *   depth + cycle guard. An unregistered agent name is the no-handler case (auto-completes).
- *   Omitted ⇒ every `agent` task auto-completes.
+ * The runner is a PURE engine — it carries no `functions` / `tools` / `agents` registry
+ * (each live task already resolved its own handler at construction from
+ * {@link WorkflowOptions.functions}); wiring a `function`-form task to a tool or an agent is
+ * an OPT-IN concern of `factories.ts`'s adapter factories
+ * ({@link import('./factories.js').createToolFunction}, {@link import('./factories.js').createAgentFunction}),
+ * which a caller composes into its OWN `functions` registry.
  * - `scheduler` — the {@link SchedulerInterface} that paces the tree (a cooperative
  *   `yield` between phases). Omitted ⇒ the shipped cross-environment default
  *   ({@link createScheduler}).
@@ -1652,11 +1598,31 @@ export type WorkflowRunOptions = WorkflowOptions & {
  * wire. A future runner-level emitter would introduce its own `EmitterHooks` here.
  */
 export interface WorkflowRunnerOptions {
-	readonly functions?: WorkflowFunctions
-	readonly tools?: ToolManagerInterface
-	/** The {@link WorkflowAgents} resolver for `agent`-form tasks (W-c2); omitted ⇒ every `agent` task auto-completes. */
-	readonly agents?: WorkflowAgents
 	readonly scheduler?: SchedulerInterface
+}
+
+/**
+ * Options for {@link import('./factories.js').createAgentFunction} — the OPT-IN adapter that
+ * wraps a live `AgentInterface` (`@orkestrel/agent`) as a {@link WorkflowFunction}, folding a
+ * nested workflow-authoring depth / cycle guard into its closure.
+ *
+ * @remarks
+ * All fields are optional: omitted entirely, the adapter runs the agent with no nested
+ * workflow tool bound and no depth/cycle bound (depth `0`, empty ancestry).
+ * - `runner` — when supplied, the adapter BINDS a depth/cycle-aware
+ *   {@link import('./factories.js').createWorkflowTool} onto the agent's `context.tools` (the
+ *   propagation seam), so the agent can author + run a NESTED workflow through it. Omitted ⇒
+ *   the agent runs with no workflow tool bound.
+ * - `depth` — this invocation's nesting depth (default `0`); the bound workflow tool runs its
+ *   nested workflow at `depth + 1`, bounded by {@link import('./constants.js').MAX_WORKFLOW_DEPTH}.
+ * - `ancestry` — the workflow / agent identifiers already in this run chain (default empty); a
+ *   cycle (this agent already present) is rejected with a typed `DEPTH`
+ *   {@link import('./errors.js').WorkflowError}.
+ */
+export interface AgentFunctionOptions {
+	readonly runner?: WorkflowRunnerInterface
+	readonly depth?: number
+	readonly ancestry?: readonly string[]
 }
 
 /**
@@ -1688,33 +1654,9 @@ export interface WorkflowToolOptions {
 }
 
 /**
- * The workflow-tool binder — the signature of {@link import('./factories.js').createWorkflowTool},
- * threaded into the {@link WorkflowRunnerInterface} at construction (W-c2) so the runner can BIND a
- * depth/cycle-aware workflow tool onto a dispatched subagent.
- *
- * @remarks
- * The runner receives a REFERENCE to `createWorkflowTool` rather than importing it, because
- * `createWorkflowTool` lives in `factories.ts` which imports the runner CLASS (the
- * factories→classes direction); importing the factory back into the class would be a cycle. The
- * factory (which legitimately owns `createWorkflowContract`) is passed as a value at construction,
- * and the runner invokes it with `this` as the `runner` argument — keeping the cycle-free seam an
- * explicit, typed contract rather than a hidden dependency.
- *
- * @param definition - The workflow the bound tool runs when called with no authored args
- * @param runner - The runner that executes the (nested) workflow (the runner passes `this`)
- * @param options - The depth + ancestry the nested workflow runs under (see {@link WorkflowToolOptions})
- * @returns The bound {@link ToolInterface}
- */
-export type WorkflowToolBinder = (
-	definition: WorkflowDefinition,
-	runner: WorkflowRunnerInterface,
-	options?: WorkflowToolOptions,
-) => ToolInterface
-
-/**
  * A thin orchestrator that EXECUTES a live {@link WorkflowInterface} tree by composing the
- * shipped substrate — phases sequential, tasks concurrent, dispatched by name under the
- * `bail` policy.
+ * shipped substrate — phases sequential, tasks concurrent, each task dispatched through its
+ * OWN resolved handler under the `bail` policy.
  *
  * @remarks
  * `execute(definition, options?)` BUILDS the live W-b entity tree from the definition itself
@@ -1723,18 +1665,19 @@ export type WorkflowToolBinder = (
  * through ONE substrate {@link RunnerInterface} (concurrency =
  * the phase's {@link PhaseDefinition.concurrency}). The definition is the SINGLE source of
  * truth: the runner owns both the declarative state (the live tree it constructs) and the
- * EXECUTION-ONLY fields the snapshot deliberately dropped — each task's {@link TaskForm}
- * (`run`) and each phase's `concurrency` (so there is no separately-supplied workflow to drift
- * from the definition). The freshly-built live tree is returned in {@link WorkflowResult.workflow}.
- * Each task is dispatched by its {@link TaskForm} — a `function` through the
- * {@link WorkflowFunctions} registry, a `tool` through the {@link ToolManagerInterface}; a
- * task whose handler is not found AUTO-COMPLETES. The runner DRIVES the live entity (`start`
- * → `complete` / `fail`), never re-implementing status. The `bail` policy maps onto the
- * substrate's fail-fast (`bail: true` — the first failure aborts in-flight siblings and skips
- * the rest) vs settle-all (`bail: false` — failures are recorded and the run finishes). The
- * {@link WorkflowOptions} half of the options is forwarded to `createWorkflow` (initial
- * listeners, a `bail` override, per-node options); the Abort / Timeout / Budget bounds fold
- * per run via `AbortSignal.any`, halting the run and `stop`ping the workflow. A second
+ * EXECUTION-ONLY field the snapshot deliberately dropped — each task's `run` (resolved into
+ * its {@link TaskInterface.handler} once at construction, against
+ * {@link WorkflowOptions.functions}) and each phase's `concurrency` (so there is no
+ * separately-supplied workflow to drift from the definition). The freshly-built live tree is
+ * returned in {@link WorkflowResult.workflow}. The runner carries NO registry of its own — it
+ * simply invokes each task's OWN {@link TaskInterface.handler}; a task with no handler
+ * AUTO-COMPLETES. The runner DRIVES the live entity (`start` → `complete` / `fail`), never
+ * re-implementing status. The `bail` policy maps onto the substrate's fail-fast (`bail: true`
+ * — the first failure aborts in-flight siblings and skips the rest) vs settle-all (`bail:
+ * false` — failures are recorded and the run finishes). The {@link WorkflowOptions} half of
+ * the options is forwarded to `createWorkflow` (initial listeners, a `bail` override,
+ * per-node options, the `functions` registry); the Abort / Timeout / Budget bounds fold per
+ * run via `AbortSignal.any`, halting the run and `stop`ping the workflow. A second
  * `execute(workflow, options?)` overload drives a CALLER-BUILT live tree instead — the
  * entity-native control surface (AGENTS §10: `pause` / `resume` / `add` / `stop` /
  * `destroy` live on {@link WorkflowInterface} itself); see its own doc for details.
@@ -1747,10 +1690,11 @@ export interface WorkflowRunnerInterface {
 	 *
 	 * @remarks
 	 * One-shot. The runner BUILDS the live tree from `definition` internally (one source of
-	 * truth — the per-task {@link TaskForm} (`run`) and per-phase `concurrency` come from the
-	 * same definition the tree is constructed from, so the executed tree can never drift from
-	 * the form/throttle metadata). The {@link WorkflowOptions} part of `options` (initial `on`
-	 * listeners, a `bail` override, the per-node `phases` bag) is forwarded to the build.
+	 * truth — the per-task `run` (resolved into its {@link TaskInterface.handler}) and per-phase
+	 * `concurrency` come from the same definition the tree is constructed from, so the executed
+	 * tree can never drift from the metadata). The {@link WorkflowOptions} part of `options`
+	 * (initial `on` listeners, a `bail` override, the per-node `phases` bag, the `functions`
+	 * registry) is forwarded to the build.
 	 * Under `bail: false` (graceful) every task settles (a failure is recorded on its
 	 * {@link TaskInterface}) and the workflow reaches `completed`; under `bail: true` (halt)
 	 * the first failure aborts the in-flight sibling tasks AND `skip`s the remaining tasks /

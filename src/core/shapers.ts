@@ -5,7 +5,6 @@ import {
 	objectShape,
 	optionalShape,
 	stringShape,
-	unionShape,
 } from '@orkestrel/contract'
 
 // Workflow contract shapes — the shape VALUES the contract (factories.ts) compiles
@@ -27,54 +26,26 @@ import {
 // zero hint. The guidance is advisory metadata only: it never changes what the guard /
 // parser accept (the contract stays byte-for-byte strict).
 
-// The description-carrying `via` discriminant + `bail` toggle ride on the shared
-// `literalShape` (the `@orkestrel/contract` module) — a described single-value literal
-// is just `literalShape([value], { description })`, so no module-local helper is needed.
+// The description-carrying `bail` toggle rides on the shared `literalShape` (the
+// `@orkestrel/contract` module) — a described single-value literal is just
+// `literalShape([value], { description })`, so no module-local helper is needed.
 
 /**
- * The shape of a {@link import('./types.js').TaskForm} — a descriptive tagged union
- * over the three execution mechanisms, discriminated by the `via` literal (never a
- * bare `kind`; AGENTS §4.4). Each variant pairs the `via` discriminant with a `name`
- * (the registry key for the behavior).
- *
- * @remarks
- * The union and each `via` literal + `name` carry a `description` so the emitted JSON
- * Schema spells out what the discriminant means and that `name` is a REGISTERED key
- * (not a human label) — the field-level guidance a small model needs to fill `run`.
- */
-export const taskFormShape = unionShape(
-	objectShape({
-		via: literalShape(['function'], { description: 'Run a registered workflow FUNCTION by name.' }),
-		name: stringShape({
-			min: 1,
-			description: 'The registered function name to invoke (a registry key, not a label).',
-		}),
-	}),
-	objectShape({
-		via: literalShape(['tool'], { description: 'Run a registered TOOL by name.' }),
-		name: stringShape({
-			min: 1,
-			description: 'The registered tool name to invoke (a registry key, not a label).',
-		}),
-	}),
-	objectShape({
-		via: literalShape(['agent'], { description: 'Run a registered AGENT (a subagent) by name.' }),
-		name: stringShape({
-			min: 1,
-			description: 'The registered agent name to invoke (a registry key, not a label).',
-		}),
-	}),
-)
-
-/**
- * The shape of a {@link import('./types.js').TaskDefinition} — identity plus the
- * behavior reference ({@link taskFormShape}). `description` is optional prose.
+ * The shape of a {@link import('./types.js').TaskDefinition} — identity plus an optional
+ * `run` behavior reference (a plain registry-key string, min length 1). `description` is
+ * optional prose.
  */
 export const taskShape = objectShape({
 	id: stringShape({ min: 1, description: 'Unique task id within its phase.' }),
 	name: stringShape({ min: 1, description: 'Human-readable task name.' }),
 	description: optionalShape(stringShape({ description: 'Optional task description.' })),
-	run: taskFormShape,
+	run: optionalShape(
+		stringShape({
+			min: 1,
+			description:
+				'The registered behavior name to invoke (a registry key, not a label); omitted has no handler.',
+		}),
+	),
 	retries: optionalShape(
 		integerShape({
 			min: 0,
@@ -150,7 +121,7 @@ export const workflowShape = objectShape({
  * @remarks
  * A PROVIDED `id` / `name` still carries `minLength: 1`, so an explicitly-empty `id: ''`
  * is INVALID (rejected by the draft contract), never auto-filled — keeping "garbage"
- * distinct from "omitted". `run` stays required.
+ * distinct from "omitted". `run` stays optional, mirroring {@link taskShape}.
  */
 export const taskDraftShape = objectShape({
 	id: optionalShape(stringShape({ min: 1, description: 'Task id; auto-filled when omitted.' })),
@@ -158,7 +129,13 @@ export const taskDraftShape = objectShape({
 		stringShape({ min: 1, description: 'Task name; defaults to the id when omitted.' }),
 	),
 	description: optionalShape(stringShape({ description: 'Optional task description.' })),
-	run: taskFormShape,
+	run: optionalShape(
+		stringShape({
+			min: 1,
+			description:
+				'The registered behavior name to invoke (a registry key, not a label); omitted has no handler.',
+		}),
+	),
 	retries: optionalShape(
 		integerShape({
 			min: 0,
@@ -230,34 +207,28 @@ export const workflowDraftShape = objectShape({
 })
 
 /**
- * The shape of ONE flat step — `{ name, via? }` — the building block of
+ * The shape of ONE flat step — `{ name }` — the building block of
  * {@link workflowStepsShape}.
  *
  * @remarks
- * `name` is the REGISTERED behavior name the step runs (it becomes the task's `run.name`);
- * `via` is the optional execution mechanism (defaults to `'function'` when omitted). The
+ * `name` is the REGISTERED behavior name the step runs (it becomes the task's `run`). The
  * tool expands each step into a one-task phase, in order
  * ({@link import('./helpers.js').expandSteps}).
  */
 export const stepShape = objectShape({
 	name: stringShape({
 		min: 1,
-		description: 'The registered behavior name this step runs (becomes the task run.name).',
+		description: 'The registered behavior name this step runs (becomes the task run).',
 	}),
-	via: optionalShape(
-		literalShape(['function', 'tool', 'agent'], {
-			description: 'How to run it: function (default), tool, or agent.',
-		}),
-	),
 })
 
 /**
  * The FLAT authoring shape `createWorkflowTool` advertises as its `parameters` — the
- * simplest surface a small model can fill: `{ name?, steps: [{ name, via? }] }`.
+ * simplest surface a small model can fill: `{ name?, steps: [{ name }] }`.
  *
  * @remarks
  * The deliberately-reduced surface (AGENTS §21): a flat ordered list of steps, each a
- * `{ name, via? }`. The tool EXPANDS it ({@link import('./helpers.js').expandSteps}) into a
+ * `{ name }`. The tool EXPANDS it ({@link import('./helpers.js').expandSteps}) into a
  * full {@link import('./types.js').WorkflowDefinition} — one one-task phase per step, in
  * order — then validates against the STRICT
  * {@link import('./factories.js').createWorkflowContract} gate. The full nested form is

@@ -12,6 +12,7 @@ import type {
 	TaskResult,
 	WorkflowContext,
 	WorkflowEventMap,
+	WorkflowFunctions,
 	WorkflowInterface,
 	WorkflowOptions,
 	WorkflowSnapshot,
@@ -28,7 +29,6 @@ import {
 	deriveWorkflowStatus,
 	failure,
 	findFailure,
-	findPhaseDefinition,
 	isTerminalStatus,
 	phaseDefinitionToSnapshot,
 } from './helpers.js'
@@ -87,6 +87,9 @@ export class Workflow implements WorkflowInterface {
 	// own persisted policy, so an option-less restore is identical). Distinct from `#bail` (the
 	// resolved default), which is ALWAYS defined.
 	readonly #bailOverride: boolean | undefined
+	// The `function`-task behavior registry each live task's `run` name resolves against ONCE at
+	// construction — threaded to every Phase (and, transitively, every Task).
+	readonly #functions: WorkflowFunctions | undefined
 	readonly #phases: PhaseManager = new PhaseManager()
 	// The PUSH observation surface (§13) — owned, never inherited. The emitter isolates a
 	// listener throw (routing it to the `error` handler), never the cascade.
@@ -116,6 +119,7 @@ export class Workflow implements WorkflowInterface {
 		// The explicit override (only when supplied) — cascaded to every phase so it overrides their
 		// persisted per-phase bail; omitted ⇒ each phase keeps its own persisted policy (identical restore).
 		this.#bailOverride = options?.bail
+		this.#functions = options?.functions
 		this.#emitter = new Emitter<WorkflowEventMap>({ on: options?.on, error: options?.error })
 		this.#created = snapshot.created
 		this.#updated = snapshot.updated
@@ -125,8 +129,8 @@ export class Workflow implements WorkflowInterface {
 		this.#destroyed = false
 		// Build the live phases positionally from the snapshot — each wired to recompute THIS
 		// workflow on a derived-status change, carrying its own per-phase options + restore state,
-		// and — when `options.definition` was supplied (the build-time seed channel) — the
-		// correlated PhaseDefinition, so each of its tasks seeds `run` / `retries` / `timeout`.
+		// and the workflow-level `#functions` registry, so each of its tasks resolves its `run`
+		// name into a runtime handler ONCE at construction.
 		for (const phase of snapshot.phases) this.#append(phase, options)
 		// Restore the override DIRECTLY from the snapshot's own field (present only when a whole-
 		// workflow skip / stop forced it) — no fragile status-divergence guess. Then seed the
@@ -442,10 +446,9 @@ export class Workflow implements WorkflowInterface {
 
 	// Build one live phase from its snapshot, threading its per-phase options (keyed by id under
 	// the workflow options) + the explicit workflow bail override (when one was supplied — it
-	// overrides the phase's persisted per-phase bail) + the correlated PhaseDefinition (when
-	// `options.definition` was supplied — the build-time seed channel, so the phase's own tasks
-	// seed `run` / `retries` / `timeout` by id) and wiring it to recompute THIS workflow on a
-	// derived-status change.
+	// overrides the phase's persisted per-phase bail) + THIS workflow's `#functions` registry
+	// (so the phase's own tasks resolve their `run` name into a runtime handler) and wiring it
+	// to recompute THIS workflow on a derived-status change.
 	#append(phase: PhaseSnapshot, options: WorkflowOptions | undefined): void {
 		const created = new Phase(
 			phase,
@@ -453,16 +456,17 @@ export class Workflow implements WorkflowInterface {
 			() => this.#recompute(),
 			options?.phases?.[phase.id],
 			this.#bailOverride,
-			findPhaseDefinition(options?.definition, phase.id),
+			this.#functions,
 		)
 		this.#phases.append(created)
 	}
 
 	// MINT a live phase (and its tasks) from a PhaseDefinition for a live `add` — converts it to
 	// an initial PhaseSnapshot (`phaseDefinitionToSnapshot`'s per-phase step, resolving effective
-	// bail as `definition.bail ?? this.#bail`) then builds it via the Phase constructor's OWN
-	// definition-threading, so a live mint and a built/restored phase are wired IDENTICALLY —
-	// same recompute cascade, same emitter hooks, same per-task run/retries/timeout seeding.
+	// bail as `definition.bail ?? this.#bail`, carrying each task's `run` / `retries` / `timeout`)
+	// then builds it via the Phase constructor's OWN `#functions` resolution, so a live mint and a
+	// built/restored phase are wired IDENTICALLY — same recompute cascade, same emitter hooks,
+	// same handler resolution.
 	#mint(definition: PhaseDefinition): Phase {
 		return new Phase(
 			phaseDefinitionToSnapshot(definition, this.#bail),
@@ -470,7 +474,7 @@ export class Workflow implements WorkflowInterface {
 			() => this.#recompute(),
 			undefined,
 			this.#bailOverride,
-			definition,
+			this.#functions,
 		)
 	}
 

@@ -24,14 +24,14 @@ function buildTwoPhaseWorkflow(bail: boolean): WorkflowDefinition {
 				id: 'a',
 				name: 'A',
 				tasks: [
-					{ id: 't0', name: 'T0', run: { via: 'function', name: 'f' } },
-					{ id: 't1', name: 'T1', run: { via: 'function', name: 'f' } },
+					{ id: 't0', name: 'T0', run: 'f' },
+					{ id: 't1', name: 'T1', run: 'f' },
 				],
 			},
 			{
 				id: 'b',
 				name: 'B',
-				tasks: [{ id: 't2', name: 'T2', run: { via: 'function', name: 'f' } }],
+				tasks: [{ id: 't2', name: 'T2', run: 'f' }],
 			},
 		],
 	}
@@ -529,12 +529,12 @@ describe('Workflow — the snapshot is self-contained (bail + override persist)'
 					id: 'a',
 					name: 'A',
 					bail: true, // …but THIS phase is strict
-					tasks: [{ id: 't0', name: 'T0', run: { via: 'function', name: 'f' } }],
+					tasks: [{ id: 't0', name: 'T0', run: 'f' }],
 				},
 				{
 					id: 'b',
 					name: 'B',
-					tasks: [{ id: 't1', name: 'T1', run: { via: 'function', name: 'f' } }],
+					tasks: [{ id: 't1', name: 'T1', run: 'f' }],
 				},
 			],
 		}
@@ -686,7 +686,7 @@ function buildMultiPhaseWorkflow(count: number): WorkflowDefinition {
 		phases: Array.from({ length: count }, (_unused, index) => ({
 			id: `p${index}`,
 			name: `P${index}`,
-			tasks: [{ id: `t${index}`, name: `T${index}`, run: { via: 'function', name: 'f' } }],
+			tasks: [{ id: `t${index}`, name: `T${index}`, run: 'f' }],
 		})),
 	}
 }
@@ -871,7 +871,7 @@ describe('Workflow — structural API: add() mints a live phase', () => {
 		const result = workflow.add({
 			id: 'p1',
 			name: 'P1',
-			tasks: [{ id: 't1', name: 'T1', run: { via: 'function', name: 'f' } }],
+			tasks: [{ id: 't1', name: 'T1', run: 'f' }],
 		})
 		expect(result.success).toBe(true)
 		if (!result.success) throw new Error('expected add to succeed')
@@ -886,7 +886,7 @@ describe('Workflow — structural API: add() mints a live phase', () => {
 		const result = workflow.add({
 			id: 'p1',
 			name: 'P1',
-			tasks: [{ id: 't1', name: 'T1', run: { via: 'function', name: 'f' } }],
+			tasks: [{ id: 't1', name: 'T1', run: 'f' }],
 		})
 		if (!result.success) throw new Error('expected add to succeed')
 		const phase = result.value

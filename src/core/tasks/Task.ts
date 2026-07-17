@@ -3,13 +3,13 @@ import type {
 	PhaseInterface,
 	TaskContext,
 	TaskEventMap,
-	TaskForm,
 	TaskInterface,
 	TaskOptions,
 	TaskResult,
 	TaskSnapshot,
 	TaskStatus,
 	TaskUpdate,
+	WorkflowFunction,
 	WorkflowInterface,
 } from '../types.js'
 import { Emitter } from '@orkestrel/emitter'
@@ -41,12 +41,12 @@ import { canTransitionTask } from '../helpers.js'
  *   matching event strictly AFTER the state change, BEFORE the cascade; the emitter isolates
  *   a listener throw and routes it to its `error` handler (the `error` option), so a buggy
  *   observer can never corrupt a transition.
- * - **Runtime-only behavior (AGENTS §12).** `run` / `retries` / `timeout` mirror the matching
- *   {@link import('../types.js').TaskDefinition} fields but are NEVER persisted in a
- *   {@link TaskSnapshot} — seeded at construction (by id correlation against a
- *   {@link import('../types.js').WorkflowOptions.definition} at build time, or a
- *   {@link PhaseInterface.add} mint's own definition), `undefined` on the restore path (a
- *   definition-less tree auto-completes its tasks, the existing no-handler rule).
+ * - **Declarative config (AGENTS §12).** `run` / `retries` / `timeout` PERSIST in a
+ *   {@link TaskSnapshot} (like a phase's `bail` / `concurrency`), carried verbatim from the
+ *   matching {@link import('../types.js').TaskDefinition} / {@link TaskSnapshot} field. `handler`
+ *   is the RUNTIME-ONLY counterpart — `run` resolved ONCE at construction against the
+ *   workflow-level {@link import('../types.js').WorkflowOptions.functions} registry — and is
+ *   NEVER persisted; `undefined` when `run` is omitted or unregistered (the no-handler rule).
  */
 export class Task implements TaskInterface {
 	readonly #context: TaskContext
@@ -68,11 +68,13 @@ export class Task implements TaskInterface {
 	// stamps.
 	#name: string
 	#description: string | undefined
-	// RUNTIME-ONLY (never persisted): seeded at construction from the matching TaskDefinition by
-	// id correlation; `undefined` on a definition-less (restore path) task.
-	readonly #run: TaskForm | undefined
+	// PERSISTED declarative config, carried verbatim from the TaskDefinition / TaskSnapshot.
+	readonly #run: string | undefined
 	readonly #retries: number | undefined
 	readonly #timeout: number | undefined
+	// RUNTIME-ONLY (never persisted): `run` resolved ONCE at construction against the
+	// workflow-level functions registry; `undefined` when `run` is omitted or unregistered.
+	readonly #handler: WorkflowFunction | undefined
 
 	constructor(
 		context: TaskContext,
@@ -82,9 +84,10 @@ export class Task implements TaskInterface {
 		options?: TaskOptions,
 		status: TaskStatus = 'pending',
 		result?: TaskResult,
-		run?: TaskForm,
+		run?: string,
 		retries?: number,
 		timeout?: number,
+		handler?: WorkflowFunction,
 	) {
 		this.#context = context
 		this.#phase = phase
@@ -100,11 +103,12 @@ export class Task implements TaskInterface {
 		this.#result = result
 		this.#name = context.name
 		this.#description = context.description
-		// Seeded from the correlated TaskDefinition (by id) at construction; `undefined` on the
-		// restore path — never re-read afterward, never persisted in a TaskSnapshot.
+		// Carried verbatim from the TaskDefinition / TaskSnapshot (declarative, persisted).
 		this.#run = run
 		this.#retries = retries
 		this.#timeout = timeout
+		// Resolved ONCE by the caller (Phase) against the functions registry; stored as-is.
+		this.#handler = handler
 	}
 
 	get emitter(): EmitterInterface<TaskEventMap> {
@@ -143,8 +147,12 @@ export class Task implements TaskInterface {
 		return this.#result
 	}
 
-	get run(): TaskForm | undefined {
+	get run(): string | undefined {
 		return this.#run
+	}
+
+	get handler(): WorkflowFunction | undefined {
+		return this.#handler
 	}
 
 	get retries(): number | undefined {
@@ -234,7 +242,8 @@ export class Task implements TaskInterface {
 	}
 
 	snapshot(): TaskSnapshot {
-		// Pure JSON: identity + status + the recorded result + the open metadata bag. The leaf's
+		// Pure JSON: identity + status + the recorded result + the open metadata bag + the
+		// declarative run/retries/timeout config (like a phase's bail/concurrency). The leaf's
 		// status IS its forced-terminal marker (`skipped` / `stopped`), so restore reinstates the
 		// leaf from `status` directly — no separate override field is needed at the leaf.
 		return {
@@ -244,6 +253,9 @@ export class Task implements TaskInterface {
 			status: this.#status,
 			...(this.#result === undefined ? {} : { result: this.#result }),
 			metadata: this.#metadata,
+			...(this.#run === undefined ? {} : { run: this.#run }),
+			...(this.#retries === undefined ? {} : { retries: this.#retries }),
+			...(this.#timeout === undefined ? {} : { timeout: this.#timeout }),
 		}
 	}
 

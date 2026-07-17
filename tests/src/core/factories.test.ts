@@ -1,83 +1,94 @@
 import type { ToolResult } from '@orkestrel/agent'
-import type { WorkflowDefinition, WorkflowDraft } from '@src/core'
-import { buildToolResult, createToolManager } from '@orkestrel/agent'
+import type {
+	TaskContext,
+	TaskControllerInterface,
+	WorkflowDefinition,
+	WorkflowDraft,
+	WorkflowFunction,
+} from '@src/core'
+import { buildToolResult, createAgent, createToolManager, createTool } from '@orkestrel/agent'
 import { isRecord } from '@orkestrel/contract'
 import {
 	assertSnapshot,
+	createAgentFunction,
 	createScheduler,
+	createToolFunction,
 	createWorkflow,
 	createWorkflowContract,
 	createWorkflowDraftContract,
 	createWorkflowRunner,
 	createWorkflowTool,
+	definitionToSnapshot,
 	expandSteps,
 	isWorkflowError,
 	MAX_WORKFLOW_DEPTH,
 	restoreWorkflow,
 	WORKFLOW_TOOL_FLAT_EXAMPLE,
+	WORKFLOW_TOOL_NAME,
 	WORKFLOW_TOOL_NESTED_EXAMPLE,
 } from '@src/core'
 import { describe, expect, it } from 'vitest'
 import {
-	buildWorkflowDefinition,
 	captureError,
+	createRecorder,
 	createRecordingScheduler,
+	createScriptedProvider,
 	waitForDelay,
 } from '../../setup.js'
 import { createRunner } from '@src/core'
 
-// A workflow runner paced by an INJECTED `createRecordingScheduler` — the project's real
-// `SchedulerInterface` whose `yield` resolves immediately (honouring an abort signal exactly like
-// the shipped one, just without arming a real timer), threaded through the production
-// `WorkflowRunnerOptions.scheduler` seam (NOT a mock of the runner — the unit under test runs in
-// full). The runner paces BETWEEN phases, and the default `createScheduler` does so via a real
-// `setTimeout(0)` macrotask; for a multi-phase run (an ids-omitted / flat blob expands to two-or-
-// more one-task phases) that wall-clock yield is a genuine starvation point under load, so driving
-// the clock removes it (AGENTS §16 deterministic) — a behaviour-identical no-op for the single-phase
-// cases (they never reach an inter-phase yield). The scheduler is NOT the whole story: each
-// `tool.execute` still drives a real-async round-trip through the substrate `createRunner`/`Queue`
-// (a cooperative wake-park loop over real promises) that the workflow-run tests pair with a higher
-// per-test timeout ({@link ROUND_TRIP_TIMEOUT_MS}) so event-loop starvation under full parallel
-// load can't flake them.
+// A workflow runner paced by an INJECTED `createRecordingScheduler` (AGENTS §16 deterministic,
+// not a mock of the runner — the unit under test runs in full). Per the redesign, the runner
+// itself carries NO `functions` registry — behavior resolution rides `execute`'s options.
 function runner(): ReturnType<typeof createWorkflowRunner> {
 	return createWorkflowRunner({ scheduler: createRecordingScheduler() })
 }
 
-// A higher per-test timeout for the `tool.execute` workflow-run tests below. Running an authored
-// blob is a GENUINELY real-async integration round-trip — the tool parses + validates the args,
-// then `runner.execute` builds a live W-b tree and drives it through the substrate
-// `createRunner`/`Queue` (a cooperative wake-park loop awaiting real promises across many microtask
-// turns), the per-task abort fold, and the emitter cascade. That chain cannot be made instantaneous
-// without MOCKING the unit under test (forbidden, §16.2); pacing is already deterministic (the
-// injected `runner()` scheduler, no wall-clock `setTimeout`). Under full-`src:core`-project parallel
-// load (~105 test files across the fork pool saturating every CPU) the round-trip — sub-millisecond
-// in isolation — can be event-loop-starved past vitest's 5s default and flake. A generous ceiling
-// (6× the default) absorbs worst-case starvation while still failing fast on a genuine hang (§16.3 —
-// a measured setting with a current reason).
 const ROUND_TRIP_TIMEOUT_MS = 30_000
 
-// A one-task `function` workflow definition (its function unregistered, so the lone task
-// auto-completes ⇒ a `completed` run) — the simplest definition a `createWorkflowTool` can run.
+// A one-task definition whose `run` is left UNREGISTERED against any functions passed at
+// `execute` time, so the lone task auto-completes ⇒ a `completed` run — the simplest
+// definition a `createWorkflowTool` can run.
 function simpleDefinition(id = 'nested'): WorkflowDefinition {
 	return {
 		id,
 		name: id,
+		phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', run: 'noop' }] }],
+	}
+}
+
+// A fuller definition (two phases, three tasks, a concurrency throttle, an explicit bail) used by
+// the createWorkflow / restoreWorkflow / snapshot-trio tests — the local replacement for
+// setup.ts's `buildWorkflowDefinition` (still on the OLD `{ via, name }` task-form shape; see the
+// reported shared-file patch). Every `run` is a plain registry-name string per the redesign.
+function localDefinition(overrides: Partial<WorkflowDefinition> = {}): WorkflowDefinition {
+	return {
+		id: 'wf-1',
+		name: 'Release',
+		description: 'Ship a release',
+		bail: false,
 		phases: [
 			{
-				id: 'p',
-				name: 'P',
-				tasks: [{ id: 't', name: 'T', run: { via: 'function', name: 'noop' } }],
+				id: 'phase-build',
+				name: 'Build',
+				concurrency: 2,
+				tasks: [
+					{ id: 'task-compile', name: 'Compile', run: 'compile', retries: 2, timeout: 500 },
+					{ id: 'task-scan', name: 'Scan', description: 'Security scan', run: 'scan' },
+				],
+			},
+			{
+				id: 'phase-review',
+				name: 'Review',
+				tasks: [{ id: 'task-audit', name: 'Audit', run: 'audit' }],
 			},
 		],
+		...overrides,
 	}
 }
 
 // Narrow the workflow-tool handler's DIRECT `execute` return (typed `unknown`) to the plain run
-// summary through guards (§14, NO `as`): a record whose `status` is a string + `count` a number.
-// `undefined` when the shape is off (so a non-summary return / a thrown failure reads as absent).
-// The handler now conforms to the universal tool-handler contract — it returns this PLAIN value
-// (no `{ id, name, value }` envelope; that wrap is the ToolManager's, proven below), and THROWS on
-// failure (asserted via `captureError`).
+// summary through guards (§14, NO `as`).
 function readSummary(value: unknown): { status: string; count: number } | undefined {
 	if (!isRecord(value) || typeof value.status !== 'string' || typeof value.count !== 'number') {
 		return undefined
@@ -85,9 +96,6 @@ function readSummary(value: unknown): { status: string; count: number } | undefi
 	return { status: value.status, count: value.count }
 }
 
-// Run a workflow tool through a REAL ToolManager — the single canonical wrap (`#run`). Returns the
-// resulting {@link ToolResult}, so a test can assert it is SINGLE-LEVEL (success → `value` is the
-// plain summary, NOT a nested `{ id, name, value }`; failure → a top-level `error`, no `value`).
 function executeThroughManager(tool: ReturnType<typeof createWorkflowTool>): Promise<ToolResult> {
 	const manager = createToolManager()
 	manager.add(tool)
@@ -98,11 +106,6 @@ function executeThroughManager(tool: ReturnType<typeof createWorkflowTool>): Pro
 	})
 }
 
-// The async counterpart of `captureError` (which is synchronous-only): await `promise` and return
-// the value it REJECTED with, or `undefined` if it resolved — so a throw-site test can assert on the
-// captured fault's `code` / `context` unconditionally (the workflow-tool handler's `execute` is async,
-// so its §14 failure throw surfaces as a rejection). File-local: capturing a rejection's value (not
-// just matching it via `.rejects`) is this file's throw-shape need.
 async function rejectionOf(promise: Promise<unknown> | unknown): Promise<unknown> {
 	try {
 		await promise
@@ -112,12 +115,28 @@ async function rejectionOf(promise: Promise<unknown> | unknown): Promise<unknown
 	}
 }
 
-// The contract's anti-drift spine: the four-way parity (schema + guard + parser +
-// generator). The round-trip `generate → is → parse` must agree, `is` / `parse`
-// must accept a valid hand-written `WorkflowDefinition`, and reject malformed input
-// into a typed failure (a `false` guard / an `undefined` parse). Real data stubs
-// with overrides — no mocks (AGENTS §16). The `buildWorkflowDefinition` stub the
-// contract + W-b entity tests share lives in `tests/setup.ts` (AGENTS §16.1).
+// A minimal, hand-built `TaskContext` — pure DATA (no behavior to mock), the lineage shape
+// `createAgentFunction` / `createToolFunction` read from `controller.task`. Lets the adapter unit
+// tests call the returned `WorkflowFunction` directly, without driving a full runner round-trip.
+function fakeTaskContext(workflowId = 'wf', taskId = 't'): TaskContext {
+	const workflow = { id: workflowId, name: workflowId }
+	const phase = { id: 'p', name: 'P', workflow }
+	return { id: taskId, name: taskId, phase }
+}
+
+function fakeController(overrides: Partial<TaskControllerInterface> = {}): TaskControllerInterface {
+	const controller = new AbortController()
+	return {
+		signal: controller.signal,
+		aborted: controller.signal.aborted,
+		input: {},
+		task: fakeTaskContext(),
+		results: () => [],
+		...overrides,
+	}
+}
+
+// ── createWorkflowContract — the anti-drift spine (four-way parity) ──
 
 describe('createWorkflowContract — surface', () => {
 	const contract = createWorkflowContract()
@@ -135,46 +154,32 @@ describe('createWorkflowContract — accepts valid definitions', () => {
 	const contract = createWorkflowContract()
 
 	it('is() accepts a full valid definition', () => {
-		expect(contract.is(buildWorkflowDefinition())).toBe(true)
+		expect(contract.is(localDefinition())).toBe(true)
 	})
 
 	it('is() accepts a minimal definition (optionals omitted)', () => {
 		const minimal: WorkflowDefinition = {
 			id: 'wf-min',
 			name: 'Minimal',
-			phases: [
-				{
-					id: 'p',
-					name: 'P',
-					tasks: [{ id: 't', name: 'T', run: { via: 'function', name: 'f' } }],
-				},
-			],
+			phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', run: 'f' }] }],
 		}
 		expect(contract.is(minimal)).toBe(true)
 	})
 
 	it('is() accepts an empty-phase and empty-task workflow', () => {
-		expect(contract.is(buildWorkflowDefinition({ phases: [] }))).toBe(true)
-		expect(
-			contract.is(
-				buildWorkflowDefinition({
-					phases: [{ id: 'p', name: 'P', tasks: [] }],
-				}),
-			),
-		).toBe(true)
+		expect(contract.is(localDefinition({ phases: [] }))).toBe(true)
+		expect(contract.is(localDefinition({ phases: [{ id: 'p', name: 'P', tasks: [] }] }))).toBe(true)
 	})
 
-	it('is() accepts every task-form variant', () => {
-		for (const via of ['function', 'tool', 'agent'] as const) {
-			const definition = buildWorkflowDefinition({
-				phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', run: { via, name: 'x' } }] }],
-			})
-			expect(contract.is(definition)).toBe(true)
-		}
+	it('is() accepts a task with an omitted `run` (no behavior reference)', () => {
+		const definition = localDefinition({
+			phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T' }] }],
+		})
+		expect(contract.is(definition)).toBe(true)
 	})
 
 	it('parse() returns the value unchanged for a valid definition', () => {
-		const definition = buildWorkflowDefinition()
+		const definition = localDefinition()
 		expect(contract.parse(definition)).toEqual(definition)
 	})
 })
@@ -191,38 +196,28 @@ describe('createWorkflowContract — rejects malformed input', () => {
 		['phases not an array', { id: 'w', name: 'X', phases: 'nope' }],
 		['bail is not a boolean', { id: 'w', name: 'X', phases: [], bail: 'true' }],
 		[
-			'unknown task-form via',
+			'task run is not a string (an object cannot coerce)',
 			{
 				id: 'w',
 				name: 'X',
-				phases: [
-					{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', run: { via: 'http', name: 'x' } }] },
-				],
+				phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', run: {} }] }],
 			},
 		],
 		[
-			'task-form missing name',
+			'task run is an empty string',
 			{
 				id: 'w',
 				name: 'X',
-				phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', run: { via: 'function' } }] }],
+				phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', run: '' }] }],
 			},
 		],
 		[
 			'concurrency below 1',
-			{
-				id: 'w',
-				name: 'X',
-				phases: [{ id: 'p', name: 'P', tasks: [], concurrency: 0 }],
-			},
+			{ id: 'w', name: 'X', phases: [{ id: 'p', name: 'P', tasks: [], concurrency: 0 }] },
 		],
 		[
 			'concurrency not an integer',
-			{
-				id: 'w',
-				name: 'X',
-				phases: [{ id: 'p', name: 'P', tasks: [], concurrency: 1.5 }],
-			},
+			{ id: 'w', name: 'X', phases: [{ id: 'p', name: 'P', tasks: [], concurrency: 1.5 }] },
 		],
 	]
 
@@ -255,15 +250,17 @@ describe('createWorkflowContract — generate / round-trip parity', () => {
 	})
 
 	it('a guard-valid input is never rejected by the parser (soundness)', () => {
-		const definition = buildWorkflowDefinition()
+		const definition = localDefinition()
 		expect(contract.is(definition)).toBe(true)
 		expect(contract.parse(definition)).toEqual(definition)
 	})
 })
 
+// ── createWorkflow — builds the live tree (the W-b factory) ──
+
 describe('createWorkflow — builds the live tree (the W-b factory)', () => {
 	it('brings the definition to life with lineage + the definition bail', () => {
-		const workflow = createWorkflow(buildWorkflowDefinition())
+		const workflow = createWorkflow(localDefinition())
 		expect(workflow.id).toBe('wf-1')
 		expect(workflow.bail).toBe(false)
 		expect(workflow.phases.phases().map((phase) => phase.id)).toEqual([
@@ -280,18 +277,45 @@ describe('createWorkflow — builds the live tree (the W-b factory)', () => {
 	})
 
 	it('resolves bail from options, then the definition, then the graceful default', () => {
-		expect(createWorkflow(buildWorkflowDefinition({ bail: true })).bail).toBe(true)
-		expect(createWorkflow(buildWorkflowDefinition({ bail: true }), { bail: false }).bail).toBe(
-			false,
-		)
+		expect(createWorkflow(localDefinition({ bail: true })).bail).toBe(true)
+		expect(createWorkflow(localDefinition({ bail: true }), { bail: false }).bail).toBe(false)
 		const noBail: WorkflowDefinition = { id: 'w', name: 'W', phases: [] }
 		expect(createWorkflow(noBail).bail).toBe(false)
 	})
+
+	it(
+		'PROGRAMMATIC-FIRST: a task whose `run` resolves against `options.functions` runs the real handler at construction time (via a live runner)',
+		async () => {
+			const seen = createRecorder<readonly [string]>()
+			const compile: WorkflowFunction = (controller) => {
+				seen.handler(controller.task.id)
+				return 'built'
+			}
+			const workflow = createWorkflow(localDefinition(), {
+				functions: { compile, scan: () => 's', audit: () => 'a' },
+			})
+			expect(workflow.phase('phase-build')?.task('task-compile')?.handler).toBeDefined()
+			// The retries/timeout definition fields carried onto the live leaf (V3/V4 persisted fields).
+			expect(workflow.phase('phase-build')?.task('task-compile')?.retries).toBe(2)
+			expect(workflow.phase('phase-build')?.task('task-compile')?.timeout).toBe(500)
+			const result = await runner().execute(workflow)
+			expect(result.status).toBe('completed')
+			expect([...seen.calls].map((c) => c[0])).toEqual(['task-compile'])
+		},
+		ROUND_TRIP_TIMEOUT_MS,
+	)
+
+	it('a `run` name absent from `functions` (or omitted) resolves to `handler: undefined` (the no-handler rule)', () => {
+		const workflow = createWorkflow(localDefinition(), { functions: {} })
+		expect(workflow.phase('phase-build')?.task('task-compile')?.handler).toBeUndefined()
+	})
 })
+
+// ── restoreWorkflow / assertSnapshot — the round-trip inverse ──
 
 describe('restoreWorkflow / assertSnapshot — the round-trip inverse', () => {
 	it('restoreWorkflow rebuilds an equivalent tree from a snapshot', () => {
-		const workflow = createWorkflow(buildWorkflowDefinition({ bail: true }))
+		const workflow = createWorkflow(localDefinition({ bail: true }))
 		const compile = workflow.phase('phase-build')?.task('task-compile')
 		compile?.start()
 		compile?.complete('built')
@@ -300,8 +324,75 @@ describe('restoreWorkflow / assertSnapshot — the round-trip inverse', () => {
 		expect(restored.phase('phase-build')?.task('task-compile')?.status).toBe('completed')
 	})
 
+	it(
+		'RESTORE-THEN-RESUME runs REAL WORK: a restored snapshot + functions actually executes the handler and completes (the headline)',
+		async () => {
+			const ran = createRecorder<readonly [string]>()
+			const workflow = createWorkflow(
+				localDefinition({
+					phases: [localDefinition().phases[0] ?? { id: 'p', name: 'P', tasks: [] }],
+				}),
+			)
+			const snapshot = workflow.snapshot()
+			const compile: WorkflowFunction = (controller) => {
+				ran.handler(controller.task.id)
+				return 'built-again'
+			}
+			const restored = restoreWorkflow(snapshot, { functions: { compile, scan: () => 's' } })
+			expect(restored.phase('phase-build')?.task('task-compile')?.handler).toBeDefined()
+			const result = await runner().execute(restored)
+			expect(result.status).toBe('completed')
+			expect([...ran.calls].map((c) => c[0])).toEqual(['task-compile'])
+			expect(restored.phase('phase-build')?.task('task-compile')?.result?.result).toEqual({
+				success: true,
+				value: 'built-again',
+			})
+		},
+		ROUND_TRIP_TIMEOUT_MS,
+	)
+
+	it(
+		'restoreWorkflow WITHOUT `functions` auto-completes every task (documented declarative replay)',
+		async () => {
+			const workflow = createWorkflow(localDefinition())
+			const snapshot = workflow.snapshot()
+			const restored = restoreWorkflow(snapshot)
+			expect(restored.phase('phase-build')?.task('task-compile')?.handler).toBeUndefined()
+			const result = await runner().execute(restored)
+			expect(result.status).toBe('completed')
+			expect(restored.phase('phase-build')?.task('task-compile')?.status).toBe('completed')
+			expect(restored.phase('phase-build')?.task('task-compile')?.result?.result).toEqual({
+				success: true,
+				value: undefined,
+			})
+		},
+		ROUND_TRIP_TIMEOUT_MS,
+	)
+
+	it("SNAPSHOT TRIO round-trip: a definition's run/retries/timeout survive definitionToSnapshot → live tree → snapshot() → restore", () => {
+		const definition = localDefinition()
+		const snapshot = definitionToSnapshot(definition, false)
+		const compileSnap = snapshot.phases[0]?.tasks[0]
+		expect(compileSnap?.run).toBe('compile')
+		expect(compileSnap?.retries).toBe(2)
+		expect(compileSnap?.timeout).toBe(500)
+
+		const workflow = createWorkflow(definition)
+		const liveSnapshot = workflow.snapshot()
+		const liveCompile = liveSnapshot.phases[0]?.tasks[0]
+		expect(liveCompile?.run).toBe('compile')
+		expect(liveCompile?.retries).toBe(2)
+		expect(liveCompile?.timeout).toBe(500)
+
+		const restored = restoreWorkflow(liveSnapshot)
+		const restoredCompile = restored.phase('phase-build')?.task('task-compile')
+		expect(restoredCompile?.run).toBe('compile')
+		expect(restoredCompile?.retries).toBe(2)
+		expect(restoredCompile?.timeout).toBe(500)
+	})
+
 	it('assertSnapshot passes a valid snapshot and rejects an invalid status', () => {
-		const snapshot = createWorkflow(buildWorkflowDefinition()).snapshot()
+		const snapshot = createWorkflow(localDefinition()).snapshot()
 		expect(captureError(() => assertSnapshot(snapshot))).toBeUndefined()
 		const broken = { ...snapshot, status: 'bogus' }
 		const error = captureError(() => assertSnapshot(JSON.parse(JSON.stringify(broken))))
@@ -309,9 +400,7 @@ describe('restoreWorkflow / assertSnapshot — the round-trip inverse', () => {
 	})
 
 	it('assertSnapshot rejects a PhaseSnapshot with a non-boolean bail (naming the phase)', () => {
-		// A phase's `bail` is REQUIRED persisted policy (like the workflow's), so a snapshot whose
-		// phase carries a non-boolean `bail` is rejected loudly with a RESTORE error naming that phase.
-		const snapshot = createWorkflow(buildWorkflowDefinition()).snapshot()
+		const snapshot = createWorkflow(localDefinition()).snapshot()
 		const firstPhase = snapshot.phases[0]
 		if (firstPhase === undefined) throw new Error('expected at least one phase')
 		const broken = {
@@ -320,53 +409,90 @@ describe('restoreWorkflow / assertSnapshot — the round-trip inverse', () => {
 		}
 		const error = captureError(() => assertSnapshot(JSON.parse(JSON.stringify(broken))))
 		expect(isWorkflowError(error) ? error.code : undefined).toBe('RESTORE')
-		// The error names the offending phase in its context.
 		expect(isWorkflowError(error) ? error.context?.phase : undefined).toBe(firstPhase.id)
 	})
+
+	it('assertSnapshot rejects a TaskSnapshot with an empty `run`, a negative `retries`, or a fractional `timeout` (naming the task)', () => {
+		const snapshot = createWorkflow(localDefinition()).snapshot()
+		const firstTask = snapshot.phases[0]?.tasks[0]
+		if (firstTask === undefined) throw new Error('expected at least one task')
+
+		const badRun = {
+			...snapshot,
+			phases: [
+				{
+					...snapshot.phases[0],
+					tasks: [{ ...firstTask, run: '' }, ...(snapshot.phases[0]?.tasks.slice(1) ?? [])],
+				},
+				...snapshot.phases.slice(1),
+			],
+		}
+		const runError = captureError(() => assertSnapshot(JSON.parse(JSON.stringify(badRun))))
+		expect(isWorkflowError(runError) ? runError.code : undefined).toBe('RESTORE')
+
+		const badRetries = {
+			...snapshot,
+			phases: [
+				{
+					...snapshot.phases[0],
+					tasks: [{ ...firstTask, retries: -1 }, ...(snapshot.phases[0]?.tasks.slice(1) ?? [])],
+				},
+				...snapshot.phases.slice(1),
+			],
+		}
+		const retriesError = captureError(() => assertSnapshot(JSON.parse(JSON.stringify(badRetries))))
+		expect(isWorkflowError(retriesError) ? retriesError.code : undefined).toBe('RESTORE')
+		expect(isWorkflowError(retriesError) ? retriesError.context?.task : undefined).toBe(
+			firstTask.id,
+		)
+
+		const badTimeout = {
+			...snapshot,
+			phases: [
+				{
+					...snapshot.phases[0],
+					tasks: [{ ...firstTask, timeout: 1.5 }, ...(snapshot.phases[0]?.tasks.slice(1) ?? [])],
+				},
+				...snapshot.phases.slice(1),
+			],
+		}
+		const timeoutError = captureError(() => assertSnapshot(JSON.parse(JSON.stringify(badTimeout))))
+		expect(isWorkflowError(timeoutError) ? timeoutError.code : undefined).toBe('RESTORE')
+	})
 })
+
+// ── createWorkflowTool — wrap a definition as an LLM-callable tool ──
 
 describe('createWorkflowTool — wrap a definition as an LLM-callable tool (W-c2)', () => {
 	it('its parameters advertise the FLAT authoring shape (the simplest surface a small model fills)', () => {
 		const tool = createWorkflowTool(simpleDefinition(), runner())
-		// The ADVERTISED schema is the flat `{ name?, steps: [{ name, via? }] }` form — NOT the full
-		// nested `WorkflowDefinition` (no `id` / `phases` at the top level). The nested form stays
-		// accepted by the handler (proven below) but is the documented escape-hatch, not advertised.
 		expect(tool.parameters?.type).toBe('object')
 		const properties = tool.parameters?.properties
 		expect(isRecord(properties) ? Object.keys(properties).sort() : []).toEqual(['name', 'steps'])
 		expect(isRecord(properties) ? 'id' in properties : true).toBe(false)
 		expect(isRecord(properties) ? 'phases' in properties : true).toBe(false)
-		// The `steps` array's items are `{ name, via? }`.
+		// The `steps` array's items are now `{ name }` ONLY — TaskForm/`via` was deleted.
 		const steps = isRecord(properties) ? properties.steps : undefined
 		const items = isRecord(steps) ? steps.items : undefined
 		const stepProps = isRecord(items) ? items.properties : undefined
-		expect(isRecord(stepProps) ? Object.keys(stepProps).sort() : []).toEqual(['name', 'via'])
+		expect(isRecord(stepProps) ? Object.keys(stepProps).sort() : []).toEqual(['name'])
 	})
 
-	it('the advertised parameters carry per-field descriptions on the key fields', () => {
+	it('the advertised parameters carry a `description` on the step `name` field', () => {
 		const tool = createWorkflowTool(simpleDefinition(), runner())
 		const properties = tool.parameters?.properties
 		const steps = isRecord(properties) ? properties.steps : undefined
 		const items = isRecord(steps) ? steps.items : undefined
 		const stepProps = isRecord(items) ? items.properties : undefined
 		const nameField = isRecord(stepProps) ? stepProps.name : undefined
-		const viaField = isRecord(stepProps) ? stepProps.via : undefined
-		// a step's `name` and `via` (the fields a small model most needs help with) ride a `description`
-		// in the advertised JSON Schema — the Rank-1 guidance that compiles straight from the shapers.
 		expect(typeof (isRecord(nameField) ? nameField.description : undefined)).toBe('string')
-		expect(typeof (isRecord(viaField) ? viaField.description : undefined)).toBe('string')
 	})
 
 	it(
 		'a valid authored-args blob runs that workflow and RETURNS the plain run summary',
 		async () => {
-			// The wrapped definition is a throwaway; the authored args (a different valid workflow) are
-			// what the handler parses + runs — proving the tool runs the LLM-authored tree, not the wrap.
-			// The handler returns the PLAIN summary value DIRECTLY (no `{ id, name, value }` envelope —
-			// that wrap is the ToolManager's, asserted in the manager test below).
 			const tool = createWorkflowTool(simpleDefinition('wrapped'), runner())
 			const summary = readSummary(await tool.execute({ ...simpleDefinition('authored') }))
-			// The summary reflects the terminal run: a one-task auto-complete workflow → completed, 1 result.
 			expect(summary).toEqual({ status: 'completed', count: 1 })
 		},
 		ROUND_TRIP_TIMEOUT_MS,
@@ -383,7 +509,6 @@ describe('createWorkflowTool — wrap a definition as an LLM-callable tool (W-c2
 
 	it('a malformed authored blob THROWS a typed TOOL WorkflowError (the §14 handler contract)', async () => {
 		const tool = createWorkflowTool(simpleDefinition('wrapped'), runner())
-		// An empty `id` (min 1) and `concurrency: 0` are over-constraint — contract.parse rejects.
 		const error = await rejectionOf(
 			tool.execute({
 				id: '',
@@ -392,38 +517,25 @@ describe('createWorkflowTool — wrap a definition as an LLM-callable tool (W-c2
 			}),
 		)
 		expect(isWorkflowError(error)).toBe(true)
-		// A typed `TOOL` code, the message the manager surfaces, and the wrapped id in `context`.
 		expect(isWorkflowError(error) ? error.code : undefined).toBe('TOOL')
 		expect(isWorkflowError(error) ? error.context?.workflow : undefined).toBe('wrapped')
 	})
 
 	it('an over-deep call (depth at the ceiling) THROWS a typed DEPTH WorkflowError without running', async () => {
-		// A tool BOUND at the max depth: invoking it would run the nested workflow at depth+1 >
-		// MAX_WORKFLOW_DEPTH, so the guard rejects it by throwing a typed DEPTH error (no run).
-		const tool = createWorkflowTool(simpleDefinition(), runner(), {
-			depth: MAX_WORKFLOW_DEPTH,
-		})
+		const tool = createWorkflowTool(simpleDefinition(), runner(), { depth: MAX_WORKFLOW_DEPTH })
 		const error = await rejectionOf(tool.execute({ ...simpleDefinition('deep') }))
 		expect(isWorkflowError(error) ? error.code : undefined).toBe('DEPTH')
 		expect(error instanceof Error ? error.message : '').toContain('max depth')
 	})
 
 	it('a cyclic call (target id already an ancestor) THROWS a typed DEPTH WorkflowError', async () => {
-		// The ancestry already carries `workflow:loop`; authoring a workflow with the SAME id is a
-		// re-entry cycle, rejected by throwing a typed DEPTH error (no run).
-		const tool = createWorkflowTool(simpleDefinition(), runner(), {
-			ancestry: ['workflow:loop'],
-		})
+		const tool = createWorkflowTool(simpleDefinition(), runner(), { ancestry: ['workflow:loop'] })
 		const error = await rejectionOf(tool.execute({ ...simpleDefinition('loop') }))
 		expect(isWorkflowError(error) ? error.code : undefined).toBe('DEPTH')
 		expect(error instanceof Error ? error.message : '').toContain('cycle')
 	})
 })
 
-// Rank 1 — the embedded worked examples (in the tool's description) can NEVER drift: each
-// must satisfy its contract. The nested example is a valid strict definition; the flat
-// example expands to a valid tree. The description interpolates these very constants, so a
-// green test here pins the doc examples to real, contract-valid data (AGENTS §22).
 describe('createWorkflowTool — the embedded doc examples satisfy their contracts (Rank 1 parity)', () => {
 	it('the NESTED example is accepted by the STRICT contract', () => {
 		expect(createWorkflowContract().is(WORKFLOW_TOOL_NESTED_EXAMPLE)).toBe(true)
@@ -434,19 +546,11 @@ describe('createWorkflowTool — the embedded doc examples satisfy their contrac
 	})
 })
 
-// Rank 2 — the lenient DRAFT contract + the ids-omitted tool path. A small model can omit
-// every id/name; the tool completes the draft positionally and re-validates against the
-// STRICT contract before running. (The pure completeDraft synthesis is unit-tested in
-// helpers.test.ts; here we cover the CONTRACT + the end-to-end tool run.)
 describe('createWorkflowDraftContract + the ids-omitted tool path (Rank 2)', () => {
 	it('the draft contract ACCEPTS an ids-omitted blob but REJECTS an explicitly-empty id', () => {
 		const draft = createWorkflowDraftContract()
-		// Every id/name omitted at all three levels — accepted (the tool completes them).
-		const omitted: WorkflowDraft = {
-			phases: [{ tasks: [{ run: { via: 'function', name: 'a' } }] }],
-		}
+		const omitted: WorkflowDraft = { phases: [{ tasks: [{ run: 'a' }] }] }
 		expect(draft.is(omitted)).toBe(true)
-		// A provided-but-empty id fails the draft contract's minLength:1 — garbage ≠ omitted.
 		expect(draft.parse({ id: '', phases: [] })).toBeUndefined()
 		expect(draft.is({ id: '', phases: [] })).toBe(false)
 	})
@@ -455,16 +559,11 @@ describe('createWorkflowDraftContract + the ids-omitted tool path (Rank 2)', () 
 		'the tool runs an ids-OMITTED nested blob end-to-end → completed with the right result count',
 		async () => {
 			const tool = createWorkflowTool(simpleDefinition('wrapped'), runner())
-			// Author with NO ids/names anywhere — the tool completes the draft, validates, and runs it.
 			const summary = readSummary(
 				await tool.execute({
-					phases: [
-						{ tasks: [{ run: { via: 'function', name: 'x' } }] },
-						{ tasks: [{ run: { via: 'function', name: 'y' } }] },
-					],
+					phases: [{ tasks: [{ run: 'x' }] }, { tasks: [{ run: 'y' }] }],
 				}),
 			)
-			// Two one-task auto-complete phases → completed, 2 settled results.
 			expect(summary).toEqual({ status: 'completed', count: 2 })
 		},
 		ROUND_TRIP_TIMEOUT_MS,
@@ -473,7 +572,6 @@ describe('createWorkflowDraftContract + the ids-omitted tool path (Rank 2)', () 
 	it(
 		'the tool still accepts the FULL nested form as the escape-hatch (ids provided)',
 		async () => {
-			// The advanced form remains reachable: a full nested definition runs unchanged.
 			const tool = createWorkflowTool(simpleDefinition('wrapped'), runner())
 			expect(readSummary(await tool.execute({ ...simpleDefinition('explicit') }))).toEqual({
 				status: 'completed',
@@ -484,22 +582,14 @@ describe('createWorkflowDraftContract + the ids-omitted tool path (Rank 2)', () 
 	)
 })
 
-// Rank 3 — the FLAT steps form (the advertised surface). The tool runs a flat blob
-// end-to-end, converging on the strict gate. (expandSteps' pure mapping is unit-tested in
-// helpers.test.ts; here we cover the END-TO-END tool run + the can't-expand failure.)
 describe('the flat steps form — the advertised tool path (Rank 3)', () => {
 	it(
 		'the tool runs a minimal FLAT blob end-to-end → { status: completed, count: N } (P3.3)',
 		async () => {
 			const tool = createWorkflowTool(simpleDefinition('wrapped'), runner())
-			// The simplest thing a small model can emit: a flat list of steps.
 			const summary = readSummary(
-				await tool.execute({
-					name: 'build',
-					steps: [{ name: 'compile' }, { name: 'publish', via: 'tool' }],
-				}),
+				await tool.execute({ name: 'build', steps: [{ name: 'compile' }, { name: 'publish' }] }),
 			)
-			// Two steps → two one-task auto-complete phases → completed, 2 results.
 			expect(summary).toEqual({ status: 'completed', count: 2 })
 		},
 		ROUND_TRIP_TIMEOUT_MS,
@@ -507,69 +597,40 @@ describe('the flat steps form — the advertised tool path (Rank 3)', () => {
 
 	it('a flat blob that cannot expand (a step missing `name`) THROWS a typed TOOL WorkflowError', async () => {
 		const tool = createWorkflowTool(simpleDefinition('wrapped'), runner())
-		// `steps` is an array (so the flat branch is taken) but a step lacks `name` → the steps parse
-		// fails → the strict gate is never reached → throw TOOL (no run).
-		const error = await rejectionOf(tool.execute({ steps: [{ via: 'function' }] }))
+		const error = await rejectionOf(tool.execute({ steps: [{}] }))
 		expect(isWorkflowError(error) ? error.code : undefined).toBe('TOOL')
 	})
 
 	it(
 		'a blob carrying BOTH `steps` and `phases` takes the FLAT branch (expands steps, IGNORES phases) — chunk-C precedence lock-in',
 		async () => {
-			// The handler branches on the args' SHAPE: `Array.isArray(args.steps)` is checked BEFORE the
-			// nested-draft branch, so a blob carrying BOTH takes the FLAT branch — it expands `steps` and
-			// completely IGNORES `phases`. Lock that documented precedence: TWO steps + a DIFFERENT-sized
-			// (THREE-phase) `phases` array. If the flat branch wins, the run is two one-task phases ⇒ 2
-			// results; if `phases` were honored instead it would be 3. The distinct counts discriminate the
-			// branch unambiguously. (The steps shape is a CLOSED object, so its parse silently DROPS the
-			// extra `phases` key rather than rejecting — the flat expansion never sees it.)
 			const tool = createWorkflowTool(simpleDefinition('wrapped'), runner())
 			const summary = readSummary(
 				await tool.execute({
 					name: 'precedence',
 					steps: [{ name: 'a' }, { name: 'b' }],
 					phases: [
-						{
-							id: 'x',
-							name: 'X',
-							tasks: [{ id: 'x0', name: 'X0', run: { via: 'function', name: 'p' } }],
-						},
-						{
-							id: 'y',
-							name: 'Y',
-							tasks: [{ id: 'y0', name: 'Y0', run: { via: 'function', name: 'q' } }],
-						},
-						{
-							id: 'z',
-							name: 'Z',
-							tasks: [{ id: 'z0', name: 'Z0', run: { via: 'function', name: 'r' } }],
-						},
+						{ id: 'x', name: 'X', tasks: [{ id: 'x0', name: 'X0', run: 'p' }] },
+						{ id: 'y', name: 'Y', tasks: [{ id: 'y0', name: 'Y0', run: 'q' }] },
+						{ id: 'z', name: 'Z', tasks: [{ id: 'z0', name: 'Z0', run: 'r' }] },
 					],
 				}),
 			)
-			// 2 results = the 2 STEPS expanded (FLAT branch), NOT the 3 phases — `phases` was ignored.
 			expect(summary).toEqual({ status: 'completed', count: 2 })
 		},
 		ROUND_TRIP_TIMEOUT_MS,
 	)
 })
 
-// The load-bearing F2-WRAP proof: the workflow-tool outcome appears EXACTLY ONCE, canonically, on
-// BOTH the agent-loop ToolManager and MCP — never the old doubly-nested `{ id, name, value: {...} }`
-// envelope, and a FAILURE is signalled at the TOP-LEVEL `error` (so MCP maps it to `isError: true`).
 describe('createWorkflowTool — single canonical wrap over the ToolManager + MCP (F2-WRAP)', () => {
 	it(
 		'a SUCCESS maps to a SINGLE-LEVEL ToolResult — value IS the plain summary, no nested envelope',
 		async () => {
 			const tool = createWorkflowTool(simpleDefinition('wrapped'), runner())
 			const result = await executeThroughManager(tool)
-			// The manager performs the ONE canonical wrap: `value` deep-equals the plain summary the
-			// handler returned — NOT a `{ id, name, value }` re-wrap of it.
 			expect(result.value).toEqual({ status: 'completed', count: 1 })
 			expect(isRecord(result.value) && 'value' in result.value).toBe(false)
 			expect(result.error).toBeUndefined()
-			// The canonical envelope's identity is the manager's (the call id + the tool name) — the
-			// handler contributed no id/name of its own.
 			expect(result.id).toBe('call-1')
 			expect(result.name).toBe('workflow')
 		},
@@ -577,8 +638,6 @@ describe('createWorkflowTool — single canonical wrap over the ToolManager + MC
 	)
 
 	it('a FAILURE maps to a SINGLE-LEVEL ToolResult — a TOP-LEVEL error, no value', async () => {
-		// A tool bound at the max depth: the handler throws DEPTH, the manager ISOLATES it into the
-		// canonical top-level `error` (the failure appears once, at the same place every tool error does).
 		const tool = createWorkflowTool(simpleDefinition('wrapped'), runner(), {
 			depth: MAX_WORKFLOW_DEPTH,
 		})
@@ -591,9 +650,6 @@ describe('createWorkflowTool — single canonical wrap over the ToolManager + MC
 	it(
 		'the manager FAILURE ToolResult maps to MCP isError:true; SUCCESS to the plain summary text',
 		async () => {
-			// The MCP win: buildToolResult routes a top-level `error` → isError:true (so a workflow
-			// failure is a tool error the model reacts to, not a silently-OK result). Before F2-WRAP the
-			// failure reason sat at `value.error` (inner) and MCP mis-signalled isError:false.
 			const failing = createWorkflowTool(simpleDefinition('wrapped'), runner(), {
 				depth: MAX_WORKFLOW_DEPTH,
 			})
@@ -601,7 +657,6 @@ describe('createWorkflowTool — single canonical wrap over the ToolManager + MC
 			expect(failure.isError).toBe(true)
 			expect(failure.content[0]?.text).toContain('max depth')
 
-			// A success has no top-level error → no isError, and the text is the plain summary JSON.
 			const ok = createWorkflowTool(simpleDefinition('wrapped'), runner())
 			const success = buildToolResult(await executeThroughManager(ok))
 			expect(success.isError).toBeUndefined()
@@ -611,17 +666,147 @@ describe('createWorkflowTool — single canonical wrap over the ToolManager + MC
 	)
 })
 
-// createScheduler — returns a working cross-environment SchedulerInterface.
+// ── Adapter factories — createToolFunction / createAgentFunction ──
+
+describe('createToolFunction — wraps a registered tool as a WorkflowFunction', () => {
+	it('happy path: executes the named tool with controller.input and returns its value', async () => {
+		const tools = createToolManager()
+		const seen = createRecorder<readonly [Readonly<Record<string, unknown>>]>()
+		tools.add(
+			createTool({
+				name: 'scan',
+				execute: (args) => {
+					seen.handler(args)
+					return 'scanned'
+				},
+			}),
+		)
+		const fn = createToolFunction(tools, 'scan')
+		const value = await fn(fakeController({ input: { path: '/repo' } }))
+		expect(value).toBe('scanned')
+		expect(seen.calls[0]?.[0]).toEqual({ path: '/repo' })
+	})
+
+	it('error-to-cause: a tool whose result carries an error throws an Error carrying it as `cause`', async () => {
+		const tools = createToolManager()
+		tools.add(
+			createTool({
+				name: 'boom',
+				execute: () => {
+					throw new Error('tool exploded')
+				},
+			}),
+		)
+		const fn = createToolFunction(tools, 'boom')
+		const error = await rejectionOf(fn(fakeController()))
+		expect(error).toBeInstanceOf(Error)
+		expect(error instanceof Error ? error.cause : undefined).toBe('tool exploded')
+	})
+
+	it('an UNREGISTERED tool name throws a typed TOOL WorkflowError', async () => {
+		const tools = createToolManager()
+		const fn = createToolFunction(tools, 'missing')
+		const error = await rejectionOf(fn(fakeController()))
+		expect(isWorkflowError(error) ? error.code : undefined).toBe('TOOL')
+		expect(isWorkflowError(error) ? error.context?.tool : undefined).toBe('missing')
+	})
+
+	it('composed into a real runner: a task whose `run` maps to a createToolFunction entry dispatches the tool for real', async () => {
+		const tools = createToolManager()
+		tools.add(createTool({ name: 'scan', execute: () => 'scanned' }))
+		const definition: WorkflowDefinition = {
+			id: 'wf',
+			name: 'WF',
+			phases: [{ id: 'a', name: 'A', tasks: [{ id: 't', name: 'T', run: 'scan' }] }],
+		}
+		const result = await runner().execute(definition, {
+			functions: { scan: createToolFunction(tools, 'scan') },
+		})
+		expect(result.status).toBe('completed')
+		expect(result.workflow.phase('a')?.task('t')?.result?.result).toEqual({
+			success: true,
+			value: 'scanned',
+		})
+	})
+})
+
+describe('createAgentFunction — wraps a live AgentInterface as a WorkflowFunction', () => {
+	it('run: resolves the agent to its settled result, boxed as the task value', async () => {
+		const agent = createAgent(createScriptedProvider([{ content: 'audited' }]))
+		const fn = createAgentFunction(agent)
+		const value = await fn(fakeController())
+		const content = isRecord(value) ? value.content : undefined
+		expect(content).toBe('audited')
+	})
+
+	it('abort fold: a mid-generate controller-signal abort cancels the agent (a partial resolves, never rejects)', async () => {
+		// A real scripted provider that PARKS after its leading delta (via a slow per-turn delay) long
+		// enough for the abort to fire mid-stream — proving the task controller's signal genuinely
+		// folds into the agent's own generate() call (not a pre-check the provider never observes).
+		const provider = createScriptedProvider([{ content: 'partial-content' }], { delay: 200 })
+		const agent = createAgent(provider)
+		const controller = new AbortController()
+		const fn = createAgentFunction(agent)
+		const running = fn(fakeController({ signal: controller.signal }))
+		await waitForDelay(20)
+		controller.abort(new Error('cancelled mid-generate'))
+		const value = await running
+		expect(isRecord(value) ? value.partial : undefined).toBe(true)
+	})
+
+	it('DEPTH on depth exceed: `depth + 1 > MAX_WORKFLOW_DEPTH` throws a typed DEPTH WorkflowError and never runs the agent', async () => {
+		const provider = createScriptedProvider([{ content: 'x' }])
+		const agent = createAgent(provider)
+		const fn = createAgentFunction(agent, { depth: MAX_WORKFLOW_DEPTH })
+		const error = await rejectionOf(fn(fakeController()))
+		expect(isWorkflowError(error) ? error.code : undefined).toBe('DEPTH')
+		expect(provider.started).toBe(0)
+	})
+
+	it('DEPTH on ancestry cycle: an agent already present in the ancestry throws a typed DEPTH WorkflowError and never runs', async () => {
+		const provider = createScriptedProvider([{ content: 'x' }])
+		const agent = createAgent(provider)
+		const fn = createAgentFunction(agent, { ancestry: [`agent:${agent.id}`] })
+		const error = await rejectionOf(fn(fakeController()))
+		expect(isWorkflowError(error) ? error.code : undefined).toBe('DEPTH')
+		expect(provider.started).toBe(0)
+	})
+
+	it('tool binding when `runner` is supplied: the agent context gains exactly one workflow tool under WORKFLOW_TOOL_NAME', async () => {
+		const agent = createAgent(createScriptedProvider([{ content: 'audited' }]))
+		expect(agent.context.tools.count).toBe(0)
+		const fn = createAgentFunction(agent, { runner: runner() })
+		await fn(fakeController())
+		expect(agent.context.tools.count).toBe(1)
+		expect(agent.context.tools.tool(WORKFLOW_TOOL_NAME)).toBeDefined()
+	})
+
+	it('composed into a real runner: a task whose `run` maps to a createAgentFunction entry dispatches the agent for real', async () => {
+		const agent = createAgent(createScriptedProvider([{ content: 'audited' }]))
+		const definition: WorkflowDefinition = {
+			id: 'wf',
+			name: 'WF',
+			phases: [{ id: 'a', name: 'A', tasks: [{ id: 't', name: 'T', run: 'auditor' }] }],
+		}
+		const result = await runner().execute(definition, {
+			functions: { auditor: createAgentFunction(agent) },
+		})
+		expect(result.status).toBe('completed')
+		const value = result.workflow.phase('a')?.task('t')?.result?.result
+		const content =
+			value?.success === true && isRecord(value.value) ? value.value.content : undefined
+		expect(content).toBe('audited')
+	})
+})
+
+// ── createScheduler ──
 
 describe('createScheduler', () => {
 	it('returns a scheduler whose yield and delay round-trip', async () => {
 		const scheduler = createScheduler()
-
 		await expect(scheduler.yield()).resolves.toBeUndefined()
-
 		const start = Date.now()
 		await scheduler.delay(20)
-		// Real timing with tolerance — delay waited at least roughly its interval.
 		expect(Date.now() - start).toBeGreaterThanOrEqual(15)
 	})
 
@@ -630,9 +815,7 @@ describe('createScheduler', () => {
 		const controller = new AbortController()
 		const reason = new Error('cancelled')
 		controller.abort(reason)
-
 		await expect(scheduler.delay(20, { signal: controller.signal })).rejects.toBe(reason)
-		// A subsequent unguarded yield still works.
 		await waitForDelay(0)
 		await expect(scheduler.yield()).resolves.toBeUndefined()
 	})
@@ -643,14 +826,45 @@ describe('createScheduler', () => {
 		const controller = new AbortController()
 		const reason = new Error('only the first')
 		controller.abort(reason)
-
-		// The first call is bound to an already-aborted signal and rejects; the second
-		// scheduler shares no state with it, so its own unguarded calls round-trip fine.
 		await expect(first.delay(20, { signal: controller.signal })).rejects.toBe(reason)
 		await expect(second.yield()).resolves.toBeUndefined()
 		await expect(second.delay(10)).resolves.toBeUndefined()
-		// And the first scheduler is itself unbroken for a fresh, unguarded call.
 		await expect(first.yield()).resolves.toBeUndefined()
+	})
+})
+
+// ── createWorkflowRunner — the injected-scheduler pattern ──
+
+describe('createWorkflowRunner', () => {
+	it('uses an INJECTED scheduler when supplied — no wall-clock pacing for a multi-phase run', async () => {
+		const recording = createRecordingScheduler()
+		const built = createWorkflowRunner({ scheduler: recording })
+		const definition: WorkflowDefinition = {
+			id: 'wf',
+			name: 'WF',
+			phases: [
+				{ id: 'a', name: 'A', tasks: [{ id: 't0', name: 'T0', run: 'f' }] },
+				{ id: 'b', name: 'B', tasks: [{ id: 't1', name: 'T1', run: 'f' }] },
+			],
+		}
+		const order: string[] = []
+		const result = await built.execute(definition, {
+			functions: { f: (controller) => order.push(controller.task.id) },
+		})
+		expect(result.status).toBe('completed')
+		expect(order).toEqual(['t0', 't1'])
+		expect(recording.yields).toBeGreaterThanOrEqual(1)
+	})
+
+	it('carries NO functions/tools/agents registry of its own — a task with no `execute`-level functions auto-completes', async () => {
+		const definition: WorkflowDefinition = {
+			id: 'wf',
+			name: 'WF',
+			phases: [{ id: 'a', name: 'A', tasks: [{ id: 't', name: 'T', run: 'unregistered' }] }],
+		}
+		const result = await createWorkflowRunner().execute(definition)
+		expect(result.status).toBe('completed')
+		expect(result.workflow.phase('a')?.task('t')?.status).toBe('completed')
 	})
 })
 

@@ -3,7 +3,6 @@ import type { EmitterInterface } from '@orkestrel/emitter'
 import type {
 	DeferredInterface,
 	PhaseContext,
-	PhaseDefinition,
 	PhaseEventMap,
 	PhaseInterface,
 	PhaseOptions,
@@ -17,6 +16,7 @@ import type {
 	TaskResult,
 	TaskSnapshot,
 	TaskUpdate,
+	WorkflowFunctions,
 	WorkflowInterface,
 } from '../types.js'
 import { Emitter } from '@orkestrel/emitter'
@@ -28,7 +28,6 @@ import {
 	derivePhaseStatus,
 	failure,
 	findFailure,
-	findTaskDefinition,
 	isTerminalStatus,
 	taskDefinitionToSnapshot,
 } from '../helpers.js'
@@ -71,10 +70,11 @@ import { TaskManager } from '../tasks/TaskManager.js'
  * - **Minting (AGENTS §7).** {@link add} MINTS a live {@link Task} from a {@link TaskDefinition}
  *   (converts it to a {@link TaskSnapshot}, builds the task wired to THIS phase) — the same
  *   construction path {@link #append} uses at build time, so a live mint and a restored/built
- *   task are wired IDENTICALLY. At construction, an optional correlated {@link PhaseDefinition}
- *   (threaded from {@link import('../types.js').WorkflowOptions.definition}) seeds each task's
- *   `run` / `retries` / `timeout` by id ({@link findTaskDefinition}); omitted (the restore path)
- *   ⇒ every built task's runtime fields stay `undefined`.
+ *   task are wired IDENTICALLY. At construction, the workflow-level
+ *   {@link import('../types.js').WorkflowFunctions} registry (threaded from
+ *   {@link import('../types.js').WorkflowOptions.functions}) resolves each task's `run` name into
+ *   its runtime {@link import('../types.js').TaskInterface.handler} ONCE; a `run` that is omitted
+ *   or unregistered resolves to no handler (the no-handler rule).
  * - **Runtime lifecycle (AGENTS §10).** `pause` / `resume` / `wait` mirror the workflow's own
  *   quartet, scoped to this phase — a driving
  *   {@link import('../types.js').WorkflowRunnerInterface.execute} gates a task's own
@@ -93,6 +93,9 @@ export class Phase implements PhaseInterface {
 	// — injected by the parent so the phase needs no back-reference plumbing of its own.
 	readonly #escalateUp: () => void
 	readonly #tasks: TaskManager = new TaskManager()
+	// The workflow-level function registry each task's `run` name resolves against ONCE at
+	// construction (build, restore, or a live mint) — threaded from Workflow, never re-read.
+	readonly #functions: WorkflowFunctions | undefined
 	// The EFFECTIVE failure policy this phase runs under (`phase.bail ?? workflow.bail`, resolved
 	// at seed time and carried on the snapshot) — read by the runner to decide fail-fast vs
 	// settle-all for THIS phase, and by the workflow's per-phase-bail-aware status derivation.
@@ -120,13 +123,14 @@ export class Phase implements PhaseInterface {
 		escalate: () => void,
 		options?: PhaseOptions,
 		bail?: boolean,
-		definition?: PhaseDefinition,
+		functions?: WorkflowFunctions,
 	) {
 		this.#id = snapshot.id
 		this.#name = snapshot.name
 		this.#description = snapshot.description
 		this.#workflow = workflow
 		this.#escalateUp = escalate
+		this.#functions = functions
 		// The effective per-phase policy: the explicit workflow `bail` OVERRIDE when supplied (a
 		// deliberate "re-run the whole tree under THIS uniform policy" knob — `createWorkflow` /
 		// `restoreWorkflow` thread `options.bail` here), else the snapshot's persisted per-phase `bail`
@@ -137,9 +141,9 @@ export class Phase implements PhaseInterface {
 		this.#concurrency = snapshot.concurrency
 		this.#emitter = new Emitter<PhaseEventMap>({ on: options?.on, error: options?.error })
 		// Build the live tasks positionally from the snapshot — each wired to recompute THIS phase
-		// on a transition, carrying its own restore state (status + result + metadata) and, when a
-		// correlated `definition` was threaded in, its seeded `run` / `retries` / `timeout`.
-		for (const task of snapshot.tasks) this.#append(task, options, definition)
+		// on a transition, carrying its own restore state (status + result + metadata) and resolving
+		// its `run` name against `#functions` into its runtime handler.
+		for (const task of snapshot.tasks) this.#append(task, options)
 		// Restore the override DIRECTLY from the snapshot's own field (present only when a whole-
 		// phase skip / stop forced it) — no fragile status-divergence guess. Then seed the baseline
 		// from the EFFECTIVE status so a recompute diffs against the right value.
@@ -431,29 +435,21 @@ export class Phase implements PhaseInterface {
 	}
 
 	// Build one live task from its snapshot, threading its per-task options (its own `on` /
-	// `metadata`, keyed by id under the phase options), its restore state, and — when a
-	// correlated `definition` was threaded in (the build-time seed channel) — its seeded
-	// `run` / `retries` / `timeout` by id, then append it.
-	#append(
-		task: TaskSnapshot,
-		options: PhaseOptions | undefined,
-		definition?: PhaseDefinition,
-	): void {
-		const seed = findTaskDefinition(definition, task.id)
-		const created = this.#create(task, options?.tasks?.[task.id], seed)
+	// `metadata`, keyed by id under the phase options) and its restore state (including its
+	// declarative `run` / `retries` / `timeout`), then append it.
+	#append(task: TaskSnapshot, options: PhaseOptions | undefined): void {
+		const created = this.#create(task, options?.tasks?.[task.id])
 		this.#tasks.append(created)
 	}
 
 	// Build one live task wired to THIS phase — the shared construction step behind both
 	// `#append` (build-time wiring, from a TaskSnapshot's restore state) and `#mint` (a live
 	// `add`, from a freshly-converted TaskDefinition snapshot) — so a mint and a built/restored
-	// task are wired IDENTICALLY (recompute cascade, emitter hooks, context stamping).
-	#create(
-		snapshot: TaskSnapshot,
-		options: TaskOptions | undefined,
-		seed: TaskDefinition | undefined,
-	): Task {
+	// task are wired IDENTICALLY (recompute cascade, emitter hooks, context stamping). Resolves
+	// `snapshot.run` against `#functions` ONCE into the task's runtime handler.
+	#create(snapshot: TaskSnapshot, options: TaskOptions | undefined): Task {
 		const context = buildTaskContext(this.context, snapshot)
+		const handler = snapshot.run === undefined ? undefined : this.#functions?.[snapshot.run]
 		return new Task(
 			context,
 			this,
@@ -462,17 +458,18 @@ export class Phase implements PhaseInterface {
 			options,
 			snapshot.status,
 			snapshot.result,
-			seed?.run,
-			seed?.retries,
-			seed?.timeout,
+			snapshot.run,
+			snapshot.retries,
+			snapshot.timeout,
+			handler,
 		)
 	}
 
 	// MINT a live task from a TaskDefinition for a live `add` — converts it to an initial
-	// TaskSnapshot (definitionToSnapshot's per-task step) then builds it via `#create`, seeding
-	// its `run` / `retries` / `timeout` from the SAME definition it was minted from.
+	// TaskSnapshot (definitionToSnapshot's per-task step, carrying its `run` / `retries` /
+	// `timeout`) then builds it via `#create`, which resolves its handler the SAME way.
 	#mint(definition: TaskDefinition): Task {
-		return this.#create(taskDefinitionToSnapshot(definition), undefined, definition)
+		return this.#create(taskDefinitionToSnapshot(definition), undefined)
 	}
 
 	// The live tasks' statuses, in positional order — the input to `derivePhaseStatus`.

@@ -1,11 +1,13 @@
 import type { RunnerInterface, RunnerOptions, SchedulerInterface } from './types.js'
 import { Scheduler } from './Scheduler.js'
 import type { ContractInterface } from '@orkestrel/contract'
-import type { ToolInterface } from '@orkestrel/agent'
+import type { AgentInterface, ToolInterface, ToolManagerInterface } from '@orkestrel/agent'
 import type { DriverInterface, TableInterface } from '@orkestrel/database'
 import type {
+	AgentFunctionOptions,
 	WorkflowDefinition,
 	WorkflowDraft,
+	WorkflowFunction,
 	WorkflowInterface,
 	WorkflowOptions,
 	WorkflowRunnerInterface,
@@ -30,6 +32,7 @@ import {
 } from './constants.js'
 import { WorkflowError } from './errors.js'
 import {
+	agentTag,
 	completeDraft,
 	definitionToSnapshot,
 	expandSteps,
@@ -156,11 +159,10 @@ export function createWorkflowDraftContract(): ContractInterface<WorkflowDraft> 
  * `options.phases[id].tasks[id]` (the AGENTS §8 nested-by-id bag). The W-b tree is the
  * state machine ONLY — it does not execute tasks (W-c drives the transitions).
  *
- * `options.definition` is NOT something a caller sets — {@link createWorkflow} injects the SAME
- * `definition` it built the snapshot from as the runtime-seed channel, so every task's
- * {@link import('./types.js').TaskInterface.run} / `retries` / `timeout` is seeded by id
- * correlation automatically (the tree's declarative shape and its runtime behavior come from
- * ONE `definition`, never two).
+ * `options.functions` is the {@link import('./types.js').WorkflowFunctions} registry each live
+ * task's `run` name resolves against ONCE at construction into its runtime
+ * {@link import('./types.js').TaskInterface.handler} — a name omitted or absent from the
+ * registry resolves to no handler (the no-handler rule).
  *
  * @param definition - The workflow definition to bring to life
  * @param options - Runtime options (initial listeners, `bail` override, per-node options)
@@ -187,9 +189,10 @@ export function createWorkflow(
 	// resolved `bail`): the snapshot already carries the resolved bail at both tiers, so `Workflow`
 	// reads `#bail` from it; injecting a resolved `bail` here would make `Workflow` treat it as an
 	// EXPLICIT uniform override and clobber per-phase overrides. A caller's genuine `options.bail`
-	// stays as given and cascades (uniform re-run). `definition` IS injected — the runtime-seed
-	// channel {@link Workflow} threads down to each live task by id correlation.
-	return new Workflow(definitionToSnapshot(definition, bail), { ...options, definition })
+	// stays as given and cascades (uniform re-run). Each task's `run` / `retries` / `timeout` carry
+	// over onto the snapshot (definitionToSnapshot's per-task step), so `options.functions` (forwarded
+	// unchanged) resolves every task's handler identically whether built fresh or restored.
+	return new Workflow(definitionToSnapshot(definition, bail), options)
 }
 
 /**
@@ -239,12 +242,13 @@ export function restoreWorkflow(
  * untrusted JSON, so a status (or an override) outside
  * {@link import('./constants.js').WORKFLOW_STATUSES} /
  * {@link import('./constants.js').PHASE_STATUSES} / {@link import('./constants.js').TASK_STATUSES},
- * a non-boolean `bail` (the workflow's OR any phase's — both are REQUIRED persisted policy), or a
- * present-but-invalid phase `concurrency` (not a positive integer),
+ * a non-boolean `bail` (the workflow's OR any phase's — both are REQUIRED persisted policy), a
+ * present-but-invalid phase `concurrency` (not a positive integer), or a present-but-invalid task
+ * `run` (an empty string) / `retries` / `timeout` (not a non-negative integer),
  * is rejected loudly (naming the offending node) rather than silently producing a broken tree.
- * The `override` / `concurrency` are optional, so each is only checked WHEN present. Structural
- * shape beyond these fields is the contract's concern; this guards exactly the fields the live
- * state machine reads back.
+ * The `override` / `concurrency` / `run` / `retries` / `timeout` are optional, so each is only
+ * checked WHEN present. Structural shape beyond these fields is the contract's concern; this
+ * guards exactly the fields the live state machine reads back.
  *
  * @param snapshot - The snapshot to validate
  */
@@ -300,6 +304,24 @@ export function assertSnapshot(snapshot: WorkflowSnapshot): void {
 				throw new WorkflowError('RESTORE', `task '${task.id}' has an invalid status`, {
 					task: task.id,
 					status: task.status,
+				})
+			}
+			if (task.run !== undefined && task.run.length < 1) {
+				throw new WorkflowError('RESTORE', `task '${task.id}' has an invalid run`, {
+					task: task.id,
+					run: task.run,
+				})
+			}
+			if (task.retries !== undefined && (!Number.isInteger(task.retries) || task.retries < 0)) {
+				throw new WorkflowError('RESTORE', `task '${task.id}' has an invalid retries`, {
+					task: task.id,
+					retries: task.retries,
+				})
+			}
+			if (task.timeout !== undefined && (!Number.isInteger(task.timeout) || task.timeout < 0)) {
+				throw new WorkflowError('RESTORE', `task '${task.id}' has an invalid timeout`, {
+					task: task.id,
+					timeout: task.timeout,
 				})
 			}
 		}
@@ -386,85 +408,212 @@ export function createDatabaseWorkflowStore(
 /**
  * Create a workflow runner — a {@link WorkflowRunnerInterface} that EXECUTES a live W-b
  * workflow tree by COMPOSING the shipped substrate: phases sequential, tasks concurrent,
- * each task dispatched BY NAME under the workflow's `bail` policy.
+ * each task dispatched through its OWN resolved handler under the workflow's `bail` policy.
  *
  * @remarks
- * The runner is THIN — it re-implements no concurrency / retry / abort logic. Per-phase
- * bounded concurrency is one {@link createRunner} per phase;
- * `bail` maps onto that Runner's fail-fast (`true` — the first failure aborts the in-flight
- * siblings + skips the rest) vs settle-all (`false` — failures are recorded, the run
- * finishes); the run-level abort / timeout / budget ({@link import('./types.js').WorkflowRunOptions})
- * fold through `AbortSignal.any` (the agent runtime's pattern); pacing is the shipped
- * scheduler. `execute(definition, options?)` BUILDS the live tree from the definition itself
- * (via {@link createWorkflow} — one source of truth, returned in `WorkflowResult.workflow`),
- * drives the live entity (`start` → `complete` / `fail`), and resolves a
+ * The runner is a PURE engine — it re-implements no concurrency / retry / abort logic, AND it
+ * carries no `functions` / `tools` / `agents` registry of its own: each live task already
+ * resolved its own {@link import('./types.js').WorkflowFunction} into
+ * {@link import('./types.js').TaskInterface.handler} ONCE at construction, from the
+ * {@link WorkflowOptions.functions} registry supplied to `execute` / {@link createWorkflow}.
+ * Per-phase bounded concurrency is one {@link createRunner} per phase; `bail` maps onto that
+ * Runner's fail-fast (`true` — the first failure aborts the in-flight siblings + skips the
+ * rest) vs settle-all (`false` — failures are recorded, the run finishes); the run-level abort
+ * / timeout / budget ({@link import('./types.js').WorkflowRunOptions}) fold through
+ * `AbortSignal.any` (the agent runtime's pattern); pacing is the shipped scheduler.
+ * `execute(definition, options?)` BUILDS the live tree from the definition itself (via
+ * {@link createWorkflow} — one source of truth, returned in `WorkflowResult.workflow`), drives
+ * the live entity (`start` → `complete` / `fail`), and resolves a
  * {@link import('./types.js').WorkflowResult}.
  *
- * A task is dispatched on its {@link import('./types.js').TaskForm}: `function` → the
- * `functions` registry, `tool` → the `tools` {@link ToolManagerInterface}, `agent` → the
- * `agents` {@link import('./types.js').WorkflowAgents} resolver (W-c2), behind a depth + cycle
- * guard. A task whose handler is NOT found (an unregistered name for ANY form) AUTO-COMPLETES
- * (the ROADMAP no-handler rule).
+ * Static tool / agent calling is OPT-IN, wired through the adapter factories
+ * {@link createToolFunction} / {@link createAgentFunction} — plain
+ * {@link import('./types.js').WorkflowFunction}s a caller composes into its OWN
+ * {@link WorkflowOptions.functions} registry, same as any other behavior. A task with no
+ * resolved handler AUTO-COMPLETES (the ROADMAP no-handler rule).
  *
- * The runner is constructed with a reference to {@link createWorkflowTool} (the workflow-tool
- * binder) so it can BIND a depth/cycle-aware workflow tool onto a dispatched subagent's context
- * — the propagation seam — WITHOUT this module's classes importing its own `factories.ts` (the
- * factories→classes direction; the binder is injected as a value at construction).
- *
- * @param options - The behavior registries (`functions` / `tools` / `agents`) the runner
- *   dispatches a task by name through, plus an optional pacing `scheduler` (default the shipped
- *   cross-environment one). Omitting `functions` / `tools` / `agents` makes those task forms
- *   auto-complete (no handler). See {@link WorkflowRunnerOptions}.
+ * @param options - An optional pacing `scheduler` (default the shipped cross-environment one).
+ *   See {@link WorkflowRunnerOptions}.
  * @returns A working {@link WorkflowRunnerInterface}
  *
  * @example
  * ```ts
- * import { createWorkflowRunner, createToolManager } from '@src/core'
+ * import { createWorkflowRunner } from '@src/core'
  *
- * const tools = createToolManager()
- * const runner = createWorkflowRunner({
- * 	functions: { compile: async (controller) => `built ${controller.task.id}` },
- * 	tools,
- * })
+ * const runner = createWorkflowRunner()
  * const definition = { id: 'w', name: 'W', phases: [{ id: 'p', name: 'P', tasks: [
- * 	{ id: 't', name: 'T', run: { via: 'function', name: 'compile' } },
+ * 	{ id: 't', name: 'T', run: 'compile' },
  * ] }] }
- * const result = await runner.execute(definition) // builds + drives the tree
+ * const result = await runner.execute(definition, {
+ * 	functions: { compile: async (controller) => `built ${controller.task.id}` },
+ * })
  * result.status // 'completed'
  * result.workflow.phase('p')?.task('t')?.status // 'completed'
  * ```
  */
 export function createWorkflowRunner(options?: WorkflowRunnerOptions): WorkflowRunnerInterface {
-	return new WorkflowRunner(
-		options?.functions ?? {},
-		options?.tools,
-		options?.agents,
-		options?.scheduler ?? createScheduler(),
-		createWorkflowTool,
-	)
+	return new WorkflowRunner(options?.scheduler ?? createScheduler())
+}
+
+/**
+ * Wrap a registered tool as a {@link WorkflowFunction} — the OPT-IN adapter that lets a
+ * `function`-form task run a `@orkestrel/agent` tool BY NAME.
+ *
+ * @remarks
+ * Composes into a caller's {@link WorkflowOptions.functions} registry like any other behavior
+ * (`{ publish: createToolFunction(tools, 'publish') }`); the PURE
+ * {@link import('./WorkflowRunner.js').WorkflowRunner} has no knowledge of tools itself. The
+ * returned function executes `name` against `tools` with the task's `controller.input` as the
+ * call arguments, id-correlated to the task's own id. A `ToolManagerInterface.execute` NEVER
+ * throws (a handler throw is isolated into `result.error`), so a failing tool is surfaced here
+ * as a THROWN `Error` carrying the original message as `cause` — the leaf `fail`s, honouring
+ * `bail`. An UNREGISTERED tool name is a programmer error (an explicit binding to a name that
+ * doesn't exist) — unlike the engine's own silent auto-complete of an unresolved task handler,
+ * this THROWS a typed `TOOL` {@link WorkflowError}.
+ *
+ * @param tools - The {@link ToolManagerInterface} the named tool is registered on
+ * @param name - The registered tool's name
+ * @returns A {@link WorkflowFunction} that runs the named tool
+ *
+ * @example
+ * ```ts
+ * import { createToolFunction, createToolManager, createWorkflowRunner } from '@src/core'
+ *
+ * const tools = createToolManager()
+ * tools.add(myPublishTool)
+ * const runner = createWorkflowRunner()
+ * await runner.execute(definition, { functions: { publish: createToolFunction(tools, 'publish') } })
+ * ```
+ */
+export function createToolFunction(tools: ToolManagerInterface, name: string): WorkflowFunction {
+	return async (controller) => {
+		const tool = tools.tool(name)
+		if (tool === undefined) {
+			throw new WorkflowError('TOOL', `tool '${name}' is not registered`, { tool: name })
+		}
+		const result = await tools.execute({
+			id: controller.task.id,
+			name,
+			arguments: controller.input,
+		})
+		// A `tool` result NEVER throws — the manager isolates a handler throw into `result.error`.
+		// Surface that as a task failure (so a failing tool `fail`s the leaf, honouring `bail`),
+		// preserving the original message as `cause` so a catcher can inspect it directly.
+		if (result.error !== undefined) throw new Error(result.error, { cause: result.error })
+		return result.value
+	}
+}
+
+/**
+ * Wrap a live `AgentInterface` (`@orkestrel/agent`) as a {@link WorkflowFunction} — the OPT-IN
+ * adapter that runs the agent to a settled result, folding a nested workflow-authoring
+ * depth / cycle guard into its own closure.
+ *
+ * @remarks
+ * Composes into a caller's {@link WorkflowOptions.functions} registry like any other behavior;
+ * the PURE {@link import('./WorkflowRunner.js').WorkflowRunner} has no knowledge of agents
+ * itself. Before running the agent, the depth/cycle guard REJECTS the call (a THROWN typed
+ * `DEPTH` {@link WorkflowError}, which the leaf `fail`s) when running it would push a nested
+ * chain past {@link MAX_WORKFLOW_DEPTH}, OR when this agent is already an ancestor (a cycle) —
+ * ported from the former engine-side guard. When {@link AgentFunctionOptions.runner} is
+ * supplied, the adapter BINDS a depth/cycle-aware {@link createWorkflowTool} onto the agent's
+ * `context.tools` (the propagation seam) — closed over `depth + 1` and the extended ancestry —
+ * so the agent can author + run a NESTED workflow through it; the wrapped default is the
+ * CURRENT task's own workflow id (used only on a no-args tool call). The task's cancellation
+ * folds into the agent run: an already-aborted `controller.signal` cancels the agent up front;
+ * otherwise a one-shot listener fires `agent.abort(reason)` when the task cancels, removed in
+ * `finally`. `agent.generate()` resolves a partial `AgentResult` on a cancel (never rejects),
+ * returned as the task's completed value.
+ *
+ * @param agent - The live `AgentInterface` to run
+ * @param options - The nested-workflow binding + depth/cycle bookkeeping (see {@link AgentFunctionOptions})
+ * @returns A {@link WorkflowFunction} that runs `agent` to its settled result
+ *
+ * @example
+ * ```ts
+ * import { createAgentFunction, createWorkflowRunner } from '@src/core'
+ *
+ * const runner = createWorkflowRunner()
+ * const review = createAgentFunction(myAgent, { runner })
+ * await runner.execute(definition, { functions: { review } })
+ * ```
+ */
+export function createAgentFunction(
+	agent: AgentInterface,
+	options?: AgentFunctionOptions,
+): WorkflowFunction {
+	return async (controller) => {
+		const depth = options?.depth ?? 0
+		const ancestry = options?.ancestry ?? []
+		// GUARD (before running the agent): running it would let it author + run a NESTED workflow
+		// at `depth + 1`, so reject when that would exceed the bound, OR when this agent is already
+		// an ancestor (a re-entry cycle). The throw becomes the leaf's typed `DEPTH` failure.
+		if (depth + 1 > MAX_WORKFLOW_DEPTH) {
+			throw new WorkflowError('DEPTH', `agent '${agent.id}' exceeds max workflow depth`, {
+				agent: agent.id,
+				depth,
+				max: MAX_WORKFLOW_DEPTH,
+			})
+		}
+		const tag = agentTag(agent.id)
+		if (ancestry.includes(tag)) {
+			throw new WorkflowError('DEPTH', `agent '${agent.id}' is already an ancestor (cycle)`, {
+				agent: agent.id,
+				ancestry: [...ancestry],
+			})
+		}
+		// BIND the workflow tool so the agent can fan out into a nested workflow at `depth + 1` with
+		// THIS agent added to the ancestry — the propagation across the agent/tool boundary (closed
+		// over the tool at bind time, since a tool handler receives no ambient context). The current
+		// task's own workflow id is the tool's WRAPPED default, used only on a no-args call.
+		const runner = options?.runner
+		if (runner !== undefined) {
+			const workflowId = controller.task.phase.workflow.id
+			const wrapped: WorkflowDefinition = { id: workflowId, name: workflowId, phases: [] }
+			agent.context.tools.add(
+				createWorkflowTool(wrapped, runner, { depth, ancestry: [...ancestry, tag] }),
+			)
+		}
+		// Fold the task's cancellation into the agent run: an already-aborted signal cancels the
+		// agent up front; otherwise a one-shot listener fires `agent.abort(reason)` when the task
+		// cancels. `generate()` RESOLVES a partial on a cancel (never rejects).
+		const signal = controller.signal
+		const onAbort = (): void => agent.abort(signal.reason)
+		if (signal.aborted) {
+			agent.abort(signal.reason)
+		} else {
+			signal.addEventListener('abort', onAbort, { once: true })
+		}
+		try {
+			return await agent.generate()
+		} finally {
+			signal.removeEventListener('abort', onAbort)
+		}
+	}
 }
 
 /**
  * Wrap a {@link WorkflowDefinition} as an LLM-callable {@link ToolInterface} — it ADVERTISES
- * the SIMPLE flat authoring shape (`{ name?, steps: [{ name, via? }] }`) as its `parameters` so
+ * the SIMPLE flat authoring shape (`{ name?, steps: [{ name }] }`) as its `parameters` so
  * even a small model can author a complete tree, and its handler EXPANDS / COMPLETES the
  * authored blob, validates it against the STRICT contract, runs it through `runner`, and
  * returns the run SUMMARY (throwing a typed {@link WorkflowError} on failure).
  *
  * @remarks
  * A plain {@link ToolManagerInterface}-compatible tool (so `createMCPServer` / `createMCPRoutes`
- * expose it for free — nothing MCP is wired here). It is ALSO the propagation carrier the
- * {@link WorkflowRunner} binds onto a dispatched subagent (W-c2): because a tool handler receives
- * ONLY the model-supplied `args` (no ambient context, no signal), the run's depth + ancestry are
- * CLOSED OVER at bind time via {@link WorkflowToolOptions}, and the handler runs the nested
- * workflow at `depth + 1` with the extended ancestry.
+ * expose it for free — nothing MCP is wired here). It is ALSO the propagation carrier
+ * {@link createAgentFunction} binds onto a wrapped agent's `context.tools`: because a tool
+ * handler receives ONLY the model-supplied `args` (no ambient context, no signal), the run's
+ * depth + ancestry are CLOSED OVER at bind time via {@link WorkflowToolOptions}, and the
+ * handler enforces the SAME depth / cycle guard itself (this function owns it now — the engine
+ * carries none) before running the nested workflow at `depth + 1` with the extended ancestry.
  *
  * **Widened authoring surface (additive — the canonical contract + runner stay STRICT and
  * unchanged).** A 2B model reliably CALLS the tool but cannot reliably emit the full four-level
- * nested {@link WorkflowDefinition} (six required `id`/`name` strings, a nested tagged union,
- * all-or-nothing). So the tool ACCEPTS three authoring forms and converges them on the SAME
- * strict {@link createWorkflowContract} gate before running (soundness preserved):
- * - the FLAT shape `{ name?, steps: [{ name, via? }] }` — the ADVERTISED `parameters` (the simplest
+ * nested {@link WorkflowDefinition} (six required `id`/`name` strings, an all-or-nothing tree).
+ * So the tool ACCEPTS three authoring forms and converges them on the SAME strict
+ * {@link createWorkflowContract} gate before running (soundness preserved):
+ * - the FLAT shape `{ name?, steps: [{ name }] }` — the ADVERTISED `parameters` (the simplest
  *   form, {@link import('./helpers.js').expandSteps}'d into one one-task phase per step);
  * - a nested DRAFT with any `id`/`name` OMITTED — {@link createWorkflowDraftContract}-parsed then
  *   {@link import('./helpers.js').completeDraft}'d (missing ids synthesized positionally);
@@ -486,9 +635,10 @@ export function createWorkflowRunner(options?: WorkflowRunnerOptions): WorkflowR
  *   gate (e.g. an explicit empty `id`, `concurrency: 0`) ⇒ THROW a `TOOL` {@link WorkflowError} (no run).
  * - **Over-deep / cyclic** ⇒ THROW a `DEPTH` {@link WorkflowError} when the nested run would exceed
  *   {@link MAX_WORKFLOW_DEPTH}, or the target workflow id is already an ancestor (a cycle) — the
- *   same `code` the agent-task guard raises.
- * - **Otherwise** ⇒ `runner.execute(target, { depth: depth + 1, ancestry: … })`, RETURNING the
- *   plain summary of the terminal run (`{ status, count }`, via {@link workflowToolSummary}).
+ *   SAME `code` {@link createAgentFunction}'s own guard raises. Enforced HERE, INSIDE this
+ *   handler, before ever calling `runner.execute` — the engine itself performs no such check.
+ * - **Otherwise** ⇒ `runner.execute(target)`, RETURNING the plain summary of the terminal run
+ *   (`{ status, count }`, via {@link workflowToolSummary}).
  *
  * @param definition - The workflow the tool runs when called with no authored args
  * @param runner - The {@link WorkflowRunnerInterface} that executes the (nested) workflow
@@ -577,10 +727,7 @@ export function createWorkflowTool(
 					ancestry: [...ancestry],
 				})
 			}
-			const result = await runner.execute(target, {
-				depth: depth + 1,
-				ancestry: [...ancestry, tag],
-			})
+			const result = await runner.execute(target)
 			return workflowToolSummary(result)
 		},
 	})

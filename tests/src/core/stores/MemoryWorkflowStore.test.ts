@@ -150,7 +150,7 @@ describe('MemoryWorkflowStore — mid-manual-drive + paused round-trips (paused/
 					id: 'p',
 					name: 'P',
 					concurrency: 3,
-					tasks: [{ id: 't', name: 'T', run: { via: 'function', name: 'f' } }],
+					tasks: [{ id: 't', name: 'T', run: 'f' }],
 				},
 			],
 		})
@@ -178,6 +178,36 @@ describe('MemoryWorkflowStore — mid-manual-drive + paused round-trips (paused/
 		expect(restored.paused).toBe(false)
 		expect(restored.destroyed).toBe(false)
 		expect(restored.phase('p')?.snapshot().concurrency).toBe(3)
+	})
+})
+
+describe('MemoryWorkflowStore — the declarative task trio (run/retries/timeout) round-trips', () => {
+	it('persists + restores run/retries/timeout through the store', async () => {
+		const store = createMemoryWorkflowStore()
+		const definition = buildWorkflowDefinition({
+			phases: [
+				{
+					id: 'p',
+					name: 'P',
+					tasks: [{ id: 't', name: 'T', run: 'compile', retries: 2, timeout: 500 }],
+				},
+			],
+		})
+		const workflow = createWorkflow(definition)
+		const snapshot = workflow.snapshot()
+		expect(snapshot.phases[0]?.tasks[0]?.run).toBe('compile')
+		expect(snapshot.phases[0]?.tasks[0]?.retries).toBe(2)
+		expect(snapshot.phases[0]?.tasks[0]?.timeout).toBe(500)
+
+		await store.set(snapshot)
+		const got = await store.get(snapshot.id)
+		expect(got).toBeDefined()
+		if (got === undefined) return
+		const restored = restoreWorkflow(got)
+		const task = restored.phase('p')?.task('t')
+		expect(task?.run).toBe('compile')
+		expect(task?.retries).toBe(2)
+		expect(task?.timeout).toBe(500)
 	})
 })
 

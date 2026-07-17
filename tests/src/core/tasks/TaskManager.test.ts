@@ -15,9 +15,9 @@ function phaseWithTasks() {
 				id: 'p',
 				name: 'P',
 				tasks: [
-					{ id: 't0', name: 'T0', run: { via: 'function', name: 'f' } },
-					{ id: 't1', name: 'T1', run: { via: 'function', name: 'f' } },
-					{ id: 't2', name: 'T2', run: { via: 'function', name: 'f' } },
+					{ id: 't0', name: 'T0', run: 'f' },
+					{ id: 't1', name: 'T1', run: 'f' },
+					{ id: 't2', name: 'T2', run: 'f' },
 				],
 			},
 		],
@@ -61,7 +61,7 @@ describe('TaskManager — positional order survives an interior skip', () => {
 describe('TaskManager — add/remove/move/update Result matrix (via Phase, AGENTS §12)', () => {
 	it('add succeeds with the minted task as the success value, appended at the end by default', () => {
 		const phase = phaseWithTasks()
-		const result = phase.add({ id: 't3', name: 'T3', run: { via: 'function', name: 'f' } })
+		const result = phase.add({ id: 't3', name: 'T3', run: 'f' })
 		expect(result.success).toBe(true)
 		if (!result.success) return
 		expect(result.value.id).toBe('t3')
@@ -70,14 +70,14 @@ describe('TaskManager — add/remove/move/update Result matrix (via Phase, AGENT
 
 	it('add at an explicit index inserts there, shifting the suffix (order asserted via tasks())', () => {
 		const phase = phaseWithTasks()
-		const result = phase.add({ id: 't-mid', name: 'Mid', run: { via: 'function', name: 'f' } }, 1)
+		const result = phase.add({ id: 't-mid', name: 'Mid', run: 'f' }, 1)
 		expect(result.success).toBe(true)
 		expect(phase.tasks.tasks().map((task) => task.id)).toEqual(['t0', 't-mid', 't1', 't2'])
 	})
 
 	it('add fails MUTATION on a duplicate id, leaving the manager unchanged', () => {
 		const phase = phaseWithTasks()
-		const result = phase.add({ id: 't1', name: 'Dup', run: { via: 'function', name: 'f' } })
+		const result = phase.add({ id: 't1', name: 'Dup', run: 'f' })
 		expect(result.success).toBe(false)
 		if (result.success) return
 		expect(result.error.code).toBe('MUTATION')
@@ -87,10 +87,7 @@ describe('TaskManager — add/remove/move/update Result matrix (via Phase, AGENT
 	it('add fails MUTATION on an out-of-bounds index', () => {
 		const phase = phaseWithTasks()
 		for (const index of [-1, 4]) {
-			const result = phase.add(
-				{ id: 't-oob', name: 'OOB', run: { via: 'function', name: 'f' } },
-				index,
-			)
+			const result = phase.add({ id: 't-oob', name: 'OOB', run: 'f' }, index)
 			expect(result.success).toBe(false)
 			if (result.success) return
 			expect(result.error.code).toBe('MUTATION')
@@ -183,8 +180,8 @@ describe('TaskManager — add/remove/move/update Result matrix (via Phase, AGENT
 						id: 'p',
 						name: 'P',
 						tasks: [
-							{ id: 'dup', name: 'A', run: { via: 'function', name: 'f' } },
-							{ id: 'dup', name: 'B', run: { via: 'function', name: 'f' } },
+							{ id: 'dup', name: 'A', run: 'f' },
+							{ id: 'dup', name: 'B', run: 'f' },
 						],
 					},
 				],

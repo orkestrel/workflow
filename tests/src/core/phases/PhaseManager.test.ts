@@ -10,9 +10,9 @@ function workflowWithPhases() {
 		id: 'wf',
 		name: 'WF',
 		phases: [
-			{ id: 'a', name: 'A', tasks: [{ id: 't', name: 'T', run: { via: 'function', name: 'f' } }] },
-			{ id: 'b', name: 'B', tasks: [{ id: 't', name: 'T', run: { via: 'function', name: 'f' } }] },
-			{ id: 'c', name: 'C', tasks: [{ id: 't', name: 'T', run: { via: 'function', name: 'f' } }] },
+			{ id: 'a', name: 'A', tasks: [{ id: 't', name: 'T', run: 'f' }] },
+			{ id: 'b', name: 'B', tasks: [{ id: 't', name: 'T', run: 'f' }] },
+			{ id: 'c', name: 'C', tasks: [{ id: 't', name: 'T', run: 'f' }] },
 		],
 	})
 }
@@ -54,7 +54,7 @@ describe('PhaseManager — add/remove/move/update Result matrix (via Workflow, A
 		const result = workflow.add({
 			id: 'd',
 			name: 'D',
-			tasks: [{ id: 't', name: 'T', run: { via: 'function', name: 'f' } }],
+			tasks: [{ id: 't', name: 'T', run: 'f' }],
 		})
 		expect(result.success).toBe(true)
 		if (!result.success) return
@@ -68,7 +68,7 @@ describe('PhaseManager — add/remove/move/update Result matrix (via Workflow, A
 			{
 				id: 'mid',
 				name: 'Mid',
-				tasks: [{ id: 't', name: 'T', run: { via: 'function', name: 'f' } }],
+				tasks: [{ id: 't', name: 'T', run: 'f' }],
 			},
 			1,
 		)

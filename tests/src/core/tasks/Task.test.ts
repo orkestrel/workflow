@@ -12,9 +12,7 @@ function buildSingleTaskWorkflow(): WorkflowDefinition {
 	return {
 		id: 'wf',
 		name: 'WF',
-		phases: [
-			{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', run: { via: 'function', name: 'f' } }] },
-		],
+		phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', run: 'f' }] }],
 	}
 }
 
@@ -34,7 +32,7 @@ describe('Task — identity + lineage', () => {
 				{
 					id: 'phase-1',
 					name: 'Phase One',
-					tasks: [{ id: 'task-1', name: 'Task One', run: { via: 'tool', name: 'x' } }],
+					tasks: [{ id: 'task-1', name: 'Task One', run: 'x' }],
 				},
 			],
 		})
@@ -295,7 +293,7 @@ describe('Task — own event precedes the cascade (cause before effect)', () => 
 				{
 					id: 'p',
 					name: 'P',
-					tasks: [{ id: 't', name: 'T', run: { via: 'function', name: 'f' } }],
+					tasks: [{ id: 't', name: 'T', run: 'f' }],
 				},
 			],
 		})
@@ -395,7 +393,7 @@ describe('Task — the leaf snapshot: status IS the forced-terminal marker (no o
 	})
 })
 
-describe('Task — runtime-only run/retries/timeout (AGENTS §12, never persisted)', () => {
+describe('Task — declarative run/retries/timeout PERSIST (AGENTS §12), handler is runtime-only', () => {
 	it('seeds run/retries/timeout from the definition when built through createWorkflow', () => {
 		const workflow = createWorkflow({
 			id: 'wf',
@@ -408,7 +406,7 @@ describe('Task — runtime-only run/retries/timeout (AGENTS §12, never persiste
 						{
 							id: 't',
 							name: 'T',
-							run: { via: 'tool', name: 'x' },
+							run: 'x',
 							retries: 3,
 							timeout: 500,
 						},
@@ -417,22 +415,21 @@ describe('Task — runtime-only run/retries/timeout (AGENTS §12, never persiste
 			],
 		})
 		const task = loneTask(workflow)
-		expect(task.run).toEqual({ via: 'tool', name: 'x' })
+		expect(task.run).toBe('x')
 		expect(task.retries).toBe(3)
 		expect(task.timeout).toBe(500)
 	})
 
 	it('leaves retries/timeout undefined when the definition omits them', () => {
 		const task = loneTask(createWorkflow(buildSingleTaskWorkflow()))
-		expect(task.run).toEqual({ via: 'function', name: 'f' })
+		expect(task.run).toBe('f')
 		expect(task.retries).toBeUndefined()
 		expect(task.timeout).toBeUndefined()
 	})
 
-	it('run/retries/timeout are all undefined on the restore path (definition-less)', () => {
-		// A restored tree has no WorkflowDefinition to correlate against — run/retries/timeout are
-		// unrecoverable from a pure-JSON WorkflowSnapshot (they never persist), so every leaf comes
-		// back definition-less.
+	it('run/retries/timeout SURVIVE the restore path — they are declarative config, persisted like bail/concurrency', () => {
+		// Unlike the old execution-only fields, run/retries/timeout are now PERSISTED on the
+		// TaskSnapshot (like a phase's bail/concurrency), so a restore reinstates them verbatim.
 		const original = createWorkflow({
 			id: 'wf',
 			name: 'WF',
@@ -440,20 +437,18 @@ describe('Task — runtime-only run/retries/timeout (AGENTS §12, never persiste
 				{
 					id: 'p',
 					name: 'P',
-					tasks: [
-						{ id: 't', name: 'T', run: { via: 'tool', name: 'x' }, retries: 2, timeout: 100 },
-					],
+					tasks: [{ id: 't', name: 'T', run: 'x', retries: 2, timeout: 100 }],
 				},
 			],
 		})
 		const restored = restoreWorkflow(original.snapshot())
 		const task = loneTask(restored)
-		expect(task.run).toBeUndefined()
-		expect(task.retries).toBeUndefined()
-		expect(task.timeout).toBeUndefined()
+		expect(task.run).toBe('x')
+		expect(task.retries).toBe(2)
+		expect(task.timeout).toBe(100)
 	})
 
-	it('run/retries/timeout never appear in the leaf snapshot', () => {
+	it('run/retries/timeout DO appear in the leaf snapshot when the definition declares them', () => {
 		const task = loneTask(
 			createWorkflow({
 				id: 'wf',
@@ -462,20 +457,49 @@ describe('Task — runtime-only run/retries/timeout (AGENTS §12, never persiste
 					{
 						id: 'p',
 						name: 'P',
-						tasks: [
-							{ id: 't', name: 'T', run: { via: 'tool', name: 'x' }, retries: 1, timeout: 10 },
-						],
+						tasks: [{ id: 't', name: 'T', run: 'x', retries: 1, timeout: 10 }],
 					},
 				],
 			}),
 		)
 		const snapshot = task.snapshot()
-		expect('run' in snapshot).toBe(false)
+		expect(snapshot.run).toBe('x')
+		expect(snapshot.retries).toBe(1)
+		expect(snapshot.timeout).toBe(10)
+	})
+
+	it('run/retries/timeout are OMITTED from the snapshot when the definition declares none', () => {
+		const task = loneTask(createWorkflow(buildSingleTaskWorkflow()))
+		const snapshot = task.snapshot()
 		expect('retries' in snapshot).toBe(false)
 		expect('timeout' in snapshot).toBe(false)
-		expect(JSON.stringify(snapshot)).not.toContain('"run"')
-		expect(JSON.stringify(snapshot)).not.toContain('"retries"')
-		expect(JSON.stringify(snapshot)).not.toContain('"timeout"')
+	})
+
+	it('handler is the RUNTIME-ONLY resolution of run against WorkflowOptions.functions — never persisted', () => {
+		const handler = () => 'value'
+		const workflow = createWorkflow(buildSingleTaskWorkflow(), { functions: { f: handler } })
+		const task = loneTask(workflow)
+		expect(task.handler).toBe(handler)
+		expect(JSON.stringify(task.snapshot())).not.toContain('handler')
+	})
+
+	it('handler is undefined when run is unregistered or omitted (the no-handler rule)', () => {
+		const noRegistry = loneTask(createWorkflow(buildSingleTaskWorkflow()))
+		expect(noRegistry.handler).toBeUndefined()
+		const unregistered = loneTask(
+			createWorkflow(buildSingleTaskWorkflow(), { functions: { other: () => 'x' } }),
+		)
+		expect(unregistered.handler).toBeUndefined()
+	})
+
+	it('handler does NOT survive a restore (unresolvable from pure JSON without a functions registry)', () => {
+		const handler = () => 'value'
+		const original = createWorkflow(buildSingleTaskWorkflow(), { functions: { f: handler } })
+		const restored = restoreWorkflow(original.snapshot())
+		expect(loneTask(restored).handler).toBeUndefined()
+		// Supplying the SAME registry on restore re-resolves the handler identically.
+		const reResolved = restoreWorkflow(original.snapshot(), { functions: { f: handler } })
+		expect(loneTask(reResolved).handler).toBe(handler)
 	})
 })
 

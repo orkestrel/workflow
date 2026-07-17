@@ -10,7 +10,6 @@ import type {
 	TaskContext,
 	TaskDefinition,
 	TaskDraft,
-	TaskForm,
 	TaskResult,
 	TaskSnapshot,
 	TaskStatus,
@@ -20,7 +19,6 @@ import type {
 	WorkflowResult,
 	WorkflowSnapshot,
 	WorkflowStatus,
-	WorkflowStep,
 	WorkflowSteps,
 } from './types.js'
 import type { Failure, Success } from '@orkestrel/contract'
@@ -33,46 +31,6 @@ import { DEFAULT_BAIL, TASK_TRANSITIONS } from './constants.js'
 // statuses, a workflow status from its phases' statuses UNDER the `bail` policy.
 // Determinism is fixed by design (tasks concurrent, phases sequential), so these
 // derivations are order-insensitive set reductions, never sequencing decisions.
-
-// === Task-form guards (narrow a TaskForm on its `via` discriminant)
-
-/**
- * Narrow a {@link TaskForm} to the `function` form — a task that runs a registered
- * function.
- *
- * @param form - The task form to test
- * @returns `true` when `form.via` is `'function'`
- */
-export function isFunctionTask(
-	form: TaskForm,
-): form is { readonly via: 'function'; readonly name: string } {
-	return form.via === 'function'
-}
-
-/**
- * Narrow a {@link TaskForm} to the `tool` form — a task that runs a registered tool.
- *
- * @param form - The task form to test
- * @returns `true` when `form.via` is `'tool'`
- */
-export function isToolTask(
-	form: TaskForm,
-): form is { readonly via: 'tool'; readonly name: string } {
-	return form.via === 'tool'
-}
-
-/**
- * Narrow a {@link TaskForm} to the `agent` form — a task that runs a registered
- * agent (a subagent).
- *
- * @param form - The task form to test
- * @returns `true` when `form.via` is `'agent'`
- */
-export function isAgentTask(
-	form: TaskForm,
-): form is { readonly via: 'agent'; readonly name: string } {
-	return form.via === 'agent'
-}
 
 // === Ancestry tags (the W-c2 depth/cycle chain identifiers)
 
@@ -418,10 +376,10 @@ export function isWorkflowSnapshot(value: unknown): value is WorkflowSnapshot {
  * @remarks
  * The structural fields (`id` / `name` / `description` + the ordered phases / tasks)
  * carry over verbatim, as does each phase's `concurrency` (persisted on the
- * {@link PhaseSnapshot} so a restore reinstates the same throttle); the W-b live tree is
- * the DECLARATIVE state machine, so the remaining execution-only definition fields
- * (per-task `run` / `retries` / `timeout`) are intentionally dropped (W-c reads them from
- * the definition when it drives transitions). The `bail` policy carries over — at the
+ * {@link PhaseSnapshot} so a restore reinstates the same throttle) and each task's `run` /
+ * `retries` / `timeout` (persisted on the {@link TaskSnapshot}, like `bail` / `concurrency`,
+ * so a restore + a {@link import('./types.js').WorkflowOptions.functions} registry resumes
+ * real work). The `bail` policy carries over — at the
  * workflow tier AND, per phase, the
  * EFFECTIVE policy (`phase.bail ?? workflowBail`) on each {@link PhaseSnapshot} — so the seeded
  * snapshot is self-contained; a fresh seed has no `override`. `created` / `updated` are stamped now.
@@ -493,6 +451,12 @@ export function phaseDefinitionToSnapshot(
  * {@link TaskSnapshot} — the per-task leaf step of {@link definitionToSnapshot} (no
  * result yet, empty metadata).
  *
+ * @remarks
+ * `run` / `retries` / `timeout` carry over verbatim (persisted declarative config, like a
+ * phase's `bail` / `concurrency`) — a restore reinstates the same behavior reference and
+ * reliability overrides once paired with a {@link import('./types.js').WorkflowOptions.functions}
+ * registry.
+ *
  * @param task - The task definition to seed from
  * @returns An initial {@link TaskSnapshot}
  */
@@ -505,41 +469,10 @@ export function taskDefinitionToSnapshot(
 		...(task.description === undefined ? {} : { description: task.description }),
 		status: 'pending',
 		metadata: {},
+		...(task.run === undefined ? {} : { run: task.run }),
+		...(task.retries === undefined ? {} : { retries: task.retries }),
+		...(task.timeout === undefined ? {} : { timeout: task.timeout }),
 	}
-}
-
-// === Definition correlation (the WorkflowOptions.definition / mint runtime-seed lookups)
-
-/**
- * Look up one {@link PhaseDefinition} by `id` within a {@link WorkflowDefinition} — the
- * by-id correlation step behind seeding a live phase's tasks' `run` / `retries` / `timeout`
- * from {@link import('./types.js').WorkflowOptions.definition}.
- *
- * @param definition - The workflow definition to search (`undefined` on the restore path)
- * @param id - The phase id to find
- * @returns The matching {@link PhaseDefinition}, or `undefined` when absent (or `definition` itself is `undefined`)
- */
-export function findPhaseDefinition(
-	definition: WorkflowDefinition | undefined,
-	id: string,
-): PhaseDefinition | undefined {
-	return definition?.phases.find((phase) => phase.id === id)
-}
-
-/**
- * Look up one {@link TaskDefinition} by `id` within a {@link PhaseDefinition} — the per-task
- * step of {@link findPhaseDefinition}, the source of a live task's seeded `run` / `retries` /
- * `timeout`.
- *
- * @param phase - The phase definition to search (`undefined` when the phase itself was not found)
- * @param id - The task id to find
- * @returns The matching {@link TaskDefinition}, or `undefined` when absent (or `phase` itself is `undefined`)
- */
-export function findTaskDefinition(
-	phase: PhaseDefinition | undefined,
-	id: string,
-): TaskDefinition | undefined {
-	return phase?.tasks.find((task) => task.id === id)
 }
 
 /**
@@ -657,7 +590,7 @@ export function completeTaskDraft(task: TaskDraft, phaseId: string, index: numbe
 		id,
 		name: task.name ?? id,
 		...(task.description === undefined ? {} : { description: task.description }),
-		run: task.run,
+		...(task.run === undefined ? {} : { run: task.run }),
 		...(task.retries === undefined ? {} : { retries: task.retries }),
 		...(task.timeout === undefined ? {} : { timeout: task.timeout }),
 	}
@@ -670,34 +603,23 @@ export function completeTaskDraft(task: TaskDraft, phaseId: string, index: numbe
  * @remarks
  * The expansion of the tool's ADVERTISED surface (AGENTS §21 — the simplest form a small
  * model can author). Each {@link WorkflowStep} maps to a phase holding exactly one task:
- * the step's `name` becomes the task's `run.name`, and its `via` becomes the task's `run.via`
- * (defaulting to `'function'` when omitted). Ids/names are auto-filled positionally — it
- * builds an ids-omitted {@link WorkflowDraft} and delegates to {@link completeDraft}, so the
- * two lenient surfaces share ONE synthesis path (step `i` → phase `phase-<i>`, its task
- * `phase-<i>-task-0`). The optional `name` becomes the workflow's `name`. The result is a
- * complete definition the caller validates against the STRICT contract before running.
+ * the step's `name` becomes the task's `run` (the behavior-registry key). Ids/names are
+ * auto-filled positionally — it builds an ids-omitted {@link WorkflowDraft} and delegates
+ * to {@link completeDraft}, so the two lenient surfaces share ONE synthesis path (step `i`
+ * → phase `phase-<i>`, its task `phase-<i>-task-0`). The optional `name` becomes the
+ * workflow's `name`. The result is a complete definition the caller validates against the
+ * STRICT contract before running.
  *
- * @param flat - The flat steps blob (`{ name?, steps: [{ name, via? }] }`)
+ * @param flat - The flat steps blob (`{ name?, steps: [{ name }] }`)
  * @returns A complete {@link WorkflowDefinition} (one one-task phase per step)
  */
 export function expandSteps(flat: WorkflowSteps): WorkflowDefinition {
 	return completeDraft({
 		...(flat.name === undefined ? {} : { name: flat.name }),
 		phases: flat.steps.map((step) => ({
-			tasks: [{ run: stepToForm(step) }],
+			tasks: [{ run: step.name }],
 		})),
 	})
-}
-
-/**
- * Convert one flat {@link WorkflowStep} into a {@link TaskForm} — `name` → the form's `name`,
- * `via` → the form's discriminant (defaulting to `'function'`).
- *
- * @param step - The flat step
- * @returns The {@link TaskForm} the step's task runs
- */
-export function stepToForm(step: WorkflowStep): TaskForm {
-	return { via: step.via ?? 'function', name: step.name }
 }
 
 // === Positional-entry array manipulation (the TaskManager/PhaseManager `add`/`move` core)
@@ -788,4 +710,32 @@ export function createDeferred<T>(): DeferredInterface<T> {
 		reject = rej
 	})
 	return { promise, resolve, reject }
+}
+
+/**
+ * Park until `signal` aborts — a promise-parked wait (AGENTS §21), never a timer or
+ * busy-loop, that NEVER rejects.
+ *
+ * @remarks
+ * Resolves IMMEDIATELY when `signal` is already aborted; otherwise attaches a one-shot
+ * `abort` listener and resolves when it fires, removing the listener either way. The
+ * shared leaf behind the duplicate abort-wiring an execution engine otherwise hand-rolls
+ * at every fold point.
+ *
+ * @param signal - The signal to park on
+ * @returns A promise that resolves once `signal` has aborted
+ *
+ * @example
+ * ```ts
+ * const controller = new AbortController()
+ * const parked = parkSignal(controller.signal)
+ * controller.abort()
+ * await parked // resolves
+ * ```
+ */
+export function parkSignal(signal: AbortSignal): Promise<void> {
+	if (signal.aborted) return Promise.resolve()
+	return new Promise((resolve) => {
+		signal.addEventListener('abort', () => resolve(), { once: true })
+	})
 }

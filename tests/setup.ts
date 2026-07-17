@@ -514,19 +514,19 @@ export function buildWorkflowDefinition(
 				name: 'Build',
 				concurrency: 2,
 				tasks: [
-					{ id: 'task-compile', name: 'Compile', run: { via: 'function', name: 'compile' } },
+					{ id: 'task-compile', name: 'Compile', run: 'compile' },
 					{
 						id: 'task-scan',
 						name: 'Scan',
 						description: 'Security scan',
-						run: { via: 'tool', name: 'scanner' },
+						run: 'scanner',
 					},
 				],
 			},
 			{
 				id: 'phase-review',
 				name: 'Review',
-				tasks: [{ id: 'task-audit', name: 'Audit', run: { via: 'agent', name: 'auditor' } }],
+				tasks: [{ id: 'task-audit', name: 'Audit', run: 'auditor' }],
 			},
 		],
 		...overrides,
@@ -552,14 +552,14 @@ export function buildReleaseDefinition(id = 'release'): WorkflowDefinition {
 				id: 'build',
 				name: 'Build',
 				tasks: [
-					{ id: 'compile', name: 'Compile', run: { via: 'function', name: 'compile' } },
-					{ id: 'lint', name: 'Lint', run: { via: 'function', name: 'lint' } },
+					{ id: 'compile', name: 'Compile', run: 'compile' },
+					{ id: 'lint', name: 'Lint', run: 'lint' },
 				],
 			},
 			{
 				id: 'ship',
 				name: 'Ship',
-				tasks: [{ id: 'publish', name: 'Publish', run: { via: 'function', name: 'publish' } }],
+				tasks: [{ id: 'publish', name: 'Publish', run: 'publish' }],
 			},
 		],
 	}
@@ -589,10 +589,7 @@ export const RELEASE_FUNCTIONS: Readonly<Record<string, WorkflowFunction>> = {
  * @returns The settled run's snapshot
  */
 export async function settleSnapshot(definition: WorkflowDefinition): Promise<WorkflowSnapshot> {
-	const runner = createWorkflowRunner({
-		functions: RELEASE_FUNCTIONS,
-		scheduler: createRecordingScheduler(),
-	})
-	const result = await runner.execute(definition)
+	const runner = createWorkflowRunner({ scheduler: createRecordingScheduler() })
+	const result = await runner.execute(definition, { functions: RELEASE_FUNCTIONS })
 	return result.workflow.snapshot()
 }
