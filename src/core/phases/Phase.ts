@@ -217,17 +217,21 @@ export class Phase implements PhaseInterface {
 	skip(): void {
 		// `skip` (AGENTS §10) FORCES the phase to `skipped`, overriding the derived value — then
 		// recompute so the change is detected + escalated (no PhaseEventMap event for a skip).
-		// A permanently-ended phase has nothing left to pause for, so release a parked waiter.
-		this.#force('skipped')
+		// IDEMPOTENT / NO-OP once `status` is already terminal (a settled phase cannot be
+		// re-forced) — but a parked `wait()` waiter is ALWAYS released regardless (a terminal
+		// phase must never hold one; kept unconditional for safety).
+		if (!isTerminalStatus(this.status)) this.#force('skipped')
 		this.#paused = false
 		this.#release()
 	}
 
 	stop(): void {
 		// `stop` (AGENTS §10) FORCES the phase to `stopped` — same override discipline as `skip`;
-		// `stopped` IS a PhaseEventMap event, so this emit fires. Always releases a parked
-		// `wait()` waiter (AGENTS §10 — a permanently-ended phase has nothing left to pause for).
-		this.#force('stopped')
+		// `stopped` IS a PhaseEventMap event, so this emit fires. NO-OP once `status` is already
+		// terminal (a settled phase cannot be re-forced). Always releases a parked `wait()`
+		// waiter (AGENTS §10 — a permanently-ended phase has nothing left to pause for), even on
+		// the no-op branch, for safety.
+		if (!isTerminalStatus(this.status)) this.#force('stopped')
 		this.#paused = false
 		this.#release()
 	}

@@ -194,18 +194,22 @@ export class Workflow implements WorkflowInterface {
 
 	skip(): void {
 		// `skip` (AGENTS §10) FORCES the workflow to `skipped`, overriding the derived value — then
-		// recompute so the change is detected (no WorkflowEventMap event for a skip). Like `stop`,
-		// a skipped workflow is permanently ended, so a parked `wait()` waiter is always released.
-		this.#force('skipped')
+		// recompute so the change is detected (no WorkflowEventMap event for a skip). IDEMPOTENT /
+		// NO-OP once `status` is already terminal (a settled workflow cannot be re-forced) — but a
+		// parked `wait()` waiter is ALWAYS released regardless (a terminal workflow must never hold
+		// one; kept unconditional for safety even though a terminal entity should have none parked).
+		if (!isTerminalStatus(this.status)) this.#force('skipped')
 		this.#paused = false
 		this.#release()
 	}
 
 	stop(): void {
 		// `stop` (AGENTS §10) FORCES the workflow to `stopped` — `stopped` IS a WorkflowEventMap
-		// event, so this emit fires. Always releases a parked `wait()` waiter (AGENTS §10 — a
-		// permanently-ended workflow has nothing left to pause for).
-		this.#force('stopped')
+		// event, so this emit fires. NO-OP once `status` is already terminal (mirrors `skip` and
+		// `destroy`'s own `if (!isTerminalStatus(...))` guard) — a settled workflow cannot be
+		// re-forced. Always releases a parked `wait()` waiter (AGENTS §10 — a permanently-ended
+		// workflow has nothing left to pause for), even on the no-op branch, for safety.
+		if (!isTerminalStatus(this.status)) this.#force('stopped')
 		this.#paused = false
 		this.#release()
 	}
@@ -213,8 +217,11 @@ export class Workflow implements WorkflowInterface {
 	complete(): void {
 		// Forces the workflow to `completed` (overriding the derived value), reusing the same #force
 		// override machinery as skip/stop. `completed` IS a WorkflowEventMap event, so the emit fires.
-		// Used by the runner to settle an EXECUTED no-op tree (no work happened ⇒ vacuously done).
-		this.#force('completed')
+		// Used by the runner to settle an EXECUTED no-op tree (no work happened ⇒ vacuously done) —
+		// its ONLY legitimate use, so this is a NO-OP unless `status` is still `pending` (mirrors the
+		// runner's own `#completable` gate — a running/failed/skipped/stopped/completed tree is never
+		// force-completed).
+		if (this.status === 'pending') this.#force('completed')
 	}
 
 	pause(): void {

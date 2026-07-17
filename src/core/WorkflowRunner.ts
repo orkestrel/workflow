@@ -306,7 +306,7 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 				// bail-true failure, or a GRACEFUL `workflow.stop()` the caller invoked directly):
 				// HALT the loop — skip THIS and every remaining phase's tasks, then break.
 				if (this.#cancelled(runSignal) || this.#halted(workflow)) {
-					this.#skipFrom(phases, index)
+					this.#haltFrom(phases, index, workflow, runSignal)
 					break
 				}
 				// The phase-boundary pause gate (AGENTS §10, workflow-only): park until resumed /
@@ -316,7 +316,7 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 				// parked) before starting the phase.
 				if (workflow.paused) await this.#raceWait(() => workflow.wait(), runSignal)
 				if (this.#cancelled(runSignal) || this.#halted(workflow)) {
-					this.#skipFrom(workflow.phases.phases(), index)
+					this.#haltFrom(workflow.phases.phases(), index, workflow, runSignal)
 					break
 				}
 				// Run the phase to settlement. Under bail-true it REJECTS on the first failure
@@ -340,17 +340,14 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 					}
 				}
 			}
-			// A run-level cancel makes the run STOPPED. The substrate RACES an in-flight handler out
-			// on abort (its result discarded), so a slow-settling task (notably an `agent` task whose
-			// subagent takes several ticks to unwind) may still read `running` at this point — sweep
-			// EVERY phase to `skip` any task the cancel left non-terminal, so the returned tree is
-			// deterministic regardless of handler-settle speed (the detached handler's own later
-			// `skip` is then a guarded no-op). THEN force the workflow `stop` so it settles `stopped`
-			// (its derived status would otherwise read the per-task skips). A `skip`ped /
-			// already-stopped workflow ignores a further `stop`; a natural finish skips none of this.
+			// A run-level cancel makes the run STOPPED — `#haltFrom` forces `stop` BEFORE sweeping
+			// (F1-CRITICAL) so the override is set before any per-task skip can drive the derived
+			// status to `skipped` first. The substrate RACES an in-flight handler out on abort (its
+			// result discarded), so a slow-settling task (notably an `agent` task whose subagent
+			// takes several ticks to unwind) may still read `running` at this point; the detached
+			// handler's own later `skip` is then a guarded no-op.
 			if (this.#cancelled(runSignal)) {
-				this.#skipFrom(workflow.phases.phases(), 0)
-				if (this.#stoppable(workflow)) workflow.stop()
+				this.#haltFrom(workflow.phases.phases(), 0, workflow, runSignal)
 			} else if (this.#completable(workflow)) {
 				workflow.complete()
 			}
@@ -450,6 +447,14 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 			}
 		} finally {
 			phase.emitter.off('add', onAdd)
+			// F1-CRITICAL: on a GENUINE run-level cancel, force the workflow `stop` BEFORE this
+			// sweep — the sweep below can itself skip every non-terminal task and drive the derived
+			// workflow status to `skipped` first, and `stop()` (F1) is a NO-OP once `status` is
+			// already terminal. Forcing here (this `finally` runs BEFORE `#execute` regains control)
+			// is required — `#execute`'s own halt guard would otherwise find the workflow already
+			// terminal by the time it runs. Not a signal cancel (e.g. a normal phase settle, or a
+			// bail-true fail-fast the caller already `fail`ed): no forcing, just the coherent sweep.
+			if (this.#cancelled(runSignal) && this.#stoppable(workflow)) workflow.stop()
 			// Coherent terminal state (V7): a task minted too late for `spawn` to accept (the
 			// drain-race window) is left `pending` with nothing driving it — sweep it `skip`ped now.
 			// A no-op for every task the substrate already settled (terminal statuses ignore `skip`).
@@ -520,6 +525,16 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 		// parked unparks promptly instead of hanging until `resume`).
 		if (workflow.paused) await this.#raceWait(() => workflow.wait(), runSignal)
 		if (task.phase.paused) await this.#raceWait(() => task.phase.wait(), runSignal)
+		// RE-CHECK for a genuine cancel that landed WHILE parked (a run-level abort / timeout /
+		// budget / `workflow.destroy()` firing during the pause-gate await) BEFORE `start` — so a
+		// task cancelled while parked is skipped WITHOUT ever emitting `start`. Without this check
+		// a cancel that fires exactly while parked would otherwise fall through to `start()` below
+		// (the raced gate returns once the signal fires, but the original pre-start skip test ran
+		// only AFTER `start`).
+		if (this.#skipping(controller, runSignal) || this.#halted(workflow)) {
+			this.#skipCancelled(task, workflow, runSignal)
+			return
+		}
 		// `start` only the FIRST time (a retry re-invokes this on the still-`running` leaf — a second
 		// `start` would be an illegal `running → running` transition).
 		if (task.status === 'pending') task.start()
@@ -528,7 +543,7 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 		// without running the handler. A bare per-attempt timeout cannot precede dispatch (its
 		// deadline is armed as the attempt begins), so it is excluded from this skip.
 		if (this.#skipping(controller, runSignal) || this.#halted(workflow)) {
-			this.#skip(task)
+			this.#skipCancelled(task, workflow, runSignal)
 			return
 		}
 		// The task's open `metadata` bag is on its snapshot (the live `TaskContext` carries only
@@ -543,7 +558,7 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 			// `complete` — `#skip` is a guarded no-op on an already-settled task, and skips a
 			// still-`running` one.
 			if (task.status !== 'running' || this.#skipping(controller, runSignal)) {
-				this.#skip(task)
+				this.#skipCancelled(task, workflow, runSignal)
 				return
 			}
 			// A bare per-attempt TIMEOUT (the attempt signal fired, but it was NOT a cancel): a
@@ -558,7 +573,7 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 			// A handler threw. If the runner already swept this task terminal, or a genuine cancel
 			// fired, treat it as a halt — `#skip` (guarded).
 			if (task.status !== 'running' || this.#skipping(controller, runSignal)) {
-				this.#skip(task)
+				this.#skipCancelled(task, workflow, runSignal)
 				return
 			}
 			// A bare per-attempt TIMEOUT surfaced as a throw (a signal-aware handler threw on the
@@ -765,6 +780,23 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 		return signals.length === 1 ? signals[0] : AbortSignal.any(signals)
 	}
 
+	// HALT from `index`: when the halt is a GENUINE run-level CANCEL (F1-CRITICAL), force the
+	// workflow `stop` BEFORE sweeping — `stop()` is a NO-OP once `status` is already terminal
+	// (F1), so forcing it FIRST (while the derived status is still non-terminal) is the only
+	// ordering that survives the sweep driving every remaining task to `skipped`; sweeping first
+	// would silently turn the intended `stopped` into a derived `skipped`. When the halt is NOT a
+	// signal cancel (a prior bail-true `failed`, or a caller's own direct `workflow.stop()` /
+	// `skip()`), the workflow is ALREADY validly terminal — no forcing needed, just sweep.
+	#haltFrom(
+		phases: readonly PhaseInterface[],
+		index: number,
+		workflow: WorkflowInterface,
+		runSignal: AbortSignal,
+	): void {
+		if (this.#cancelled(runSignal) && this.#stoppable(workflow)) workflow.stop()
+		this.#skipFrom(phases, index)
+	}
+
 	// Skip every not-yet-settled task across phases `index..end` — the halt path (a run-level
 	// cancel, or the remaining phases after a bail-true failure). Only a `pending` / `running`
 	// task can `skip` (a settled one ignores it), so this is safe over already-finished phases.
@@ -774,6 +806,18 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 			if (phase === undefined) continue
 			for (const task of phase.tasks.tasks()) this.#skip(task)
 		}
+	}
+
+	// F1-CRITICAL: the same stop-before-skip ordering as `#haltFrom`, applied to a SINGLE task
+	// skip inside `#runTask`. A per-task skip on a genuine run-level cancel can itself drive the
+	// derived workflow status to `skipped` before `#execute` / `#runPhase` ever get control back
+	// (this call happens INSIDE the substrate's per-unit handler) — so force the workflow `stop`
+	// FIRST (while `#stoppable`) whenever the skip is due to `#cancelled(runSignal)`, then skip.
+	// A skip caused ONLY by a sibling fail-fast (`controller.aborted` under bail, no run-level
+	// signal fired) does NOT force anything — that path is a genuine phase failure, not a cancel.
+	#skipCancelled(task: TaskInterface, workflow: WorkflowInterface, runSignal: AbortSignal): void {
+		if (this.#cancelled(runSignal) && this.#stoppable(workflow)) workflow.stop()
+		this.#skip(task)
 	}
 
 	// Skip one task iff it is not already terminal — a settled leaf has no legal `skip`
@@ -829,8 +873,12 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 
 	// Discriminate the overloaded `execute` argument: a `WorkflowInterface` is the only one of the
 	// two carrying `destroyed` (RUNTIME-ONLY — V2 — never a field on the pure-JSON
-	// `WorkflowDefinition`), the cheapest direct discriminator between an entity and a definition.
+	// `WorkflowDefinition`) AND a `snapshot` method (the live entity's serialization method — a
+	// `WorkflowDefinition` has no such method). Requiring BOTH is a sturdier structural
+	// discriminator than `destroyed` alone (a definition could coincidentally carry a `destroyed`
+	// field as arbitrary data; pairing it with a function-typed `snapshot` narrows to the actual
+	// entity shape) without resorting to `as`.
 	#isWorkflow(target: WorkflowDefinition | WorkflowInterface): target is WorkflowInterface {
-		return 'destroyed' in target
+		return 'destroyed' in target && 'snapshot' in target && typeof target.snapshot === 'function'
 	}
 }

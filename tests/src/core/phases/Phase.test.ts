@@ -172,6 +172,53 @@ describe('Phase — the #override (skip / stop a whole phase)', () => {
 	})
 })
 
+describe('Phase — terminal no-op guards on skip / stop (F1)', () => {
+	it('stop() on an already-completed phase is a no-op — no re-force, no stop event', () => {
+		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(1)))
+		phase.task('t0')?.start()
+		phase.task('t0')?.complete('ok')
+		expect(phase.status).toBe('completed')
+		const events = recordEmitterEvents(phase.emitter, ['stop'])
+		phase.stop()
+		expect(phase.status).toBe('completed')
+		expect(events.stop.count).toBe(0)
+	})
+
+	it('skip() on an already-stopped phase leaves it unchanged', () => {
+		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(2)))
+		phase.stop()
+		expect(phase.status).toBe('stopped')
+		phase.skip()
+		expect(phase.status).toBe('stopped')
+	})
+
+	it('double-stop is idempotent — the second call is a guarded no-op', () => {
+		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(2)))
+		const events = recordEmitterEvents(phase.emitter, ['stop'])
+		phase.stop()
+		phase.stop()
+		expect(phase.status).toBe('stopped')
+		expect(events.stop.count).toBe(1)
+	})
+
+	it('a parked wait() waiter is still released when stop() no-ops on an already-terminal (derived) phase', async () => {
+		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(1)))
+		phase.pause()
+		expect(phase.paused).toBe(true)
+		// Drive the sole task to completion WHILE paused — the derived status reaches `completed`
+		// via the cascade (not the override), so `status` is terminal while a `wait()` gate is
+		// still parked.
+		phase.task('t0')?.start()
+		phase.task('t0')?.complete('ok')
+		expect(phase.status).toBe('completed')
+		// stop() is now a guarded NO-OP (status already terminal) — but it must still release the
+		// parked wait() gate unconditionally, so this promise settles rather than hanging.
+		phase.stop()
+		await phase.wait()
+		expect(phase.status).toBe('completed')
+	})
+})
+
 describe('Phase — the result tree (top-down)', () => {
 	it('collects only settled tasks’ results, in positional order', () => {
 		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(3)))

@@ -246,6 +246,83 @@ describe('Workflow — the #override (skip / stop the whole workflow)', () => {
 	})
 })
 
+describe('Workflow — terminal no-op guards on skip / stop / complete (F1)', () => {
+	it('stop() on an already-completed workflow is a no-op — no re-force, no stop event', () => {
+		const workflow = createWorkflow(buildTwoPhaseWorkflow(false))
+		completeTask(workflow, 'a', 't0')
+		completeTask(workflow, 'a', 't1')
+		completeTask(workflow, 'b', 't2')
+		expect(workflow.status).toBe('completed')
+		const events = recordEmitterEvents(workflow.emitter, ['stop'])
+		workflow.stop()
+		expect(workflow.status).toBe('completed')
+		expect(events.stop.count).toBe(0)
+	})
+
+	it('skip() on an already-stopped workflow leaves it unchanged', () => {
+		const workflow = createWorkflow(buildTwoPhaseWorkflow(false))
+		workflow.stop()
+		expect(workflow.status).toBe('stopped')
+		workflow.skip()
+		expect(workflow.status).toBe('stopped')
+	})
+
+	it('complete() is a no-op on a failed workflow — never masks a real failure', () => {
+		const workflow = createWorkflow(buildTwoPhaseWorkflow(true))
+		const t0 = workflow.phase('a')?.task('t0')
+		t0?.start()
+		t0?.fail(new Error('boom'))
+		const t1 = workflow.phase('a')?.task('t1')
+		t1?.skip()
+		completeTask(workflow, 'b', 't2')
+		expect(workflow.status).toBe('failed')
+		workflow.complete()
+		expect(workflow.status).toBe('failed')
+	})
+
+	it('complete() is a no-op on a running workflow', () => {
+		const workflow = createWorkflow(buildTwoPhaseWorkflow(false))
+		workflow.phase('a')?.task('t0')?.start()
+		expect(workflow.status).toBe('running')
+		workflow.complete()
+		expect(workflow.status).toBe('running')
+	})
+
+	it('complete() still forces completed on a genuinely pending (vacuous) workflow', () => {
+		const workflow = createWorkflow(buildTwoPhaseWorkflow(false))
+		expect(workflow.status).toBe('pending')
+		workflow.complete()
+		expect(workflow.status).toBe('completed')
+	})
+
+	it('double-stop is idempotent — the second call is a guarded no-op', () => {
+		const workflow = createWorkflow(buildTwoPhaseWorkflow(false))
+		const events = recordEmitterEvents(workflow.emitter, ['stop'])
+		workflow.stop()
+		workflow.stop()
+		expect(workflow.status).toBe('stopped')
+		expect(events.stop.count).toBe(1)
+	})
+
+	it('a parked wait() waiter is still released when stop() no-ops on an already-terminal (derived) workflow', async () => {
+		const workflow = createWorkflow(buildTwoPhaseWorkflow(false))
+		workflow.pause()
+		expect(workflow.paused).toBe(true)
+		// Drive every task to completion WHILE paused — the derived status reaches `completed` via
+		// the cascade (not the override), so `status` is now terminal even though `#paused` is still
+		// `true` and a `wait()` gate is still parked.
+		completeTask(workflow, 'a', 't0')
+		completeTask(workflow, 'a', 't1')
+		completeTask(workflow, 'b', 't2')
+		expect(workflow.status).toBe('completed')
+		// stop() is now a guarded NO-OP (status already terminal) — but it must still release the
+		// parked wait() gate unconditionally, so this promise settles rather than hanging.
+		workflow.stop()
+		await workflow.wait()
+		expect(workflow.status).toBe('completed')
+	})
+})
+
 describe('Workflow — the result tree (workflow tier, both directions)', () => {
 	it('flattens every settled task’s result across phases in positional order', () => {
 		const workflow = createWorkflow(buildTwoPhaseWorkflow(false))

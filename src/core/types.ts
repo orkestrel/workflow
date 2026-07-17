@@ -958,7 +958,23 @@ export interface PhaseInterface {
 	task(id: string): TaskInterface | undefined
 	/** The settled tasks' results, in positional order — the phase tier of the result tree. */
 	results(): readonly TaskResult[]
+	/**
+	 * FORCE this phase to `skipped` (AGENTS §10), overriding the derived value; idempotent.
+	 *
+	 * @remarks
+	 * A NO-OP once `status` is already terminal — a settled phase cannot be re-forced. Always
+	 * releases a parked {@link wait} waiter regardless (a terminal phase has nothing left to
+	 * pause for).
+	 */
 	skip(): void
+	/**
+	 * FORCE this phase to `stopped` (AGENTS §10), overriding the derived value; idempotent.
+	 *
+	 * @remarks
+	 * A NO-OP once `status` is already terminal (a settled phase cannot be re-forced). Always
+	 * releases a parked {@link wait} waiter regardless (a terminal phase has nothing left to
+	 * pause for).
+	 */
 	stop(): void
 	/**
 	 * Suspend the phase (AGENTS §10 — resumable); idempotent.
@@ -967,7 +983,9 @@ export interface PhaseInterface {
 	 * A no-op when already `paused` or when `status` is terminal. RUNTIME-ONLY (AGENTS §10) —
 	 * never a {@link PhaseStatus}, never persisted in a {@link PhaseSnapshot}. A driving
 	 * {@link WorkflowRunnerInterface.execute} gates a task's own pre-dispatch on this phase's
-	 * gate (after the workflow's own gate).
+	 * gate (after the workflow's own gate). **Pausing does NOT suspend a driving run's
+	 * timeout / budget / abort clocks** — those bounds keep ticking while paused, so a long
+	 * pause can still fire a run-level cancel and stop the workflow while parked.
 	 *
 	 * @example
 	 * ```ts
@@ -1021,6 +1039,12 @@ export interface PhaseInterface {
 	 * model guarantees this phase cannot reach a terminal status while the accepted task is
 	 * still `pending` (its status feeds `status` via {@link import('./helpers.js').derivePhaseStatus}).
 	 * While terminal: always refused.
+	 *
+	 * **Abort edge.** An append ACCEPTED while `running` can still settle `skipped` rather
+	 * than run — if the driving run is cancelled (abort / timeout / budget / `workflow.destroy()`)
+	 * before the substrate actually dispatches the newly-minted task, the runner's halt sweep
+	 * `skip`s it like any other not-yet-started task. Acceptance here only guarantees the task
+	 * is WIRED into the live tree, not that it will execute.
 	 *
 	 * @param definition - The {@link TaskDefinition} to mint a live task from
 	 * @param index - The insertion position; omitted inserts at the end
@@ -1133,8 +1157,32 @@ export interface WorkflowInterface {
 	phase(id: string): PhaseInterface | undefined
 	/** Every settled task's result across all phases, in positional order — the workflow tier of the result tree. */
 	results(): readonly TaskResult[]
+	/**
+	 * FORCE this workflow to `skipped` (AGENTS §10), overriding the derived value; idempotent.
+	 *
+	 * @remarks
+	 * A NO-OP once `status` is already terminal — a settled workflow cannot be re-forced.
+	 * Always releases a parked {@link wait} waiter regardless (a terminal workflow has nothing
+	 * left to pause for).
+	 */
 	skip(): void
+	/**
+	 * FORCE this workflow to `stopped` (AGENTS §10), overriding the derived value; idempotent.
+	 *
+	 * @remarks
+	 * A NO-OP once `status` is already terminal — a settled workflow cannot be re-forced. Always
+	 * releases a parked {@link wait} waiter regardless (a terminal workflow has nothing left to
+	 * pause for).
+	 */
 	stop(): void
+	/**
+	 * FORCE this workflow to `completed` (AGENTS §10), overriding the derived value.
+	 *
+	 * @remarks
+	 * A NO-OP unless `status` is `pending` — its ONLY legitimate use is settling a vacuously
+	 * DONE tree (no work happened), mirroring the runner's own gate. Never overrides a real
+	 * `completed` / a bail-true `failed` / a `stopped` / a derived `skipped`.
+	 */
 	complete(): void
 	/**
 	 * Suspend the workflow (AGENTS §10 — resumable); idempotent.
@@ -1144,7 +1192,10 @@ export interface WorkflowInterface {
 	 * RUNTIME-ONLY (AGENTS §10) — never a {@link WorkflowStatus}, never persisted in a
 	 * {@link WorkflowSnapshot}. A driving {@link WorkflowRunnerInterface.execute} gates at the
 	 * next phase boundary and before each task's own dispatch; an in-flight task body is
-	 * never suspended mid-flight.
+	 * never suspended mid-flight. **Pausing does NOT suspend the run's timeout / budget /
+	 * abort clocks** — those bounds keep ticking while paused, so a run parked on
+	 * `pause()` can still be cancelled (and settle `stopped`) by its own deadline / budget /
+	 * abort while parked.
 	 *
 	 * @example
 	 * ```ts
@@ -1711,6 +1762,13 @@ export interface WorkflowRunnerInterface {
 	 * the run as `stopped` — the cancel supersedes the same-tick failure, and that task's error
 	 * is not recorded.
 	 *
+	 * **Programmer-error exception (AGENTS §12).** A PATHOLOGICAL `definition` (e.g. a
+	 * duplicate phase or task `id`) THROWS SYNCHRONOUSLY at construction — before any phase
+	 * runs, and before the returned `Promise` is even created — rather than resolving a
+	 * failed/partial {@link WorkflowResult}. This is the one exception to the "resolves,
+	 * never rejects" contract above: a malformed definition is a programmer-timing error, not
+	 * a runtime outcome to report through the result tree.
+	 *
 	 * @param definition - The {@link WorkflowDefinition} to build the live tree from and drive
 	 * @param options - The construction options ({@link WorkflowOptions}: `on` / `bail` /
 	 *   `phases`) PLUS the per-run bounds (`signal` / `timeout` / `budget`)
@@ -1740,6 +1798,15 @@ export interface WorkflowRunnerInterface {
 	 * immediately. `options` carries only the per-run BOUNDS (`signal` / `timeout` /
 	 * `budget` / `depth` / `ancestry`) — the construction half of {@link WorkflowRunOptions}
 	 * does not apply, since the tree already exists.
+	 *
+	 * **Restored trees run DECLARATIVELY.** Driving a tree rebuilt by
+	 * {@link import('./factories.js').restoreWorkflow} (no correlated
+	 * {@link WorkflowDefinition} was supplied at that build) means every task's
+	 * {@link TaskInterface.run} is `undefined` — the no-handler rule therefore AUTO-COMPLETES
+	 * each one (no dispatch ever occurs) rather than replaying whatever originally ran it. A
+	 * PARTIALLY-run restored tree (any live phase/task not `pending`) is rejected outright by
+	 * the `workflow.status === 'pending'` guard above — only a wholly `pending` restored tree
+	 * is drivable.
 	 *
 	 * @param workflow - The live {@link WorkflowInterface} to drive (its own entity surface —
 	 *   `pause` / `resume` / `add` / `stop` / `destroy` — is the caller's control seam)
