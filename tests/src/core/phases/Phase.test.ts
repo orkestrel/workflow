@@ -253,6 +253,289 @@ describe('Phase — the effective bail (per-phase override) round-trips', () => 
 	})
 })
 
+describe('Phase — pause/resume/paused', () => {
+	it('pause sets paused true; resume clears it — both idempotent', () => {
+		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(1)))
+		expect(phase.paused).toBe(false)
+		phase.pause()
+		expect(phase.paused).toBe(true)
+		phase.pause() // idempotent no-op
+		expect(phase.paused).toBe(true)
+		phase.resume()
+		expect(phase.paused).toBe(false)
+		phase.resume() // idempotent no-op
+		expect(phase.paused).toBe(false)
+	})
+
+	it('pause is a no-op once the phase is terminal', () => {
+		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(1)))
+		phase.stop()
+		expect(phase.status).toBe('stopped')
+		phase.pause()
+		expect(phase.paused).toBe(false)
+	})
+})
+
+describe('Phase — wait()', () => {
+	it('resolves immediately when not paused', async () => {
+		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(1)))
+		await expect(phase.wait()).resolves.toBeUndefined()
+	})
+
+	it('parks while paused, releasing on resume', async () => {
+		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(1)))
+		phase.pause()
+		let settled = false
+		const waiting = phase.wait().then(() => {
+			settled = true
+		})
+		await Promise.resolve()
+		expect(settled).toBe(false)
+		phase.resume()
+		await waiting
+		expect(settled).toBe(true)
+	})
+
+	it('parks while paused, releasing on skip', async () => {
+		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(1)))
+		phase.pause()
+		let settled = false
+		const waiting = phase.wait().then(() => {
+			settled = true
+		})
+		await Promise.resolve()
+		expect(settled).toBe(false)
+		phase.skip()
+		await waiting
+		expect(settled).toBe(true)
+	})
+
+	it('parks while paused, releasing on stop', async () => {
+		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(1)))
+		phase.pause()
+		let settled = false
+		const waiting = phase.wait().then(() => {
+			settled = true
+		})
+		await Promise.resolve()
+		expect(settled).toBe(false)
+		phase.stop()
+		await waiting
+		expect(settled).toBe(true)
+	})
+})
+
+describe('Phase — structural API: add() mints a live task', () => {
+	it('add returns the created task in the Result and it is live + navigable in the tree', () => {
+		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(1)))
+		const result = phase.add({ id: 't1', name: 'T1', run: { via: 'function', name: 'f' } })
+		expect(result.success).toBe(true)
+		if (!result.success) throw new Error('expected add to succeed')
+		expect(result.value.id).toBe('t1')
+		expect(phase.task('t1')).toBe(result.value)
+		expect(result.value.phase).toBe(phase)
+		expect(phase.tasks.count).toBe(2)
+	})
+
+	it('a minted task cascades status recomputes via start()/complete()', () => {
+		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(0)))
+		expect(phase.status).toBe('pending')
+		const result = phase.add({ id: 't0', name: 'T0', run: { via: 'function', name: 'f' } })
+		if (!result.success) throw new Error('expected add to succeed')
+		result.value.start()
+		expect(phase.status).toBe('running')
+		result.value.complete('ok')
+		expect(phase.status).toBe('completed')
+	})
+
+	it('duplicate task id fails with MUTATION', () => {
+		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(1)))
+		const result = phase.add({ id: 't0', name: 'Dup', run: { via: 'function', name: 'f' } })
+		expect(result.success).toBe(false)
+		if (result.success) throw new Error('expected add to fail')
+		expect(result.error.code).toBe('MUTATION')
+	})
+
+	it('an out-of-bounds index fails with MUTATION', () => {
+		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(1)))
+		const result = phase.add({ id: 't9', name: 'T9', run: { via: 'function', name: 'f' } }, 99)
+		expect(result.success).toBe(false)
+		if (result.success) throw new Error('expected add to fail')
+		expect(result.error.code).toBe('MUTATION')
+	})
+
+	it('a terminal phase refuses add', () => {
+		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(1)))
+		phase.stop()
+		const result = phase.add({ id: 't9', name: 'T9', run: { via: 'function', name: 'f' } })
+		expect(result.success).toBe(false)
+		if (result.success) throw new Error('expected add to fail')
+		expect(result.error.code).toBe('MUTATION')
+	})
+
+	it('a running phase only accepts a pure append — a positioned add fails, a plain add succeeds', () => {
+		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(2)))
+		phase.task('t0')?.start() // phase is now running
+		expect(phase.status).toBe('running')
+		const positioned = phase.add({ id: 't2', name: 'T2', run: { via: 'function', name: 'f' } }, 0)
+		if (positioned.success) throw new Error('expected positioned add to fail')
+		expect(positioned.error.code).toBe('MUTATION')
+		const events = recordEmitterEvents(phase.emitter, ['add'])
+		const appended = phase.add({ id: 't2', name: 'T2', run: { via: 'function', name: 'f' } })
+		expect(appended.success).toBe(true)
+		expect(events.add.count).toBe(1)
+		// The phase stays non-terminal until the newly-added, still-pending task settles too — the
+		// derived-status invariant: a pending task keeps a running phase from re-deriving terminal.
+		expect(phase.status).toBe('running')
+		phase.task('t1')?.start()
+		phase.task('t1')?.complete('ok')
+		expect(phase.status).toBe('running') // t2 still pending
+		phase.task('t0')?.complete('ok')
+		if (!appended.success) throw new Error('expected append to succeed')
+		appended.value.start()
+		appended.value.complete('ok')
+		expect(phase.status).toBe('completed')
+	})
+})
+
+describe('Phase — remove/move/update only while pending', () => {
+	it('remove/move/update succeed while pending, refuse once running', () => {
+		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(2)))
+		expect(phase.remove('t1').success).toBe(true)
+		const rebuilt = lonePhase(createWorkflow(buildPhaseWorkflow(2)))
+		expect(rebuilt.move('t1', 0).success).toBe(true)
+		expect(rebuilt.update('t0', { name: 'Renamed' }).success).toBe(true)
+
+		const running = lonePhase(createWorkflow(buildPhaseWorkflow(2)))
+		running.task('t0')?.start()
+		expect(running.status).toBe('running')
+		expect(running.remove('t1').success).toBe(false)
+		expect(running.move('t1', 0).success).toBe(false)
+		expect(running.update('t1', { name: 'x' }).success).toBe(false)
+	})
+
+	it('remove/move/update refuse once terminal', () => {
+		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(1)))
+		phase.stop()
+		expect(phase.remove('t0').success).toBe(false)
+		expect(phase.move('t0', 0).success).toBe(false)
+		expect(phase.update('t0', { name: 'x' }).success).toBe(false)
+	})
+})
+
+describe('Phase — add/remove/move/update events fire on success only', () => {
+	it('emits add with the created task + index on success, nothing on refusal', () => {
+		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(1)))
+		const events = recordEmitterEvents(phase.emitter, ['add'])
+		const result = phase.add({ id: 't1', name: 'T1', run: { via: 'function', name: 'f' } })
+		if (!result.success) throw new Error('expected add to succeed')
+		expect(events.add.count).toBe(1)
+		expect(events.add.calls[0]).toEqual([result.value, 1])
+		phase.add({ id: 't0', name: 'Dup', run: { via: 'function', name: 'f' } })
+		expect(events.add.count).toBe(1)
+	})
+
+	it('emits remove with the removed task on success, nothing on refusal', () => {
+		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(1)))
+		const events = recordEmitterEvents(phase.emitter, ['remove'])
+		const result = phase.remove('t0')
+		if (!result.success) throw new Error('expected remove to succeed')
+		expect(events.remove.count).toBe(1)
+		expect(events.remove.calls[0]).toEqual([result.value])
+		phase.remove('missing')
+		expect(events.remove.count).toBe(1)
+	})
+
+	it('emits move with the moved task + destination index on success, nothing on refusal', () => {
+		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(2)))
+		const events = recordEmitterEvents(phase.emitter, ['move'])
+		const result = phase.move('t1', 0)
+		if (!result.success) throw new Error('expected move to succeed')
+		expect(events.move.count).toBe(1)
+		expect(events.move.calls[0]).toEqual([result.value, 0])
+		phase.move('missing', 0)
+		expect(events.move.count).toBe(1)
+	})
+
+	it('emits update with the patched task on success, nothing on refusal', () => {
+		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(1)))
+		const events = recordEmitterEvents(phase.emitter, ['update'])
+		const result = phase.update('t0', { name: 'Renamed' })
+		if (!result.success) throw new Error('expected update to succeed')
+		expect(events.update.count).toBe(1)
+		expect(events.update.calls[0]).toEqual([result.value])
+		phase.update('missing', { name: 'x' })
+		expect(events.update.count).toBe(1)
+	})
+})
+
+describe('Phase — patch() gating (pending only)', () => {
+	it('applies name/description/bail/concurrency while pending', () => {
+		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(1)))
+		phase.patch({ name: 'Renamed', description: 'desc', bail: true, concurrency: 3 })
+		expect(phase.name).toBe('Renamed')
+		expect(phase.description).toBe('desc')
+		expect(phase.bail).toBe(true)
+		expect(phase.concurrency).toBe(3)
+	})
+
+	it('throws MUTATION when patched while running', () => {
+		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(1)))
+		phase.task('t0')?.start()
+		expect(phase.status).toBe('running')
+		expect(() => phase.patch({ name: 'x' })).toThrow(/MUTATION|pending/)
+	})
+
+	it('throws MUTATION when patched while terminal', () => {
+		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(1)))
+		phase.stop()
+		expect(() => phase.patch({ name: 'x' })).toThrow(/MUTATION|pending/)
+	})
+})
+
+describe('Phase — skip/stop release parked waiters (symmetric with Workflow)', () => {
+	it('skip releases a parked wait() waiter', async () => {
+		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(1)))
+		phase.pause()
+		let settled = false
+		const waiting = phase.wait().then(() => {
+			settled = true
+		})
+		await Promise.resolve()
+		expect(settled).toBe(false)
+		phase.skip()
+		await waiting
+		expect(settled).toBe(true)
+	})
+
+	it('stop releases a parked wait() waiter', async () => {
+		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(1)))
+		phase.pause()
+		let settled = false
+		const waiting = phase.wait().then(() => {
+			settled = true
+		})
+		await Promise.resolve()
+		expect(settled).toBe(false)
+		phase.stop()
+		await waiting
+		expect(settled).toBe(true)
+	})
+})
+
+describe('Phase — leak checks (repeated pause/resume churn stays sound)', () => {
+	it('repeated pause/resume churn never leaves paused stuck true or wait() unresolved', async () => {
+		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(1)))
+		for (let i = 0; i < 25; i += 1) {
+			phase.pause()
+			expect(phase.paused).toBe(true)
+			phase.resume()
+			expect(phase.paused).toBe(false)
+			await expect(phase.wait()).resolves.toBeUndefined()
+		}
+	})
+})
+
 describe('Phase — emit-safety (§13)', () => {
 	it('isolates a throwing listener, routes it to the error handler, and still derives', () => {
 		const errors = createErrorRecorder()

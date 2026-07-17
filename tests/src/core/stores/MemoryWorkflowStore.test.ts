@@ -1,7 +1,12 @@
 import type { WorkflowSnapshot } from '@src/core'
 import { createMemoryWorkflowStore, createWorkflow, restoreWorkflow } from '@src/core'
 import { describe, expect, it } from 'vitest'
-import { buildReleaseDefinition, roundTripJSON, settleSnapshot } from '../../../setup.js'
+import {
+	buildReleaseDefinition,
+	buildWorkflowDefinition,
+	roundTripJSON,
+	settleSnapshot,
+} from '../../../setup.js'
 
 // A higher per-test timeout for the `runner.execute`-driven round-trips below. The run is a
 // GENUINELY real-async integration round-trip — a live W-b tree built + driven through the
@@ -110,6 +115,70 @@ describe('MemoryWorkflowStore — driver-swap parity (JSON portability)', () => 
 		},
 		ROUND_TRIP_TIMEOUT_MS,
 	)
+})
+
+describe('MemoryWorkflowStore — mid-manual-drive + paused round-trips (paused/destroyed never persist)', () => {
+	it('a snapshot taken MID a manual drive round-trips node statuses + phase concurrency', async () => {
+		const store = createMemoryWorkflowStore()
+		const workflow = createWorkflow(buildReleaseDefinition())
+		// Drive the build phase's first task to completion by hand — mid-run, not yet settled.
+		workflow.phase('build')?.task('compile')?.start()
+		workflow.phase('build')?.task('compile')?.complete('built')
+		const snapshot = workflow.snapshot()
+		// The mid-run state is genuinely mixed: one leaf settled, its siblings still pending.
+		expect(snapshot.phases[0]?.tasks[0]?.status).toBe('completed')
+		expect(snapshot.phases[0]?.tasks[1]?.status).toBe('pending')
+		expect(snapshot.status).toBe('running')
+
+		await store.set(snapshot)
+		const got = await store.get(snapshot.id)
+		expect(got).toEqual(snapshot)
+		expect(got).toBeDefined()
+		if (got === undefined) return
+		// The restored tree reproduces the exact mixed node statuses.
+		const restored = restoreWorkflow(got)
+		expect(restored.phase('build')?.task('compile')?.status).toBe('completed')
+		expect(restored.phase('build')?.task('lint')?.status).toBe('pending')
+		expect(restored.status).toBe('running')
+	})
+
+	it('a snapshot taken WHILE the workflow is paused round-trips, and neither paused nor destroyed persist', async () => {
+		const store = createMemoryWorkflowStore()
+		const definition = buildWorkflowDefinition({
+			phases: [
+				{
+					id: 'p',
+					name: 'P',
+					concurrency: 3,
+					tasks: [{ id: 't', name: 'T', run: { via: 'function', name: 'f' } }],
+				},
+			],
+		})
+		const workflow = createWorkflow(definition)
+		workflow.pause()
+		expect(workflow.paused).toBe(true)
+		const snapshot = workflow.snapshot()
+
+		// `paused` is runtime-only — it never appears in the persisted payload.
+		expect('paused' in snapshot).toBe(false)
+		expect('destroyed' in snapshot).toBe(false)
+		expect(JSON.stringify(snapshot)).not.toContain('"paused"')
+		expect(JSON.stringify(snapshot)).not.toContain('"destroyed"')
+		// The declarative phase concurrency DOES persist.
+		expect(snapshot.phases[0]?.concurrency).toBe(3)
+
+		await store.set(snapshot)
+		const got = await store.get(snapshot.id)
+		expect(got).toEqual(snapshot)
+		expect(got).toBeDefined()
+		if (got === undefined) return
+		const restored = restoreWorkflow(got)
+		// A restored workflow always comes back NOT paused / NOT destroyed (runtime-only, so a
+		// restore starts fresh on those axes) while its node statuses + concurrency round-trip.
+		expect(restored.paused).toBe(false)
+		expect(restored.destroyed).toBe(false)
+		expect(restored.phase('p')?.snapshot().concurrency).toBe(3)
+	})
 })
 
 describe('MemoryWorkflowStore — delete & absent', () => {

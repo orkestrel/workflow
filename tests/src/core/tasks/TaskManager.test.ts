@@ -57,3 +57,138 @@ describe('TaskManager — positional order survives an interior skip', () => {
 		expect(phase.tasks.count).toBe(3)
 	})
 })
+
+describe('TaskManager — add/remove/move/update Result matrix (via Phase, AGENTS §12)', () => {
+	it('add succeeds with the minted task as the success value, appended at the end by default', () => {
+		const phase = phaseWithTasks()
+		const result = phase.add({ id: 't3', name: 'T3', run: { via: 'function', name: 'f' } })
+		expect(result.success).toBe(true)
+		if (!result.success) return
+		expect(result.value.id).toBe('t3')
+		expect(phase.tasks.tasks().map((task) => task.id)).toEqual(['t0', 't1', 't2', 't3'])
+	})
+
+	it('add at an explicit index inserts there, shifting the suffix (order asserted via tasks())', () => {
+		const phase = phaseWithTasks()
+		const result = phase.add({ id: 't-mid', name: 'Mid', run: { via: 'function', name: 'f' } }, 1)
+		expect(result.success).toBe(true)
+		expect(phase.tasks.tasks().map((task) => task.id)).toEqual(['t0', 't-mid', 't1', 't2'])
+	})
+
+	it('add fails MUTATION on a duplicate id, leaving the manager unchanged', () => {
+		const phase = phaseWithTasks()
+		const result = phase.add({ id: 't1', name: 'Dup', run: { via: 'function', name: 'f' } })
+		expect(result.success).toBe(false)
+		if (result.success) return
+		expect(result.error.code).toBe('MUTATION')
+		expect(phase.tasks.count).toBe(3)
+	})
+
+	it('add fails MUTATION on an out-of-bounds index', () => {
+		const phase = phaseWithTasks()
+		for (const index of [-1, 4]) {
+			const result = phase.add(
+				{ id: 't-oob', name: 'OOB', run: { via: 'function', name: 'f' } },
+				index,
+			)
+			expect(result.success).toBe(false)
+			if (result.success) return
+			expect(result.error.code).toBe('MUTATION')
+		}
+		expect(phase.tasks.count).toBe(3)
+	})
+
+	it('remove succeeds on a pending task and returns it as the success value', () => {
+		const phase = phaseWithTasks()
+		const result = phase.remove('t1')
+		expect(result.success).toBe(true)
+		if (!result.success) return
+		expect(result.value.id).toBe('t1')
+		expect(phase.tasks.tasks().map((task) => task.id)).toEqual(['t0', 't2'])
+		expect(phase.tasks.count).toBe(2)
+	})
+
+	it('remove fails MUTATION on a missing id', () => {
+		const phase = phaseWithTasks()
+		const result = phase.remove('missing')
+		expect(result.success).toBe(false)
+		if (result.success) return
+		expect(result.error.code).toBe('MUTATION')
+	})
+
+	it('remove fails MUTATION on a non-pending (running) task', () => {
+		const phase = phaseWithTasks()
+		phase.task('t0')?.start()
+		const result = phase.remove('t0')
+		expect(result.success).toBe(false)
+		if (result.success) return
+		expect(result.error.code).toBe('MUTATION')
+		expect(phase.tasks.count).toBe(3)
+	})
+
+	it('move repositions a pending task, order asserted via tasks()', () => {
+		const phase = phaseWithTasks()
+		const result = phase.move('t0', 2)
+		expect(result.success).toBe(true)
+		if (!result.success) return
+		expect(result.value.id).toBe('t0')
+		expect(phase.tasks.tasks().map((task) => task.id)).toEqual(['t1', 't2', 't0'])
+	})
+
+	it('move fails MUTATION on a missing id / non-pending task / out-of-bounds destination', () => {
+		const missing = phaseWithTasks()
+		expect(missing.move('nope', 0).success).toBe(false)
+
+		const running = phaseWithTasks()
+		running.task('t0')?.start()
+		expect(running.move('t0', 1).success).toBe(false)
+
+		const oob = phaseWithTasks()
+		for (const index of [-1, 3]) {
+			const result = oob.move('t0', index)
+			expect(result.success).toBe(false)
+			if (result.success) continue
+			expect(result.error.code).toBe('MUTATION')
+		}
+	})
+
+	it('update applies a valid patch to a pending task and returns it', () => {
+		const phase = phaseWithTasks()
+		const result = phase.update('t0', { name: 'Renamed' })
+		expect(result.success).toBe(true)
+		if (!result.success) return
+		expect(result.value.name).toBe('Renamed')
+		expect(phase.task('t0')?.name).toBe('Renamed')
+	})
+
+	it('update fails MUTATION on a missing id / non-pending task', () => {
+		const missing = phaseWithTasks()
+		expect(missing.update('nope', { name: 'x' }).success).toBe(false)
+
+		const running = phaseWithTasks()
+		running.task('t0')?.start()
+		const result = running.update('t0', { name: 'x' })
+		expect(result.success).toBe(false)
+		if (result.success) return
+		expect(result.error.code).toBe('MUTATION')
+	})
+
+	it('append throws MUTATION on a duplicate id (via a duplicate task id in the same phase definition)', () => {
+		expect(() =>
+			createWorkflow({
+				id: 'wf',
+				name: 'WF',
+				phases: [
+					{
+						id: 'p',
+						name: 'P',
+						tasks: [
+							{ id: 'dup', name: 'A', run: { via: 'function', name: 'f' } },
+							{ id: 'dup', name: 'B', run: { via: 'function', name: 'f' } },
+						],
+					},
+				],
+			}),
+		).toThrow(/duplicate task id/)
+	})
+})

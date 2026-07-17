@@ -1,7 +1,9 @@
 import type {
 	LifecycleStatus,
+	PhaseDefinition,
 	PhaseDerivation,
 	PhaseStatus,
+	TaskDefinition,
 	TaskForm,
 	TaskResult,
 	TaskStatus,
@@ -23,16 +25,24 @@ import {
 	createWorkflow,
 	createWorkflowContract,
 	definitionToSnapshot,
+	deriveBoundary,
 	derivePhaseStatus,
 	deriveWorkflowStatus,
 	expandSteps,
+	failure,
+	findFailure,
+	findPhaseDefinition,
+	findTaskDefinition,
+	insertEntry,
 	isAgentTask,
 	isFunctionTask,
 	isTerminalStatus,
 	isToolTask,
 	isWorkflowSnapshot,
+	moveEntry,
 	phaseDefinitionToSnapshot,
 	stepToForm,
+	success,
 	taskDefinitionToSnapshot,
 	workflowTag,
 	workflowToolSummary,
@@ -717,5 +727,242 @@ describe('isWorkflowSnapshot — the §14 boundary narrow for an opaque snapshot
 		expect(isWorkflowSnapshot({ ...snapshot, phases: 'none' })).toBe(false)
 		const { created: _omit, ...withoutCreated } = snapshot
 		expect(isWorkflowSnapshot(withoutCreated)).toBe(false)
+	})
+})
+
+describe('success / failure — the Result constructors (AGENTS §12)', () => {
+	it('success boxes a value as { success: true, value }', () => {
+		expect(success(42)).toEqual({ success: true, value: 42 })
+		expect(success('x')).toEqual({ success: true, value: 'x' })
+		expect(success(undefined)).toEqual({ success: true, value: undefined })
+	})
+
+	it('failure boxes an error as { success: false, error }', () => {
+		const error = new Error('boom')
+		expect(failure(error)).toEqual({ success: false, error })
+		expect(failure('plain reason')).toEqual({ success: false, error: 'plain reason' })
+	})
+})
+
+describe('findFailure — the first Failure in a positional result list', () => {
+	const outcome = (id: string, ok: boolean): TaskResult => ({
+		task: { id, name: id, phase: { id: 'p', name: 'P', workflow: { id: 'w', name: 'W' } } },
+		phase: { id: 'p', name: 'P', workflow: { id: 'w', name: 'W' } },
+		workflow: { id: 'w', name: 'W' },
+		status: ok ? 'completed' : 'failed',
+		result: ok ? success('v') : failure(new Error(`${id} failed`)),
+		timestamp: 0,
+	})
+
+	it('returns undefined for an empty list', () => {
+		expect(findFailure([])).toBeUndefined()
+	})
+
+	it('returns undefined when no result is a Failure', () => {
+		expect(findFailure([outcome('a', true), outcome('b', true)])).toBeUndefined()
+	})
+
+	it('returns the first Failure among several — order sensitive', () => {
+		const results = [outcome('a', true), outcome('b', false), outcome('c', false)]
+		expect(findFailure(results)?.task.id).toBe('b')
+		// Reversing the order changes which is found FIRST — proving it is order-sensitive, not
+		// a set search.
+		expect(findFailure([...results].reverse())?.task.id).toBe('c')
+	})
+
+	it('a result with no boxed outcome at all is not treated as a failure', () => {
+		const pending: TaskResult = {
+			task: { id: 'p', name: 'p', phase: { id: 'p', name: 'P', workflow: { id: 'w', name: 'W' } } },
+			phase: { id: 'p', name: 'P', workflow: { id: 'w', name: 'W' } },
+			workflow: { id: 'w', name: 'W' },
+			status: 'skipped',
+			timestamp: 0,
+		}
+		expect(findFailure([pending])).toBeUndefined()
+	})
+})
+
+describe('insertEntry — pure splice-in of one positional entry', () => {
+	it('inserts at an interior index without mutating the input', () => {
+		const entries: ReadonlyArray<readonly [string, number]> = [
+			['a', 1],
+			['b', 2],
+		]
+		const result = insertEntry(entries, 1, 'c', 3)
+		expect(result).toEqual([
+			['a', 1],
+			['c', 3],
+			['b', 2],
+		])
+		// The input array is untouched (immutability, AGENTS §11).
+		expect(entries).toEqual([
+			['a', 1],
+			['b', 2],
+		])
+	})
+
+	it('index 0 prepends', () => {
+		const entries: ReadonlyArray<readonly [string, number]> = [['a', 1]]
+		expect(insertEntry(entries, 0, 'z', 9)).toEqual([
+			['z', 9],
+			['a', 1],
+		])
+	})
+
+	it('index === entries.length appends', () => {
+		const entries: ReadonlyArray<readonly [string, number]> = [['a', 1]]
+		expect(insertEntry(entries, entries.length, 'z', 9)).toEqual([
+			['a', 1],
+			['z', 9],
+		])
+	})
+
+	it('inserting into an empty array yields the single entry', () => {
+		expect(insertEntry([], 0, 'a', 1)).toEqual([['a', 1]])
+	})
+
+	it('preserves the key/value pairing of every existing entry', () => {
+		const entries: ReadonlyArray<readonly [string, string]> = [
+			['x', 'X'],
+			['y', 'Y'],
+			['z', 'Z'],
+		]
+		const result = insertEntry(entries, 1, 'w', 'W')
+		expect(Object.fromEntries(result)).toEqual({ x: 'X', w: 'W', y: 'Y', z: 'Z' })
+	})
+})
+
+describe('moveEntry — pure remove-then-reinsert of one keyed entry', () => {
+	it('repositions a key to a new index without mutating the input', () => {
+		const entries: ReadonlyArray<readonly [string, number]> = [
+			['a', 1],
+			['b', 2],
+			['c', 3],
+		]
+		const result = moveEntry(entries, 'a', 2)
+		expect(result).toEqual([
+			['b', 2],
+			['c', 3],
+			['a', 1],
+		])
+		expect(entries).toEqual([
+			['a', 1],
+			['b', 2],
+			['c', 3],
+		])
+	})
+
+	it('moves to index 0 (front)', () => {
+		const entries: ReadonlyArray<readonly [string, number]> = [
+			['a', 1],
+			['b', 2],
+			['c', 3],
+		]
+		expect(moveEntry(entries, 'c', 0)).toEqual([
+			['c', 3],
+			['a', 1],
+			['b', 2],
+		])
+	})
+
+	it('moves to the last index (end)', () => {
+		const entries: ReadonlyArray<readonly [string, number]> = [
+			['a', 1],
+			['b', 2],
+			['c', 3],
+		]
+		expect(moveEntry(entries, 'a', 2)).toEqual([
+			['b', 2],
+			['c', 3],
+			['a', 1],
+		])
+	})
+
+	it('an absent key is a no-op — returns an equal (but new) copy of entries', () => {
+		const entries: ReadonlyArray<readonly [string, number]> = [
+			['a', 1],
+			['b', 2],
+		]
+		const result = moveEntry(entries, 'missing', 0)
+		expect(result).toEqual(entries)
+		expect(result).not.toBe(entries) // a new array, not the same reference
+	})
+
+	it('preserves the key/value pairing of the moved and surviving entries', () => {
+		const entries: ReadonlyArray<readonly [string, string]> = [
+			['x', 'X'],
+			['y', 'Y'],
+			['z', 'Z'],
+		]
+		const result = moveEntry(entries, 'y', 0)
+		expect(Object.fromEntries(result)).toEqual({ x: 'X', y: 'Y', z: 'Z' })
+		expect(result[0]).toEqual(['y', 'Y'])
+	})
+})
+
+describe('deriveBoundary — the index of the first pending status (the pending-suffix boundary)', () => {
+	it('is 0 when the list is empty', () => {
+		expect(deriveBoundary([])).toBe(0)
+	})
+
+	it('is 0 when every status is pending', () => {
+		expect(deriveBoundary(['pending', 'pending', 'pending'])).toBe(0)
+	})
+
+	it('is the count of non-pending statuses when they form a prefix', () => {
+		expect(deriveBoundary(['completed', 'running', 'pending', 'pending'])).toBe(2)
+		expect(deriveBoundary(['completed'])).toBe(1)
+	})
+
+	it('is the full length when every status is non-pending (terminal or running)', () => {
+		expect(deriveBoundary(['completed', 'failed', 'skipped', 'stopped'])).toBe(4)
+		expect(deriveBoundary(['running'])).toBe(1)
+	})
+
+	it('stops at the FIRST pending — a later non-pending after it does not extend the boundary', () => {
+		// Mixed statuses are not expected in practice (a pending prefix-of-suffix invariant is
+		// upheld elsewhere), but the helper itself is a pure `findIndex` — pin that behavior.
+		expect(deriveBoundary(['completed', 'pending', 'completed'])).toBe(1)
+	})
+})
+
+describe('findPhaseDefinition / findTaskDefinition — by-id correlation (the mint-time seed lookup)', () => {
+	const definition: WorkflowDefinition = {
+		id: 'wf',
+		name: 'WF',
+		phases: [
+			{
+				id: 'p1',
+				name: 'P1',
+				tasks: [{ id: 't1', name: 'T1', run: { via: 'function', name: 'f' }, retries: 2 }],
+			},
+		],
+	}
+
+	it('findPhaseDefinition finds a phase by id', () => {
+		expect(findPhaseDefinition(definition, 'p1')?.id).toBe('p1')
+	})
+
+	it('findPhaseDefinition returns undefined for a missing id', () => {
+		expect(findPhaseDefinition(definition, 'missing')).toBeUndefined()
+	})
+
+	it('findPhaseDefinition returns undefined when the definition itself is undefined', () => {
+		expect(findPhaseDefinition(undefined, 'p1')).toBeUndefined()
+	})
+
+	it('findTaskDefinition finds a task by id within a phase definition', () => {
+		const phase: PhaseDefinition | undefined = findPhaseDefinition(definition, 'p1')
+		expect(findTaskDefinition(phase, 't1')?.retries).toBe(2)
+	})
+
+	it('findTaskDefinition returns undefined for a missing id', () => {
+		const phase: PhaseDefinition | undefined = findPhaseDefinition(definition, 'p1')
+		expect(findTaskDefinition(phase, 'missing')).toBeUndefined()
+	})
+
+	it('findTaskDefinition returns undefined when the phase itself is undefined', () => {
+		const task: TaskDefinition | undefined = findTaskDefinition(undefined, 't1')
+		expect(task).toBeUndefined()
 	})
 })

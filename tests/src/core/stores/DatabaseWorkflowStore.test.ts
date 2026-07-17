@@ -2,7 +2,7 @@ import type { WorkflowSnapshot } from '@src/core'
 import { createMemoryDriver } from '@orkestrel/database'
 import { createDatabaseWorkflowStore, createWorkflow, restoreWorkflow } from '@src/core'
 import { describe, expect, it } from 'vitest'
-import { buildReleaseDefinition, settleSnapshot } from '../../../setup.js'
+import { buildReleaseDefinition, buildWorkflowDefinition, settleSnapshot } from '../../../setup.js'
 
 // A higher per-test timeout for the `runner.execute`-driven round-trips below. The run is a
 // GENUINELY real-async integration round-trip — a live W-b tree built + driven through the
@@ -80,6 +80,71 @@ describe('DatabaseWorkflowStore — set → get round-trip (one opaque JSON colu
 			const tasks = snapshot.phases.flatMap((phase) => phase.tasks)
 			expect(tasks.map((task) => task.status)).toEqual(['completed', 'completed', 'completed'])
 			expect(tasks.every((task) => task.result !== undefined)).toBe(true)
+		},
+		ROUND_TRIP_TIMEOUT_MS,
+	)
+})
+
+describe('DatabaseWorkflowStore — mid-manual-drive + paused round-trips (paused/destroyed never persist)', () => {
+	it(
+		'a snapshot taken MID a manual drive round-trips node statuses + phase concurrency',
+		async () => {
+			const store = createDatabaseWorkflowStore(createMemoryDriver())
+			const workflow = createWorkflow(buildReleaseDefinition())
+			workflow.phase('build')?.task('compile')?.start()
+			workflow.phase('build')?.task('compile')?.complete('built')
+			const snapshot = workflow.snapshot()
+			expect(snapshot.phases[0]?.tasks[0]?.status).toBe('completed')
+			expect(snapshot.phases[0]?.tasks[1]?.status).toBe('pending')
+			expect(snapshot.status).toBe('running')
+
+			await store.set(snapshot)
+			const got = await store.get(snapshot.id)
+			expect(got).toEqual(snapshot)
+			expect(got).toBeDefined()
+			if (got === undefined) return
+			const restored = restoreWorkflow(got)
+			expect(restored.phase('build')?.task('compile')?.status).toBe('completed')
+			expect(restored.phase('build')?.task('lint')?.status).toBe('pending')
+			expect(restored.status).toBe('running')
+		},
+		ROUND_TRIP_TIMEOUT_MS,
+	)
+
+	it(
+		'a snapshot taken WHILE the workflow is paused round-trips, and neither paused nor destroyed persist',
+		async () => {
+			const store = createDatabaseWorkflowStore(createMemoryDriver())
+			const definition = buildWorkflowDefinition({
+				phases: [
+					{
+						id: 'p',
+						name: 'P',
+						concurrency: 3,
+						tasks: [{ id: 't', name: 'T', run: { via: 'function', name: 'f' } }],
+					},
+				],
+			})
+			const workflow = createWorkflow(definition)
+			workflow.pause()
+			expect(workflow.paused).toBe(true)
+			const snapshot = workflow.snapshot()
+
+			expect('paused' in snapshot).toBe(false)
+			expect('destroyed' in snapshot).toBe(false)
+			expect(JSON.stringify(snapshot)).not.toContain('"paused"')
+			expect(JSON.stringify(snapshot)).not.toContain('"destroyed"')
+			expect(snapshot.phases[0]?.concurrency).toBe(3)
+
+			await store.set(snapshot)
+			const got = await store.get(snapshot.id)
+			expect(got).toEqual(snapshot)
+			expect(got).toBeDefined()
+			if (got === undefined) return
+			const restored = restoreWorkflow(got)
+			expect(restored.paused).toBe(false)
+			expect(restored.destroyed).toBe(false)
+			expect(restored.phase('p')?.snapshot().concurrency).toBe(3)
 		},
 		ROUND_TRIP_TIMEOUT_MS,
 	)

@@ -1177,3 +1177,192 @@ describe('Runner — emitter (push observation surface)', () => {
 		expect(errors.calls[0]?.[1]).toBe('settle')
 	})
 })
+
+// ── Substrate hardening: live spawn(), pause/resume queue-native semantics, and
+// graceful stop() with a never-dispatched pending backlog (the workflow Engine composes
+// exactly this behavior over a live tree). Real timers/gates only (AGENTS §16), no mocks.
+
+describe('Runner — spawn() (live, external — a Runner-level counterpart to controller.spawn)', () => {
+	it('spawn mid-execute returns a promise that settles with the unit result, and execute() awaits it (count gate)', async () => {
+		const gate = createGate()
+		const runner = createRunner<number, number>({
+			concurrency: 4,
+			handler: async (controller) => {
+				if (controller.input === 1) await gate.promise
+				return controller.input * 10
+			},
+		})
+		const run = runner.execute([1])
+		await waitForDelay(10)
+		const spawned = runner.spawn(2)
+		expect(spawned).toBeInstanceOf(Promise)
+		// The live spawn joined the outstanding count — execute() must not resolve yet.
+		expect(runner.active).toBe(2)
+		gate.resolve()
+		const spawnedResult = await spawned
+		expect(spawnedResult).toBe(20)
+		const results = await run
+		// Declared unit first, then the live spawn — execute() awaited both.
+		expect(results).toEqual([10, 20])
+	})
+
+	it('spawn before start returns undefined (never started)', () => {
+		const runner = createRunner<number, number>({ handler: (controller) => controller.input })
+		expect(runner.spawn(1)).toBeUndefined()
+	})
+
+	it('spawn after natural drain returns undefined', async () => {
+		const runner = createRunner<number, number>({ handler: (controller) => controller.input })
+		await runner.execute([1])
+		expect(runner.spawn(2)).toBeUndefined()
+	})
+
+	it('spawn after abort() returns undefined', async () => {
+		const runner = createRunner<number, number>({
+			concurrency: 4,
+			handler: async (controller) => {
+				await controller.wait()
+				return controller.input
+			},
+		})
+		const run = runner.execute([1])
+		await waitForDelay(10)
+		runner.abort(new Error('stop'))
+		await expect(run).rejects.toThrow('stop')
+		expect(runner.spawn(2)).toBeUndefined()
+	})
+
+	it('spawn after stop() returns undefined', () => {
+		// stop() is a synchronous, unconditional gate on `spawn` (`#stopped`) — no run needs to
+		// have started or drained for it to apply.
+		const runner = createRunner<number, number>({ handler: (controller) => controller.input })
+		runner.stop()
+		expect(runner.spawn(1)).toBeUndefined()
+	})
+
+	it('spawn after destroy() returns undefined', async () => {
+		const runner = createRunner<number, number>({ handler: (controller) => controller.input })
+		runner.destroy()
+		expect(runner.spawn(1)).toBeUndefined()
+	})
+})
+
+describe('Runner — pause() / resume() (queue-native: in-flight finishes, next dispatch parks)', () => {
+	it('concurrency:1, several units: pause() after the first dispatch lets it finish but withholds the next; resume() continues in order', async () => {
+		const dispatched: number[] = []
+		const gate = createGate()
+		const runner = createRunner<number, number>({
+			concurrency: 1,
+			handler: async (controller) => {
+				dispatched.push(controller.input)
+				if (controller.input === 1) await gate.promise
+				return controller.input
+			},
+		})
+		const run = runner.execute([1, 2, 3])
+		await waitForDelay(10)
+		// Only the first unit has been dispatched (its handler holds the single slot on the gate).
+		expect(dispatched).toEqual([1])
+		runner.pause()
+		expect(runner.paused).toBe(true)
+		gate.resolve() // let the in-flight unit finish
+		await waitForDelay(10)
+		// The in-flight unit finished, but the NEXT dispatch was withheld by the pause.
+		expect(dispatched).toEqual([1])
+		runner.resume()
+		expect(runner.paused).toBe(false)
+		const results = await run
+		// Dispatch order resumed and completed in declared order.
+		expect(dispatched).toEqual([1, 2, 3])
+		expect(results).toEqual([1, 2, 3])
+	})
+
+	it('pause()/resume() are no-ops once the runner is stopped (§10 — stop() is the terminal gate)', () => {
+		const runner = createRunner<number, number>({ handler: (controller) => controller.input })
+		runner.stop()
+		runner.pause()
+		expect(runner.paused).toBe(false) // a stopped runner never actually pauses
+		runner.resume() // no throw
+		expect(runner.paused).toBe(false)
+	})
+})
+
+describe('Runner — stop() (graceful, permanent: never-dispatched pending settle WITHOUT failing)', () => {
+	it('stop() with a never-dispatched pending backlog resolves execute() (no throw, no fail-fast trip)', async () => {
+		const dispatched: number[] = []
+		const gate = createGate()
+		const runner = createRunner<number, number>({
+			concurrency: 1,
+			handler: async (controller) => {
+				dispatched.push(controller.input)
+				if (controller.input === 1) await gate.promise
+				return controller.input
+			},
+		})
+		const run = runner.execute([1, 2, 3])
+		await waitForDelay(10)
+		// Only the first unit is in flight; 2 and 3 are still pending, never dispatched.
+		expect(dispatched).toEqual([1])
+		runner.stop()
+		gate.resolve() // let the in-flight unit finish
+		// execute() RESOLVES — it does not throw/reject, even with a never-run backlog.
+		const results = await run
+		// Only the in-flight unit's result landed; the never-dispatched units never ran.
+		expect(dispatched).toEqual([1])
+		expect(results).toEqual([1])
+		expect(runner.active).toBe(0)
+		expect(runner.stopped).toBe(true)
+	})
+
+	it('stop() is idempotent', async () => {
+		const runner = createRunner<number, number>({ handler: (controller) => controller.input })
+		runner.stop()
+		runner.stop() // no throw
+		expect(runner.stopped).toBe(true)
+	})
+
+	it('spawn() after stop() returns undefined, even mid-run with an in-flight unit still settling', async () => {
+		const gate = createGate()
+		const runner = createRunner<number, number>({
+			concurrency: 1,
+			handler: async (controller) => {
+				await gate.promise
+				return controller.input
+			},
+		})
+		const run = runner.execute([1])
+		await waitForDelay(10)
+		runner.stop()
+		// stop() is synchronous — spawn is refused immediately, before the in-flight unit settles.
+		expect(runner.spawn(2)).toBeUndefined()
+		gate.resolve()
+		await run
+	})
+
+	it('a graceful stop() does not trip fail-fast even when pending units would have failed', async () => {
+		// A never-dispatched unit whose handler WOULD have thrown never gets the chance to — the
+		// queue rejects it with its own "stopped" error, classified as a stop artifact (not a
+		// failure), so `execute` still resolves rather than rejecting.
+		const ran: number[] = []
+		const gate = createGate()
+		const runner = createRunner<number, number>({
+			concurrency: 1,
+			retries: 0,
+			handler: async (controller) => {
+				ran.push(controller.input)
+				if (controller.input === 1) {
+					await gate.promise
+					return controller.input
+				}
+				throw new Error(`would have failed on ${controller.input}`)
+			},
+		})
+		const run = runner.execute([1, 2, 3])
+		await waitForDelay(10)
+		runner.stop()
+		gate.resolve()
+		await expect(run).resolves.toEqual([1])
+		// The would-have-failed units 2/3 never dispatched — the failing handler branch never ran.
+		expect(ran).toEqual([1])
+	})
+})

@@ -5,6 +5,7 @@ import {
 	buildWorkflowDefinition,
 	captureError,
 	createErrorRecorder,
+	createRecorder,
 	recordEmitterEvents,
 } from '../../setup.js'
 
@@ -596,6 +597,378 @@ describe('Workflow — restore rejects a malformed snapshot', () => {
 		}
 		const error = captureError(() => restoreWorkflow(JSON.parse(JSON.stringify(broken))))
 		expect(isWorkflowError(error) ? error.code : undefined).toBe('RESTORE')
+	})
+})
+
+/** A definition with `count` sequential single-task pending phases (`p0..p{count-1}`). */
+function buildMultiPhaseWorkflow(count: number): WorkflowDefinition {
+	return {
+		id: 'wf',
+		name: 'WF',
+		bail: false,
+		phases: Array.from({ length: count }, (_unused, index) => ({
+			id: `p${index}`,
+			name: `P${index}`,
+			tasks: [{ id: `t${index}`, name: `T${index}`, run: { via: 'function', name: 'f' } }],
+		})),
+	}
+}
+
+describe('Workflow — pause/resume/paused', () => {
+	it('pause sets paused true; resume clears it — both idempotent', () => {
+		const workflow = createWorkflow(buildMultiPhaseWorkflow(1))
+		expect(workflow.paused).toBe(false)
+		workflow.pause()
+		expect(workflow.paused).toBe(true)
+		workflow.pause() // idempotent no-op
+		expect(workflow.paused).toBe(true)
+		workflow.resume()
+		expect(workflow.paused).toBe(false)
+		workflow.resume() // idempotent no-op
+		expect(workflow.paused).toBe(false)
+	})
+
+	it('pause is a no-op once the workflow is terminal', () => {
+		const workflow = createWorkflow(buildMultiPhaseWorkflow(1))
+		workflow.stop()
+		expect(workflow.status).toBe('stopped')
+		workflow.pause()
+		expect(workflow.paused).toBe(false)
+	})
+
+	it('pause is a no-op once the workflow is destroyed', () => {
+		const workflow = createWorkflow(buildMultiPhaseWorkflow(1))
+		workflow.destroy()
+		workflow.pause()
+		expect(workflow.paused).toBe(false)
+	})
+})
+
+describe('Workflow — wait()', () => {
+	it('resolves immediately when not paused', async () => {
+		const workflow = createWorkflow(buildMultiPhaseWorkflow(1))
+		await expect(workflow.wait()).resolves.toBeUndefined()
+	})
+
+	it('parks while paused, releasing on resume', async () => {
+		const workflow = createWorkflow(buildMultiPhaseWorkflow(1))
+		workflow.pause()
+		let settled = false
+		const waiting = workflow.wait().then(() => {
+			settled = true
+		})
+		await Promise.resolve()
+		expect(settled).toBe(false)
+		workflow.resume()
+		await waiting
+		expect(settled).toBe(true)
+	})
+
+	it('parks while paused, releasing on skip', async () => {
+		const workflow = createWorkflow(buildMultiPhaseWorkflow(1))
+		workflow.pause()
+		let settled = false
+		const waiting = workflow.wait().then(() => {
+			settled = true
+		})
+		await Promise.resolve()
+		expect(settled).toBe(false)
+		workflow.skip()
+		await waiting
+		expect(settled).toBe(true)
+	})
+
+	it('parks while paused, releasing on stop', async () => {
+		const workflow = createWorkflow(buildMultiPhaseWorkflow(1))
+		workflow.pause()
+		let settled = false
+		const waiting = workflow.wait().then(() => {
+			settled = true
+		})
+		await Promise.resolve()
+		expect(settled).toBe(false)
+		workflow.stop()
+		await waiting
+		expect(settled).toBe(true)
+	})
+
+	it('parks while paused, releasing on destroy', async () => {
+		const workflow = createWorkflow(buildMultiPhaseWorkflow(1))
+		workflow.pause()
+		let settled = false
+		const waiting = workflow.wait().then(() => {
+			settled = true
+		})
+		await Promise.resolve()
+		expect(settled).toBe(false)
+		workflow.destroy()
+		await waiting
+		expect(settled).toBe(true)
+	})
+})
+
+describe('Workflow — destroy()', () => {
+	it('cascades stop to every non-terminal phase, aborts signal, and marks destroyed', () => {
+		const workflow = createWorkflow(buildMultiPhaseWorkflow(2))
+		expect(workflow.signal.aborted).toBe(false)
+		expect(workflow.destroyed).toBe(false)
+		workflow.destroy()
+		expect(workflow.destroyed).toBe(true)
+		expect(workflow.signal.aborted).toBe(true)
+		expect(workflow.phase('p0')?.status).toBe('stopped')
+		expect(workflow.phase('p1')?.status).toBe('stopped')
+		expect(workflow.status).toBe('stopped')
+	})
+
+	it('does not override a phase that already reached a genuine terminal status', () => {
+		const workflow = createWorkflow(buildMultiPhaseWorkflow(2))
+		const leaf = workflow.phase('p0')?.task('t0')
+		leaf?.start()
+		leaf?.complete('ok')
+		expect(workflow.phase('p0')?.status).toBe('completed')
+		workflow.destroy()
+		// The already-terminal phase is untouched; only the still-pending phase is force-stopped.
+		expect(workflow.phase('p0')?.status).toBe('completed')
+		expect(workflow.phase('p1')?.status).toBe('stopped')
+	})
+
+	it('releases a parked phase-level wait() gate via the destroy cascade', async () => {
+		const workflow = createWorkflow(buildMultiPhaseWorkflow(1))
+		const phase = workflow.phase('p0')
+		if (phase === undefined) throw new Error('expected phase p0 to exist')
+		phase.pause()
+		let settled = false
+		const waiting = phase.wait().then(() => {
+			settled = true
+		})
+		await Promise.resolve()
+		expect(settled).toBe(false)
+		workflow.destroy()
+		await waiting
+		expect(settled).toBe(true)
+	})
+
+	it('is idempotent — a second destroy is a no-op', () => {
+		const workflow = createWorkflow(buildMultiPhaseWorkflow(1))
+		workflow.destroy()
+		const signal = workflow.signal
+		expect(() => workflow.destroy()).not.toThrow()
+		expect(workflow.destroyed).toBe(true)
+		expect(workflow.signal).toBe(signal)
+	})
+
+	it('refuses every structural mutator and pause once destroyed', () => {
+		const workflow = createWorkflow(buildMultiPhaseWorkflow(2))
+		workflow.destroy()
+		const addResult = workflow.add({
+			id: 'new',
+			name: 'New',
+			tasks: [],
+		})
+		expect(addResult.success).toBe(false)
+		const removeResult = workflow.remove('p1')
+		expect(removeResult.success).toBe(false)
+		const moveResult = workflow.move('p1', 0)
+		expect(moveResult.success).toBe(false)
+		const updateResult = workflow.update('p1', { name: 'Renamed' })
+		expect(updateResult.success).toBe(false)
+		workflow.pause()
+		expect(workflow.paused).toBe(false)
+	})
+})
+
+describe('Workflow — signal', () => {
+	it('fires exactly once on destroy', () => {
+		const workflow = createWorkflow(buildMultiPhaseWorkflow(1))
+		const recorder = createRecorder<[Event]>()
+		workflow.signal.addEventListener('abort', recorder.handler)
+		workflow.destroy()
+		workflow.destroy() // idempotent — must not fire twice
+		expect(recorder.count).toBe(1)
+	})
+})
+
+describe('Workflow — structural API: add() mints a live phase', () => {
+	it('add returns the created phase in the Result and it is live + navigable in the tree', () => {
+		const workflow = createWorkflow(buildMultiPhaseWorkflow(1))
+		const result = workflow.add({
+			id: 'p1',
+			name: 'P1',
+			tasks: [{ id: 't1', name: 'T1', run: { via: 'function', name: 'f' } }],
+		})
+		expect(result.success).toBe(true)
+		if (!result.success) throw new Error('expected add to succeed')
+		expect(result.value.id).toBe('p1')
+		expect(workflow.phase('p1')).toBe(result.value)
+		expect(result.value.workflow).toBe(workflow)
+		expect(workflow.phases.count).toBe(2)
+	})
+
+	it('a task minted into a phase cascades status recomputes when driven via start()/complete()', () => {
+		const workflow = createWorkflow(buildMultiPhaseWorkflow(1))
+		const result = workflow.add({
+			id: 'p1',
+			name: 'P1',
+			tasks: [{ id: 't1', name: 'T1', run: { via: 'function', name: 'f' } }],
+		})
+		if (!result.success) throw new Error('expected add to succeed')
+		const phase = result.value
+		expect(phase.status).toBe('pending')
+		const task = phase.task('t1')
+		task?.start()
+		expect(phase.status).toBe('running')
+		expect(workflow.status).toBe('running')
+		task?.complete('ok')
+		expect(phase.status).toBe('completed')
+	})
+
+	it('duplicate phase id fails with MUTATION', () => {
+		const workflow = createWorkflow(buildMultiPhaseWorkflow(1))
+		const result = workflow.add({ id: 'p0', name: 'Dup', tasks: [] })
+		expect(result.success).toBe(false)
+		if (result.success) throw new Error('expected add to fail')
+		expect(result.error.code).toBe('MUTATION')
+	})
+
+	it('an out-of-bounds index fails with MUTATION', () => {
+		const workflow = createWorkflow(buildMultiPhaseWorkflow(1))
+		const result = workflow.add({ id: 'p9', name: 'P9', tasks: [] }, 99)
+		expect(result.success).toBe(false)
+		if (result.success) throw new Error('expected add to fail')
+		expect(result.error.code).toBe('MUTATION')
+	})
+
+	it('a terminal workflow refuses add', () => {
+		const workflow = createWorkflow(buildMultiPhaseWorkflow(1))
+		workflow.stop()
+		const result = workflow.add({ id: 'p9', name: 'P9', tasks: [] })
+		expect(result.success).toBe(false)
+		if (result.success) throw new Error('expected add to fail')
+		expect(result.error.code).toBe('MUTATION')
+	})
+})
+
+describe('Workflow — the pending-suffix boundary (add/remove/move gate against terminal-prefix)', () => {
+	it('add at index 0 fails once an early phase is terminal; add at the end succeeds', () => {
+		const workflow = createWorkflow(buildMultiPhaseWorkflow(2))
+		const leaf = workflow.phase('p0')?.task('t0')
+		leaf?.start()
+		leaf?.complete('ok') // p0 is now terminal (completed) — the boundary moves past it
+		const front = workflow.add({ id: 'new', name: 'New', tasks: [] }, 0)
+		if (front.success) throw new Error('expected front add to fail')
+		expect(front.error.code).toBe('MUTATION')
+		const tail = workflow.add({ id: 'new', name: 'New', tasks: [] })
+		expect(tail.success).toBe(true)
+	})
+
+	it('move before the boundary fails; move of a target-before-boundary fails', () => {
+		const workflow = createWorkflow(buildMultiPhaseWorkflow(3))
+		const leaf = workflow.phase('p0')?.task('t0')
+		leaf?.start()
+		leaf?.complete('ok') // boundary is now 1 (p0 terminal, p1/p2 pending)
+		// Moving a pending phase TO a position before the boundary fails.
+		const toBoundary = workflow.move('p1', 0)
+		if (toBoundary.success) throw new Error('expected move to boundary to fail')
+		expect(toBoundary.error.code).toBe('MUTATION')
+		// Moving the already-terminal p0 (a target before the boundary) fails.
+		const terminalTarget = workflow.move('p0', 1)
+		if (terminalTarget.success) throw new Error('expected move of terminal target to fail')
+		expect(terminalTarget.error.code).toBe('MUTATION')
+	})
+
+	it('remove of a non-pending (terminal, before-boundary) target fails', () => {
+		const workflow = createWorkflow(buildMultiPhaseWorkflow(2))
+		const leaf = workflow.phase('p0')?.task('t0')
+		leaf?.start()
+		leaf?.complete('ok')
+		const result = workflow.remove('p0')
+		if (result.success) throw new Error('expected remove of terminal target to fail')
+		expect(result.error.code).toBe('MUTATION')
+		// The still-pending phase behind the boundary can still be removed.
+		const removable = workflow.remove('p1')
+		expect(removable.success).toBe(true)
+	})
+
+	it('update of a non-pending, before-boundary target fails', () => {
+		const workflow = createWorkflow(buildMultiPhaseWorkflow(2))
+		const leaf = workflow.phase('p0')?.task('t0')
+		leaf?.start()
+		leaf?.complete('ok')
+		const result = workflow.update('p0', { name: 'Renamed' })
+		if (result.success) throw new Error('expected update of terminal target to fail')
+		expect(result.error.code).toBe('MUTATION')
+	})
+})
+
+describe('Workflow — add/remove/move/update events fire on success only', () => {
+	it('emits add with the created phase + index on success, nothing on refusal', () => {
+		const workflow = createWorkflow(buildMultiPhaseWorkflow(1))
+		const events = recordEmitterEvents(workflow.emitter, ['add'])
+		const result = workflow.add({ id: 'p1', name: 'P1', tasks: [] })
+		if (!result.success) throw new Error('expected add to succeed')
+		expect(events.add.count).toBe(1)
+		expect(events.add.calls[0]).toEqual([result.value, 1])
+		// A refused add (duplicate id) emits nothing.
+		workflow.add({ id: 'p0', name: 'Dup', tasks: [] })
+		expect(events.add.count).toBe(1)
+	})
+
+	it('emits remove with the removed phase on success, nothing on refusal', () => {
+		const workflow = createWorkflow(buildMultiPhaseWorkflow(1))
+		const events = recordEmitterEvents(workflow.emitter, ['remove'])
+		const result = workflow.remove('p0')
+		if (!result.success) throw new Error('expected remove to succeed')
+		expect(events.remove.count).toBe(1)
+		expect(events.remove.calls[0]).toEqual([result.value])
+		// A refused remove (unknown id) emits nothing.
+		workflow.remove('missing')
+		expect(events.remove.count).toBe(1)
+	})
+
+	it('emits move with the moved phase + destination index on success, nothing on refusal', () => {
+		const workflow = createWorkflow(buildMultiPhaseWorkflow(2))
+		const events = recordEmitterEvents(workflow.emitter, ['move'])
+		const result = workflow.move('p1', 0)
+		if (!result.success) throw new Error('expected move to succeed')
+		expect(events.move.count).toBe(1)
+		expect(events.move.calls[0]).toEqual([result.value, 0])
+		// A refused move (unknown id) emits nothing.
+		workflow.move('missing', 0)
+		expect(events.move.count).toBe(1)
+	})
+
+	it('emits update with the patched phase on success, nothing on refusal', () => {
+		const workflow = createWorkflow(buildMultiPhaseWorkflow(1))
+		const events = recordEmitterEvents(workflow.emitter, ['update'])
+		const result = workflow.update('p0', { name: 'Renamed' })
+		if (!result.success) throw new Error('expected update to succeed')
+		expect(events.update.count).toBe(1)
+		expect(events.update.calls[0]).toEqual([result.value])
+		expect(workflow.phase('p0')?.name).toBe('Renamed')
+		// A refused update (unknown id) emits nothing.
+		workflow.update('missing', { name: 'x' })
+		expect(events.update.count).toBe(1)
+	})
+})
+
+describe('Workflow — leak checks (destroy releases waiters, pause/resume churn stays sound)', () => {
+	it('destroy releases every parked waiter so awaiting wait() completes', async () => {
+		const workflow = createWorkflow(buildMultiPhaseWorkflow(1))
+		workflow.pause()
+		const waiters = [workflow.wait(), workflow.wait(), workflow.wait()]
+		workflow.destroy()
+		await expect(Promise.all(waiters)).resolves.toBeDefined()
+	})
+
+	it('repeated pause/resume churn never leaves paused stuck true or wait() unresolved', async () => {
+		const workflow = createWorkflow(buildMultiPhaseWorkflow(1))
+		for (let i = 0; i < 25; i += 1) {
+			workflow.pause()
+			expect(workflow.paused).toBe(true)
+			workflow.resume()
+			expect(workflow.paused).toBe(false)
+			await expect(workflow.wait()).resolves.toBeUndefined()
+		}
 	})
 })
 

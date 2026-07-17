@@ -1,5 +1,5 @@
 import type { TaskInterface, WorkflowDefinition, WorkflowInterface } from '@src/core'
-import { createWorkflow, isWorkflowError } from '@src/core'
+import { createWorkflow, isWorkflowError, restoreWorkflow } from '@src/core'
 import { describe, expect, it } from 'vitest'
 import { captureError, createErrorRecorder, recordEmitterEvents } from '../../../setup.js'
 
@@ -392,5 +392,134 @@ describe('Task — the leaf snapshot: status IS the forced-terminal marker (no o
 		const snapshot = completed.snapshot()
 		expect(snapshot.status).toBe('completed')
 		expect(snapshot.result?.result?.success).toBe(true)
+	})
+})
+
+describe('Task — runtime-only run/retries/timeout (AGENTS §12, never persisted)', () => {
+	it('seeds run/retries/timeout from the definition when built through createWorkflow', () => {
+		const workflow = createWorkflow({
+			id: 'wf',
+			name: 'WF',
+			phases: [
+				{
+					id: 'p',
+					name: 'P',
+					tasks: [
+						{
+							id: 't',
+							name: 'T',
+							run: { via: 'tool', name: 'x' },
+							retries: 3,
+							timeout: 500,
+						},
+					],
+				},
+			],
+		})
+		const task = loneTask(workflow)
+		expect(task.run).toEqual({ via: 'tool', name: 'x' })
+		expect(task.retries).toBe(3)
+		expect(task.timeout).toBe(500)
+	})
+
+	it('leaves retries/timeout undefined when the definition omits them', () => {
+		const task = loneTask(createWorkflow(buildSingleTaskWorkflow()))
+		expect(task.run).toEqual({ via: 'function', name: 'f' })
+		expect(task.retries).toBeUndefined()
+		expect(task.timeout).toBeUndefined()
+	})
+
+	it('run/retries/timeout are all undefined on the restore path (definition-less)', () => {
+		// A restored tree has no WorkflowDefinition to correlate against — run/retries/timeout are
+		// unrecoverable from a pure-JSON WorkflowSnapshot (they never persist), so every leaf comes
+		// back definition-less.
+		const original = createWorkflow({
+			id: 'wf',
+			name: 'WF',
+			phases: [
+				{
+					id: 'p',
+					name: 'P',
+					tasks: [
+						{ id: 't', name: 'T', run: { via: 'tool', name: 'x' }, retries: 2, timeout: 100 },
+					],
+				},
+			],
+		})
+		const restored = restoreWorkflow(original.snapshot())
+		const task = loneTask(restored)
+		expect(task.run).toBeUndefined()
+		expect(task.retries).toBeUndefined()
+		expect(task.timeout).toBeUndefined()
+	})
+
+	it('run/retries/timeout never appear in the leaf snapshot', () => {
+		const task = loneTask(
+			createWorkflow({
+				id: 'wf',
+				name: 'WF',
+				phases: [
+					{
+						id: 'p',
+						name: 'P',
+						tasks: [
+							{ id: 't', name: 'T', run: { via: 'tool', name: 'x' }, retries: 1, timeout: 10 },
+						],
+					},
+				],
+			}),
+		)
+		const snapshot = task.snapshot()
+		expect('run' in snapshot).toBe(false)
+		expect('retries' in snapshot).toBe(false)
+		expect('timeout' in snapshot).toBe(false)
+		expect(JSON.stringify(snapshot)).not.toContain('"run"')
+		expect(JSON.stringify(snapshot)).not.toContain('"retries"')
+		expect(JSON.stringify(snapshot)).not.toContain('"timeout"')
+	})
+})
+
+describe('Task — patch (pending-only, AGENTS §12)', () => {
+	it('applies name/description while pending', () => {
+		const task = loneTask(createWorkflow(buildSingleTaskWorkflow()))
+		task.patch({ name: 'Renamed', description: 'new desc' })
+		expect(task.name).toBe('Renamed')
+		expect(task.snapshot().description).toBe('new desc')
+	})
+
+	it('an omitted field is left unchanged', () => {
+		const task = loneTask(createWorkflow(buildSingleTaskWorkflow()))
+		const before = task.name
+		task.patch({ description: 'only desc' })
+		expect(task.name).toBe(before)
+		expect(task.snapshot().description).toBe('only desc')
+	})
+
+	it('throws MUTATION when patched while running', () => {
+		const task = loneTask(createWorkflow(buildSingleTaskWorkflow()))
+		task.start()
+		const error = captureError(() => task.patch({ name: 'x' }))
+		expect(workflowCode(error)).toBe('MUTATION')
+		expect(task.name).not.toBe('x')
+	})
+
+	it('throws MUTATION when patched after settling (each terminal status)', () => {
+		for (const drive of [
+			(task: TaskInterface) => {
+				task.start()
+				task.complete('v')
+			},
+			(task: TaskInterface) => {
+				task.start()
+				task.fail(new Error('e'))
+			},
+			(task: TaskInterface) => task.skip(),
+			(task: TaskInterface) => task.stop(),
+		]) {
+			const task = loneTask(createWorkflow(buildSingleTaskWorkflow()))
+			drive(task)
+			const error = captureError(() => task.patch({ name: 'x' }))
+			expect(workflowCode(error)).toBe('MUTATION')
+		}
 	})
 })

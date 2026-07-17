@@ -17,6 +17,7 @@ import { createAgent, createTool, createToolManager, ProviderAbortError } from '
 import { createTokenBudget } from '@orkestrel/budget'
 import {
 	createScheduler,
+	createWorkflow,
 	createWorkflowRunner,
 	isWorkflowError,
 	MAX_WORKFLOW_DEPTH,
@@ -391,6 +392,12 @@ describe('WorkflowRunner �€” dispatch by name', () => {
 		const recorded = result.workflow.phase('a')?.task('t')?.result
 		expect(recorded?.status).toBe('failed')
 		expect(recorded?.result?.success).toBe(false)
+		// The tool-dispatch error preserves the tool's original message as `cause` (WorkflowRunner
+		// #dispatch: `throw new Error(result.error, { cause: result.error })`) - a catcher can
+		// inspect the original fault directly, not just the wrapping Error's message.
+		const error = recorded?.result?.success === false ? recorded.result.error : undefined
+		expect(error).toBeInstanceOf(Error)
+		expect(error instanceof Error ? error.cause : undefined).toBe('tool exploded')
 	})
 
 	it('a no-handler task auto-completes (an unregistered function name)', async () => {
@@ -1686,5 +1693,663 @@ describe('WorkflowRunner �€” depth + cycle guard (W-c2)', () => {
 		expect(depthBoxed.message).toContain('max workflow depth')
 		expect(cycleBoxed.message).toContain('cycle')
 		expect(depthBoxed.message).not.toBe(cycleBoxed.message)
+	})
+})
+
+// ── T3: engine continuity — execute(workflow) drives a CALLER-OWNED live tree ──
+//
+// The entity-native counterpart to execute(definition): createWorkflow mints the live tree,
+// execute(workflow) drives it, and the caller controls the SAME entity mid-run through its own
+// pause/resume/add/remove/move/update/stop/destroy (AGENTS §10). Real gates (createGate) drive
+// deterministic mid-flight timing — no mocks, no wall-clock races (AGENTS §16).
+
+describe('WorkflowRunner — execute(workflow) parity with execute(definition)', () => {
+	it('drives the caller-owned entity with the same WorkflowResult semantics; status transitions are observable live and snapshot() mid-run shows running states', async () => {
+		const gate = createGate()
+		const started = createRecorder<readonly [string]>()
+		const parked: WorkflowFunction = async (controller) => {
+			started.handler(controller.task.id)
+			await gate.promise
+			return controller.task.id
+		}
+		const definition = buildDefinition([{ id: 'a', tasks: [functionTask('t0', 'parked')] }])
+		const workflow = createWorkflow(definition)
+		expect(workflow.status).toBe('pending')
+		const runner = pacedRunner({ functions: { parked } })
+		const running = runner.execute(workflow)
+		await waitForDelay(30)
+		// The live entity itself observes the transition — no separate run handle needed.
+		expect(workflow.status).toBe('running')
+		expect(workflow.phase('a')?.status).toBe('running')
+		const midSnapshot = workflow.snapshot()
+		expect(midSnapshot.status).toBe('running')
+		expect(midSnapshot.phases[0]?.tasks[0]?.status).toBe('running')
+		gate.resolve()
+		const result = await running
+		expect(result.status).toBe('completed')
+		// The SAME entity passed in is returned in result.workflow (identity, not a rebuilt tree).
+		expect(result.workflow).toBe(workflow)
+		expect(workflow.status).toBe('completed')
+		expect([...started.calls].map((c) => c[0])).toEqual(['t0'])
+	})
+})
+
+describe('WorkflowRunner — execute(workflow) TRANSITION guard (synchronous)', () => {
+	it('throws TRANSITION synchronously on a second concurrent call to an already-running workflow', async () => {
+		const gate = createGate()
+		const parked: WorkflowFunction = async (controller) => {
+			await gate.promise
+			return controller.task.id
+		}
+		const definition = buildDefinition([{ id: 'a', tasks: [functionTask('t0', 'parked')] }])
+		const workflow = createWorkflow(definition)
+		const runner = pacedRunner({ functions: { parked } })
+		const running = runner.execute(workflow)
+		await waitForDelay(30)
+		expect(workflow.status).toBe('running')
+		let caught: unknown
+		try {
+			runner.execute(workflow)
+		} catch (error) {
+			caught = error
+		}
+		expect(isWorkflowError(caught)).toBe(true)
+		expect(isWorkflowError(caught) ? caught.code : undefined).toBe('TRANSITION')
+		gate.resolve()
+		await running
+	})
+
+	it('throws TRANSITION synchronously on an already-settled (completed) workflow', async () => {
+		const f: WorkflowFunction = (controller) => controller.task.id
+		const definition = buildDefinition([{ id: 'a', tasks: [functionTask('t0', 'f')] }])
+		const workflow = createWorkflow(definition)
+		const runner = pacedRunner({ functions: { f } })
+		await runner.execute(workflow)
+		expect(workflow.status).toBe('completed')
+		let caught: unknown
+		try {
+			runner.execute(workflow)
+		} catch (error) {
+			caught = error
+		}
+		expect(isWorkflowError(caught)).toBe(true)
+		expect(isWorkflowError(caught) ? caught.code : undefined).toBe('TRANSITION')
+	})
+
+	it('throws TRANSITION synchronously on a destroyed workflow', () => {
+		const definition = buildDefinition([{ id: 'a', tasks: [functionTask('t0', 'f')] }])
+		const workflow = createWorkflow(definition)
+		workflow.destroy()
+		expect(workflow.destroyed).toBe(true)
+		const runner = pacedRunner()
+		let caught: unknown
+		try {
+			runner.execute(workflow)
+		} catch (error) {
+			caught = error
+		}
+		expect(isWorkflowError(caught)).toBe(true)
+		expect(isWorkflowError(caught) ? caught.code : undefined).toBe('TRANSITION')
+	})
+})
+
+describe('WorkflowRunner — live task append during a running phase (mid-run mutation)', () => {
+	it('LIVE TASK APPEND executes real work: the appended task runs, completes, and the phase/result reflect it', async () => {
+		const gate = createGate()
+		const started = createRecorder<readonly [string]>()
+		const t0: WorkflowFunction = async (controller) => {
+			started.handler(controller.task.id)
+			await gate.promise
+			return controller.task.id
+		}
+		const extraRan = createRecorder<readonly [string]>()
+		const extra: WorkflowFunction = (controller) => {
+			extraRan.handler(controller.task.id)
+			return controller.task.id
+		}
+		const definition = buildDefinition([{ id: 'a', tasks: [functionTask('t0', 't0')] }])
+		const workflow = createWorkflow(definition)
+		const running = pacedRunner({ functions: { t0, extra } }).execute(workflow)
+		await waitForDelay(30)
+		expect(workflow.phase('a')?.status).toBe('running')
+		const added = workflow.phase('a')?.add(functionTask('t1', 'extra'))
+		if (added === undefined || !added.success) throw new Error('expected the append to succeed')
+		gate.resolve()
+		const result = await running
+		expect(result.status).toBe('completed')
+		expect(extraRan.count).toBe(1)
+		expect(workflow.phase('a')?.task('t1')?.status).toBe('completed')
+		expect(workflow.phase('a')?.status).toBe('completed')
+		expect(result.results.map((r) => r.task.id).sort()).toEqual(['t0', 't1'])
+	})
+
+	it('GRACEFUL REJECTION: appending to an already-COMPLETED phase fails MUTATION; the run continues to completion unaffected', async () => {
+		const f: WorkflowFunction = (controller) => controller.task.id
+		const gateB = createGate()
+		const b: WorkflowFunction = async (controller) => {
+			await gateB.promise
+			return controller.task.id
+		}
+		const definition = buildDefinition([
+			{ id: 'a', tasks: [functionTask('t0', 'f')] },
+			{ id: 'b', tasks: [functionTask('t1', 'b')] },
+		])
+		const workflow = createWorkflow(definition)
+		const running = pacedRunner({ functions: { f, b } }).execute(workflow)
+		await waitForDelay(30)
+		expect(workflow.phase('a')?.status).toBe('completed')
+		const rejected = workflow.phase('a')?.add(functionTask('extra', 'f'))
+		if (rejected === undefined || rejected.success) throw new Error('expected the append to fail')
+		expect(rejected.error.code).toBe('MUTATION')
+		gateB.resolve()
+		const result = await running
+		expect(result.status).toBe('completed')
+		expect(workflow.phase('b')?.task('t1')?.status).toBe('completed')
+	})
+
+	it('LIVE PHASE APPEND: mid-run workflow.add mints a phase that runs in the same run; add after the workflow settles fails MUTATION', async () => {
+		const gateA = createGate()
+		const a: WorkflowFunction = async (controller) => {
+			await gateA.promise
+			return controller.task.id
+		}
+		const extraRan = createRecorder<readonly [string]>()
+		const extra: WorkflowFunction = (controller) => {
+			extraRan.handler(controller.task.id)
+			return controller.task.id
+		}
+		const definition = buildDefinition([{ id: 'a', tasks: [functionTask('t0', 'a')] }])
+		const workflow = createWorkflow(definition)
+		const running = pacedRunner({ functions: { a, extra } }).execute(workflow)
+		await waitForDelay(30)
+		const added = workflow.add({
+			id: 'c',
+			name: 'C',
+			tasks: [{ id: 'tc', name: 'TC', run: { via: 'function', name: 'extra' } }],
+		})
+		if (!added.success) throw new Error('expected workflow.add to succeed')
+		gateA.resolve()
+		const result = await running
+		expect(result.status).toBe('completed')
+		expect(extraRan.count).toBe(1)
+		expect(workflow.phase('c')?.task('tc')?.status).toBe('completed')
+		const rejected = workflow.add({ id: 'd', name: 'D', tasks: [] })
+		if (rejected.success) throw new Error('expected workflow.add to fail once settled')
+		expect(rejected.error.code).toBe('MUTATION')
+	})
+})
+
+describe('WorkflowRunner — pending-suffix mid-run mutation (add/remove/move/update honored while phase a runs)', () => {
+	/** phase a (parked, runs first) + pending phases b/c that follow it. */
+	function threePhaseParkedDefinition(): WorkflowDefinition {
+		return buildDefinition([
+			{ id: 'a', tasks: [functionTask('t0', 'a')] },
+			{ id: 'b', tasks: [functionTask('t1', 'rec')] },
+			{ id: 'c', tasks: [functionTask('t2', 'rec')] },
+		])
+	}
+
+	it('insertion at index 0 fails MUTATION while phase a runs (before the pending-suffix boundary)', async () => {
+		const gate = createGate()
+		const a: WorkflowFunction = async (controller) => {
+			await gate.promise
+			return controller.task.id
+		}
+		const order: string[] = []
+		const workflow = createWorkflow(threePhaseParkedDefinition())
+		const running = pacedRunner({ functions: { a, rec: recordingFunction(order) } }).execute(
+			workflow,
+		)
+		await waitForDelay(30)
+		const rejected = workflow.add({ id: 'z', name: 'Z', tasks: [] }, 0)
+		if (rejected.success) throw new Error('expected the insert at index 0 to fail')
+		expect(rejected.error.code).toBe('MUTATION')
+		gate.resolve()
+		await running
+	})
+
+	it('move of a pending phase mid-run is honored (its new order is observed by execution)', async () => {
+		const gate = createGate()
+		const a: WorkflowFunction = async (controller) => {
+			await gate.promise
+			return controller.task.id
+		}
+		const order: string[] = []
+		const workflow = createWorkflow(threePhaseParkedDefinition())
+		const running = pacedRunner({ functions: { a, rec: recordingFunction(order) } }).execute(
+			workflow,
+		)
+		await waitForDelay(30)
+		const moved = workflow.move('c', 1)
+		if (!moved.success) throw new Error('expected the move to succeed')
+		gate.resolve()
+		const result = await running
+		expect(result.status).toBe('completed')
+		expect(order).toEqual(['t2', 't1'])
+	})
+
+	it('remove of a pending phase mid-run is honored (the removed phase never runs)', async () => {
+		const gate = createGate()
+		const a: WorkflowFunction = async (controller) => {
+			await gate.promise
+			return controller.task.id
+		}
+		const order: string[] = []
+		const workflow = createWorkflow(threePhaseParkedDefinition())
+		const running = pacedRunner({ functions: { a, rec: recordingFunction(order) } }).execute(
+			workflow,
+		)
+		await waitForDelay(30)
+		const removed = workflow.remove('c')
+		if (!removed.success) throw new Error('expected the remove to succeed')
+		gate.resolve()
+		const result = await running
+		expect(result.status).toBe('completed')
+		expect(order).toEqual(['t1'])
+		expect(workflow.phase('c')).toBeUndefined()
+	})
+
+	it('update of a pending phase mid-run is honored (its patched fields apply)', async () => {
+		const gate = createGate()
+		const a: WorkflowFunction = async (controller) => {
+			await gate.promise
+			return controller.task.id
+		}
+		const order: string[] = []
+		const workflow = createWorkflow(threePhaseParkedDefinition())
+		const running = pacedRunner({ functions: { a, rec: recordingFunction(order) } }).execute(
+			workflow,
+		)
+		await waitForDelay(30)
+		const updated = workflow.update('b', { name: 'B renamed' })
+		if (!updated.success) throw new Error('expected the update to succeed')
+		expect(workflow.phase('b')?.name).toBe('B renamed')
+		gate.resolve()
+		await running
+		expect(workflow.phase('b')?.name).toBe('B renamed')
+	})
+})
+
+describe('WorkflowRunner — workflow-level pause/resume gates the run', () => {
+	it('pausing after task1 completes parks task2 (concurrency 1); resume lets it proceed, nothing skipped or duplicated', async () => {
+		const started = createRecorder<readonly [string]>()
+		const t0: WorkflowFunction = (controller) => {
+			started.handler(controller.task.id)
+			return controller.task.id
+		}
+		const t1: WorkflowFunction = (controller) => {
+			started.handler(controller.task.id)
+			return controller.task.id
+		}
+		const definition = buildDefinition([
+			{ id: 'a', concurrency: 1, tasks: [functionTask('t0', 't0'), functionTask('t1', 't1')] },
+		])
+		const workflow = createWorkflow(definition)
+		workflow
+			.phase('a')
+			?.task('t0')
+			?.emitter.on('complete', () => workflow.pause())
+		const running = pacedRunner({ functions: { t0, t1 } }).execute(workflow)
+		await waitForDelay(30)
+		expect([...started.calls].map((c) => c[0])).toEqual(['t0'])
+		expect(workflow.paused).toBe(true)
+		workflow.resume()
+		const result = await running
+		expect(result.status).toBe('completed')
+		expect([...started.calls].map((c) => c[0])).toEqual(['t0', 't1'])
+		expect(workflow.phase('a')?.task('t0')?.status).toBe('completed')
+		expect(workflow.phase('a')?.task('t1')?.status).toBe('completed')
+	})
+
+	it('pausing during the last task of phase a holds phase b at the boundary until resume', async () => {
+		const started = createRecorder<readonly [string]>()
+		const a: WorkflowFunction = (controller) => {
+			started.handler(controller.task.id)
+			return controller.task.id
+		}
+		const b: WorkflowFunction = (controller) => {
+			started.handler(controller.task.id)
+			return controller.task.id
+		}
+		const definition = buildDefinition([
+			{ id: 'a', tasks: [functionTask('t0', 'a')] },
+			{ id: 'b', tasks: [functionTask('t1', 'b')] },
+		])
+		const workflow = createWorkflow(definition)
+		workflow
+			.phase('a')
+			?.task('t0')
+			?.emitter.on('complete', () => workflow.pause())
+		const running = pacedRunner({ functions: { a, b } }).execute(workflow)
+		await waitForDelay(30)
+		expect([...started.calls].map((c) => c[0])).toEqual(['t0'])
+		expect(workflow.status).toBe('running')
+		workflow.resume()
+		const result = await running
+		expect(result.status).toBe('completed')
+		expect([...started.calls].map((c) => c[0])).toEqual(['t0', 't1'])
+	})
+})
+
+describe('WorkflowRunner — phase-scoped pause/resume gates only that phase', () => {
+	it("phase.pause() parks only that phase's next dispatch; the workflow itself stays unpaused", async () => {
+		const started = createRecorder<readonly [string]>()
+		const fn: WorkflowFunction = (controller) => {
+			started.handler(controller.task.id)
+			return controller.task.id
+		}
+		const definition = buildDefinition([
+			{ id: 'a', concurrency: 1, tasks: [functionTask('t0', 'fn'), functionTask('t1', 'fn')] },
+		])
+		const workflow = createWorkflow(definition)
+		workflow
+			.phase('a')
+			?.task('t0')
+			?.emitter.on('complete', () => workflow.phase('a')?.pause())
+		const running = pacedRunner({ functions: { fn } }).execute(workflow)
+		await waitForDelay(30)
+		expect([...started.calls].map((c) => c[0])).toEqual(['t0'])
+		expect(workflow.paused).toBe(false)
+		expect(workflow.phase('a')?.paused).toBe(true)
+		workflow.phase('a')?.resume()
+		const result = await running
+		expect(result.status).toBe('completed')
+		expect([...started.calls].map((c) => c[0])).toEqual(['t0', 't1'])
+	})
+})
+
+describe('WorkflowRunner — append while paused', () => {
+	it('phase.add succeeds on a running, paused phase; the appended task parks until resume, then runs', async () => {
+		const started = createRecorder<readonly [string]>()
+		const gate = createGate()
+		const t0: WorkflowFunction = async (controller) => {
+			started.handler(controller.task.id)
+			await gate.promise
+			return controller.task.id
+		}
+		const extra: WorkflowFunction = (controller) => {
+			started.handler(controller.task.id)
+			return controller.task.id
+		}
+		const definition = buildDefinition([
+			{ id: 'a', concurrency: 1, tasks: [functionTask('t0', 't0')] },
+		])
+		const workflow = createWorkflow(definition)
+		const running = pacedRunner({ functions: { t0, extra } }).execute(workflow)
+		await waitForDelay(30)
+		expect(workflow.phase('a')?.status).toBe('running')
+		workflow.pause()
+		const added = workflow.phase('a')?.add(functionTask('t1', 'extra'))
+		if (added === undefined || !added.success) throw new Error('expected the append to succeed')
+		// t0 is still parked in flight; t1 is appended but the workflow is paused, so nothing new starts.
+		await waitForDelay(30)
+		expect([...started.calls].map((c) => c[0])).toEqual(['t0'])
+		gate.resolve()
+		// t0 finishes, but t1's pre-dispatch is gated on the paused workflow — it must not start yet.
+		await waitForDelay(30)
+		expect([...started.calls].map((c) => c[0])).toEqual(['t0'])
+		workflow.resume()
+		const result = await running
+		expect(result.status).toBe('completed')
+		expect([...started.calls].map((c) => c[0]).sort()).toEqual(['t0', 't1'])
+	})
+})
+
+describe('WorkflowRunner — graceful stop mid-run', () => {
+	it('workflow.stop(): in-flight task1 finishes, queued task2 is skipped, status stopped, execute resolves', async () => {
+		const gate = createGate()
+		const t0: WorkflowFunction = async (controller) => {
+			await gate.promise
+			return controller.task.id
+		}
+		const t1: WorkflowFunction = (controller) => controller.task.id
+		const definition = buildDefinition([
+			{ id: 'a', concurrency: 1, tasks: [functionTask('t0', 't0'), functionTask('t1', 't1')] },
+		])
+		const workflow = createWorkflow(definition)
+		const running = pacedRunner({ functions: { t0, t1 } }).execute(workflow)
+		await waitForDelay(30)
+		workflow.stop()
+		gate.resolve()
+		const result = await running
+		expect(result.status).toBe('stopped')
+		expect(workflow.phase('a')?.task('t0')?.status).toBe('completed')
+		expect(workflow.phase('a')?.task('t1')?.status).toBe('skipped')
+	})
+})
+
+describe('WorkflowRunner — hard destroy mid-run', () => {
+	it('workflow.destroy(): the in-flight task is aborted promptly, all nodes settle terminal, destroyed is idempotent', async () => {
+		const aborted = createRecorder<readonly [string]>()
+		const parked: WorkflowFunction = (controller: TaskControllerInterface) =>
+			new Promise<string>((resolve) => {
+				controller.signal.addEventListener(
+					'abort',
+					() => {
+						aborted.handler(controller.task.id)
+						resolve('aborted')
+					},
+					{ once: true },
+				)
+			})
+		const definition = buildDefinition([{ id: 'a', tasks: [functionTask('t0', 'parked')] }])
+		const workflow = createWorkflow(definition)
+		const running = pacedRunner({ functions: { parked } }).execute(workflow)
+		await waitForDelay(30)
+		workflow.destroy()
+		const result = await running
+		expect([...aborted.calls].map((c) => c[0])).toEqual(['t0'])
+		expect(result.status).toBe('stopped')
+		expect(workflow.destroyed).toBe(true)
+		expect(workflow.phase('a')?.task('t0')?.status).toBe('skipped')
+		// destroy() is idempotent — a second call never throws.
+		expect(() => workflow.destroy()).not.toThrow()
+		expect(workflow.destroyed).toBe(true)
+	})
+})
+
+describe('WorkflowRunner — a run-level timeout still settles a paused run', () => {
+	it('TIMEOUT WHILE PAUSED: a paused, un-resumed run settles via the timeout raced against the paused gate', async () => {
+		const started = createRecorder<readonly [string]>()
+		const fn: WorkflowFunction = (controller) => {
+			started.handler(controller.task.id)
+			return controller.task.id
+		}
+		const definition = buildDefinition([{ id: 'a', tasks: [functionTask('t0', 'fn')] }])
+		const workflow = createWorkflow(definition)
+		workflow.pause()
+		const result = await pacedRunner({ functions: { fn } }).execute(workflow, { timeout: 20 })
+		expect(result.status).toBe('stopped')
+		expect(started.count).toBe(0)
+		expect(workflow.phase('a')?.task('t0')?.status).toBe('skipped')
+	})
+})
+
+describe('WorkflowRunner — stop / destroy settle a paused run promptly without resume', () => {
+	it('workflow.stop() settles a paused run promptly', async () => {
+		const started = createRecorder<readonly [string]>()
+		const fn: WorkflowFunction = (controller) => {
+			started.handler(controller.task.id)
+			return controller.task.id
+		}
+		const definition = buildDefinition([{ id: 'a', tasks: [functionTask('t0', 'fn')] }])
+		const workflow = createWorkflow(definition)
+		workflow.pause()
+		const running = pacedRunner({ functions: { fn } }).execute(workflow)
+		await waitForDelay(30)
+		expect(started.count).toBe(0)
+		workflow.stop()
+		const result = await running
+		expect(result.status).toBe('stopped')
+		expect(started.count).toBe(0)
+	})
+
+	it('workflow.destroy() settles a paused run promptly', async () => {
+		const started = createRecorder<readonly [string]>()
+		const fn: WorkflowFunction = (controller) => {
+			started.handler(controller.task.id)
+			return controller.task.id
+		}
+		const definition = buildDefinition([{ id: 'a', tasks: [functionTask('t0', 'fn')] }])
+		const workflow = createWorkflow(definition)
+		workflow.pause()
+		const running = pacedRunner({ functions: { fn } }).execute(workflow)
+		await waitForDelay(30)
+		workflow.destroy()
+		const result = await running
+		expect(result.status).toBe('stopped')
+		expect(workflow.destroyed).toBe(true)
+		expect(started.count).toBe(0)
+	})
+})
+
+describe('WorkflowRunner — live config: a pending phase patched mid-run governs its own execution', () => {
+	it("patching a pending phase's concurrency (1 → 2) mid-run lets both its tasks start before either resolves", async () => {
+		const gateA = createGate()
+		const a: WorkflowFunction = async (controller) => {
+			await gateA.promise
+			return controller.task.id
+		}
+		const started = createRecorder<readonly [string]>()
+		const gateMap = new Map<string, TestGateInterface<void>>([
+			['t1', createGate()],
+			['t2', createGate()],
+		])
+		const b: WorkflowFunction = async (controller) => {
+			started.handler(controller.task.id)
+			const taskGate = gateMap.get(controller.task.id)
+			if (taskGate !== undefined) await taskGate.promise
+			return controller.task.id
+		}
+		const definition = buildDefinition([
+			{ id: 'a', tasks: [functionTask('t0', 'a')] },
+			{ id: 'b', concurrency: 1, tasks: [functionTask('t1', 'b'), functionTask('t2', 'b')] },
+		])
+		const workflow = createWorkflow(definition)
+		const running = pacedRunner({ functions: { a, b } }).execute(workflow)
+		await waitForDelay(30)
+		const patched = workflow.update('b', { concurrency: 2 })
+		if (!patched.success) throw new Error('expected the patch to succeed')
+		gateA.resolve()
+		await waitForDelay(30)
+		// Both b-tasks started before either resolved — the patched concurrency (2) governed the phase.
+		expect([...started.calls].map((c) => c[0]).sort()).toEqual(['t1', 't2'])
+		for (const taskGate of gateMap.values()) taskGate.resolve()
+		const result = await running
+		expect(result.status).toBe('completed')
+		expect(workflow.phase('b')?.concurrency).toBe(2)
+	})
+
+	it("patching a pending phase's bail mid-run flips its failure semantics (fail-fast → graceful)", async () => {
+		const gateA = createGate()
+		const a: WorkflowFunction = async (controller) => {
+			await gateA.promise
+			return controller.task.id
+		}
+		const fail: WorkflowFunction = () => {
+			throw new Error('boom')
+		}
+		const gateB = createGate()
+		const parkedOk: WorkflowFunction = async (controller) => {
+			await gateB.promise
+			return controller.task.id
+		}
+		const definition = buildDefinition([
+			{ id: 'a', tasks: [functionTask('t0', 'a')] },
+			{ id: 'b', bail: true, tasks: [functionTask('t1', 'fail'), functionTask('t2', 'parkedOk')] },
+		])
+		const workflow = createWorkflow(definition)
+		const running = pacedRunner({ functions: { a, fail, parkedOk } }).execute(workflow)
+		await waitForDelay(30)
+		const patched = workflow.update('b', { bail: false })
+		if (!patched.success) throw new Error('expected the patch to succeed')
+		gateA.resolve()
+		await waitForDelay(30)
+		gateB.resolve()
+		const result = await running
+		// Graceful (patched bail:false): no fail-fast halt despite the phase's OWN declared bail:true.
+		expect(result.status).toBe('completed')
+		expect(workflow.phase('b')?.task('t1')?.status).toBe('failed')
+		expect(workflow.phase('b')?.task('t2')?.status).toBe('completed')
+		expect(workflow.phase('b')?.bail).toBe(false)
+	})
+})
+
+describe('WorkflowRunner — appended run-less task auto-completes', () => {
+	it('an appended task naming an unregistered function auto-completes (the no-handler rule applies to live-appended tasks too)', async () => {
+		const gate = createGate()
+		const t0: WorkflowFunction = async (controller) => {
+			await gate.promise
+			return controller.task.id
+		}
+		const definition = buildDefinition([{ id: 'a', tasks: [functionTask('t0', 't0')] }])
+		const workflow = createWorkflow(definition)
+		const running = pacedRunner({ functions: { t0 } }).execute(workflow)
+		await waitForDelay(30)
+		const added = workflow.phase('a')?.add(functionTask('t1', 'missing-handler'))
+		if (added === undefined || !added.success) throw new Error('expected the append to succeed')
+		gate.resolve()
+		const result = await running
+		expect(result.status).toBe('completed')
+		const recorded = workflow.phase('a')?.task('t1')?.result
+		expect(recorded?.status).toBe('completed')
+		expect(recorded?.result).toEqual({ success: true, value: undefined })
+	})
+
+	// A LITERAL run-less TaskDefinition (no `run` field at all) cannot be authored through the typed
+	// surface — TaskDefinition.run is a REQUIRED field (types.ts), so there is no way to construct one
+	// without `as` (forbidden, AGENTS §1). The genuinely run-less TASK (task.run === undefined) only
+	// arises on the restoreWorkflow path (no matching definition to seed from), which is documented on
+	// WorkflowOptions.definition / TaskInterface.run and out of this file's scope (WorkflowRunner drives
+	// freshly-built or caller-built live trees, never a restored one). The reachable equivalent — an
+	// appended task naming an UNREGISTERED function — is covered by the test above.
+	it.todo(
+		'a literal run-less TaskDefinition (no `run` field) cannot be authored without `as` through the typed surface — see the comment above',
+	)
+})
+
+describe('WorkflowRunner — event-order sample: cause-before-effect cascades and add-before-start', () => {
+	it("task events precede their phase cascade, which precedes the workflow cascade; a live add fires before the appended task's own start", async () => {
+		const order: string[] = []
+		const gate = createGate()
+		const t0: WorkflowFunction = async (controller) => {
+			await gate.promise
+			return controller.task.id
+		}
+		const t1: WorkflowFunction = (controller) => controller.task.id
+		const definition = buildDefinition([{ id: 'a', tasks: [functionTask('t0', 't0')] }])
+		const workflow = createWorkflow(definition)
+		workflow.emitter.on('start', () => order.push('workflow:start'))
+		workflow.emitter.on('complete', () => order.push('workflow:complete'))
+		const phaseA = workflow.phase('a')
+		phaseA?.emitter.on('start', () => order.push('phase:start'))
+		phaseA?.emitter.on('complete', () => order.push('phase:complete'))
+		phaseA?.emitter.on('add', (task) => order.push(`phase:add:${task.id}`))
+		const task0 = phaseA?.task('t0')
+		task0?.emitter.on('start', (id) => order.push(`task:${id}:start`))
+		task0?.emitter.on('complete', () => order.push('task:t0:complete'))
+		const running = pacedRunner({ functions: { t0, t1 } }).execute(workflow)
+		await waitForDelay(30)
+		const added = phaseA?.add(functionTask('t1', 't1'))
+		if (added === undefined || !added.success) throw new Error('expected the append to succeed')
+		added.value.emitter.on('start', (id) => order.push(`task:${id}:start`))
+		added.value.emitter.on('complete', () => order.push('task:t1:complete'))
+		gate.resolve()
+		const result = await running
+		expect(result.status).toBe('completed')
+		// Cause-before-effect on entry: the leaf task's own start precedes its phase's cascaded start,
+		// which precedes the workflow's cascaded start.
+		expect(order.indexOf('task:t0:start')).toBeGreaterThanOrEqual(0)
+		expect(order.indexOf('task:t0:start')).toBeLessThan(order.indexOf('phase:start'))
+		expect(order.indexOf('phase:start')).toBeLessThan(order.indexOf('workflow:start'))
+		// The live add fires BEFORE the appended task's own start (the runner subscribes to `add`
+		// before capturing tasks, and the appended task only starts once picked up for dispatch).
+		expect(order.indexOf('phase:add:t1')).toBeGreaterThanOrEqual(0)
+		expect(order.indexOf('phase:add:t1')).toBeLessThan(order.indexOf('task:t1:start'))
+		// Cause-before-effect on settle: both leaves' completes precede their phase's cascaded
+		// complete, which precedes the workflow's cascaded complete.
+		expect(order.indexOf('task:t0:complete')).toBeLessThan(order.indexOf('phase:complete'))
+		expect(order.indexOf('task:t1:complete')).toBeLessThan(order.indexOf('phase:complete'))
+		expect(order.indexOf('phase:complete')).toBeLessThan(order.indexOf('workflow:complete'))
 	})
 })

@@ -28,8 +28,15 @@ depth/cycle-bounded agent-native recursion), the durable `WorkflowStore`
 (in-memory + driver-pluggable), and the cooperative `Scheduler` (the
 cross-environment default plus the browser and Node environment backends)
 are all implemented and tested, but the public API is still unstable and
-may change without notice. See [guides/src/workflow.md](./guides/src/workflow.md)
-for the full documented surface.
+may change without notice. The live tree also supports runtime-only
+`pause` / `resume` / `wait` (at both the workflow and phase tiers) plus a
+gated `add` / `remove` / `move` / `update` structural-mutation API
+(pending-suffix positions, append-only on a running phase), a hard
+`destroy` teardown alongside the runner's existing graceful `stop`, and a
+`WorkflowRunnerInterface.execute` overload that drives an already-built,
+caller-owned live tree instead of only building one from a definition. See
+[guides/src/workflow.md](./guides/src/workflow.md) for the full documented
+surface.
 
 ## Package
 
