@@ -14,11 +14,11 @@ import type { WorkflowErrorCode } from './types.js'
  * offending node id / status. Thrown for an illegal lifecycle transition
  * (`TRANSITION`), a structurally invalid {@link import('./types.js').WorkflowSnapshot}
  * passed to {@link import('./factories.js').restoreWorkflow} (`RESTORE`), an over-deep /
- * cyclic nested-workflow dispatch (`DEPTH`), and a malformed
- * {@link import('./factories.js').createWorkflowTool} args blob (`TOOL`). On the
- * workflow-tool seam the `DEPTH` / `TOOL` throw is ISOLATED by the
- * `@orkestrel/agent` package's `ToolManager` into the tool result's
- * top-level `error` (AGENTS §14 — the universal tool-handler contract).
+ * cyclic nested-workflow dispatch (`DEPTH`), and a malformed workflow-authoring-tool args
+ * blob (`TOOL`). `DEPTH` and `TOOL` are public type surface constructed by the
+ * `@orkestrel/tool` package's workflow-tool / agent-function adapters; on that seam the
+ * throw is ISOLATED by its `ToolManager` into the tool result's top-level `error`
+ * (AGENTS §14 — the universal tool-handler contract).
  */
 export class WorkflowError extends Error {
 	readonly code: WorkflowErrorCode

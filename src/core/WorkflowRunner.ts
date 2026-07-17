@@ -52,10 +52,10 @@ import { Workflow } from './Workflow.js'
  *   {@link import('./types.js').TaskInterface.handler} ONCE at construction (build, restore,
  *   or a live mint all resolve it identically, from {@link WorkflowOptions.functions}), so
  *   dispatch is simply "invoke the task's own handler". Static tool / agent calling is an
- *   OPT-IN concern of `factories.ts`'s adapter factories ({@link import('./factories.js').createToolFunction},
- *   {@link import('./factories.js').createAgentFunction}) — plain {@link import('./types.js').WorkflowFunction}s a
- *   caller wires into {@link WorkflowOptions.functions} like any other behavior. This module
- *   never imports `@orkestrel/agent`.
+ *   OPT-IN concern of the `@orkestrel/tool` package's adapter factories — plain
+ *   {@link import('./types.js').WorkflowFunction}s a caller wires into
+ *   {@link WorkflowOptions.functions} like any other behavior. This module never imports
+ *   any tool/agent package.
  * - **Two `execute` forms, one engine.** `execute(definition, options)` BUILDS the live tree
  *   from a {@link WorkflowDefinition} (single source of truth for the `run` / `concurrency`
  *   metadata); `execute(workflow, options)` DRIVES a caller-owned, ALREADY-BUILT

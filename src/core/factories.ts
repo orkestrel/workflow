@@ -1,45 +1,23 @@
 import type { RunnerInterface, RunnerOptions, SchedulerInterface } from './types.js'
 import { Scheduler } from './Scheduler.js'
 import type { ContractInterface } from '@orkestrel/contract'
-import type { AgentInterface, ToolInterface, ToolManagerInterface } from '@orkestrel/agent'
 import type { DriverInterface, TableInterface } from '@orkestrel/database'
 import type {
-	AgentFunctionOptions,
 	WorkflowDefinition,
-	WorkflowDraft,
-	WorkflowFunction,
 	WorkflowInterface,
 	WorkflowOptions,
 	WorkflowRunnerInterface,
 	WorkflowRunnerOptions,
 	WorkflowSnapshot,
 	WorkflowSnapshotRow,
-	WorkflowSteps,
 	WorkflowStoreInterface,
-	WorkflowToolOptions,
 } from './types.js'
-import { createTool } from '@orkestrel/agent'
-import { createContract, rawShape, schemaToParameters, stringShape } from '@orkestrel/contract'
+import { createContract, rawShape, stringShape } from '@orkestrel/contract'
 import { createDatabase, createMemoryDriver } from '@orkestrel/database'
-import {
-	DEFAULT_BAIL,
-	MAX_WORKFLOW_DEPTH,
-	PHASE_STATUSES,
-	TASK_STATUSES,
-	WORKFLOW_STATUSES,
-	WORKFLOW_TOOL_DESCRIPTION,
-	WORKFLOW_TOOL_NAME,
-} from './constants.js'
+import { DEFAULT_BAIL, PHASE_STATUSES, TASK_STATUSES, WORKFLOW_STATUSES } from './constants.js'
 import { WorkflowError } from './errors.js'
-import {
-	agentTag,
-	completeDraft,
-	definitionToSnapshot,
-	expandSteps,
-	workflowTag,
-	workflowToolSummary,
-} from './helpers.js'
-import { workflowDraftShape, workflowShape, workflowStepsShape } from './shapers.js'
+import { definitionToSnapshot } from './helpers.js'
+import { workflowShape } from './shapers.js'
 import { DatabaseWorkflowStore } from './stores/DatabaseWorkflowStore.js'
 import { MemoryWorkflowStore } from './stores/MemoryWorkflowStore.js'
 import { Workflow } from './Workflow.js'
@@ -103,42 +81,6 @@ export function createWorkflowContract(): ContractInterface<WorkflowDefinition> 
 		// The contract's own parser already enforces every leaf refinement (it
 		// re-applies the shared `stringOf` / `boundsOf` combinators after coercion),
 		// so a non-`undefined` result satisfies `is` — no guard-gate wrapper needed.
-		parse: (value) => contract.parse(value),
-	}
-}
-
-/**
- * Compile the LENIENT workflow DRAFT contract — identical to
- * {@link createWorkflowContract} EXCEPT `id` and `name` are OPTIONAL at all three levels
- * (workflow / phase / task), so a small model can omit the six identity strings.
- *
- * @remarks
- * The widened authoring surface {@link createWorkflowTool} parses an authored blob through
- * before {@link import('./helpers.js').completeDraft} fills the missing ids/names. It does
- * NOT relax the canonical contract — {@link createWorkflowContract} stays byte-for-byte
- * unchanged and STRICT, and the completed draft is re-validated against THAT strict gate
- * before running (soundness preserved). A PROVIDED `id` / `name` still carries `minLength: 1`,
- * so an explicitly-empty `id: ''` is REJECTED (parses to `undefined`), never auto-filled —
- * keeping "garbage" distinct from "omitted". `run` stays required.
- *
- * @returns The compiled {@link WorkflowDraft} contract
- *
- * @example
- * ```ts
- * import { createWorkflowDraftContract, completeDraft } from '@src/core'
- *
- * const draft = createWorkflowDraftContract()
- * const parsed = draft.parse({ phases: [{ tasks: [{ run: { via: 'function', name: 'f' } }] }] })
- * const definition = parsed && completeDraft(parsed) // ids/names filled positionally
- * draft.parse({ id: '', phases: [] })                // undefined — an explicit empty id is rejected
- * ```
- */
-export function createWorkflowDraftContract(): ContractInterface<WorkflowDraft> {
-	const contract = createContract(workflowDraftShape)
-	return {
-		schema: contract.schema,
-		is: contract.is,
-		generate: (random) => contract.generate(random),
 		parse: (value) => contract.parse(value),
 	}
 }
@@ -426,11 +368,11 @@ export function createDatabaseWorkflowStore(
  * the live entity (`start` → `complete` / `fail`), and resolves a
  * {@link import('./types.js').WorkflowResult}.
  *
- * Static tool / agent calling is OPT-IN, wired through the adapter factories
- * {@link createToolFunction} / {@link createAgentFunction} — plain
- * {@link import('./types.js').WorkflowFunction}s a caller composes into its OWN
- * {@link WorkflowOptions.functions} registry, same as any other behavior. A task with no
- * resolved handler AUTO-COMPLETES (the ROADMAP no-handler rule).
+ * Static tool / agent calling is OPT-IN: a caller wires a plain
+ * {@link import('./types.js').WorkflowFunction} into its OWN {@link WorkflowOptions.functions}
+ * registry, same as any other behavior — the `@orkestrel/tool` package ships the
+ * tool/agent adapter factories for that. A task with no resolved handler AUTO-COMPLETES
+ * (the ROADMAP no-handler rule).
  *
  * @param options - An optional pacing `scheduler` (default the shipped cross-environment one).
  *   See {@link WorkflowRunnerOptions}.
@@ -453,295 +395,6 @@ export function createDatabaseWorkflowStore(
  */
 export function createWorkflowRunner(options?: WorkflowRunnerOptions): WorkflowRunnerInterface {
 	return new WorkflowRunner(options?.scheduler ?? createScheduler())
-}
-
-/**
- * Wrap a registered tool as a {@link WorkflowFunction} — the OPT-IN adapter that lets a
- * `function`-form task run a `@orkestrel/agent` tool BY NAME.
- *
- * @remarks
- * Composes into a caller's {@link WorkflowOptions.functions} registry like any other behavior
- * (`{ publish: createToolFunction(tools, 'publish') }`); the PURE
- * {@link import('./WorkflowRunner.js').WorkflowRunner} has no knowledge of tools itself. The
- * returned function executes `name` against `tools` with the task's `controller.input` as the
- * call arguments, id-correlated to the task's own id. A `ToolManagerInterface.execute` NEVER
- * throws (a handler throw is isolated into `result.error`), so a failing tool is surfaced here
- * as a THROWN `Error` carrying the original message as `cause` — the leaf `fail`s, honouring
- * `bail`. An UNREGISTERED tool name is a programmer error (an explicit binding to a name that
- * doesn't exist) — unlike the engine's own silent auto-complete of an unresolved task handler,
- * this THROWS a typed `TOOL` {@link WorkflowError}.
- *
- * @param tools - The {@link ToolManagerInterface} the named tool is registered on
- * @param name - The registered tool's name
- * @returns A {@link WorkflowFunction} that runs the named tool
- *
- * @example
- * ```ts
- * import { createToolFunction, createToolManager, createWorkflowRunner } from '@src/core'
- *
- * const tools = createToolManager()
- * tools.add(myPublishTool)
- * const runner = createWorkflowRunner()
- * await runner.execute(definition, { functions: { publish: createToolFunction(tools, 'publish') } })
- * ```
- */
-export function createToolFunction(tools: ToolManagerInterface, name: string): WorkflowFunction {
-	return async (controller) => {
-		const tool = tools.tool(name)
-		if (tool === undefined) {
-			throw new WorkflowError('TOOL', `tool '${name}' is not registered`, { tool: name })
-		}
-		const result = await tools.execute({
-			id: controller.task.id,
-			name,
-			arguments: controller.input,
-		})
-		// A `tool` result NEVER throws — the manager isolates a handler throw into `result.error`.
-		// Surface that as a task failure (so a failing tool `fail`s the leaf, honouring `bail`),
-		// preserving the original message as `cause` so a catcher can inspect it directly.
-		if (result.error !== undefined) throw new Error(result.error, { cause: result.error })
-		return result.value
-	}
-}
-
-/**
- * Wrap a live `AgentInterface` (`@orkestrel/agent`) as a {@link WorkflowFunction} — the OPT-IN
- * adapter that runs the agent to a settled result, folding a nested workflow-authoring
- * depth / cycle guard into its own closure.
- *
- * @remarks
- * Composes into a caller's {@link WorkflowOptions.functions} registry like any other behavior;
- * the PURE {@link import('./WorkflowRunner.js').WorkflowRunner} has no knowledge of agents
- * itself. Before running the agent, the depth/cycle guard REJECTS the call (a THROWN typed
- * `DEPTH` {@link WorkflowError}, which the leaf `fail`s) when running it would push a nested
- * chain past {@link MAX_WORKFLOW_DEPTH}, OR when this agent is already an ancestor (a cycle) —
- * ported from the former engine-side guard. When {@link AgentFunctionOptions.runner} is
- * supplied, the adapter BINDS a depth/cycle-aware {@link createWorkflowTool} onto the agent's
- * `context.tools` (the propagation seam) — closed over `depth` and the extended ancestry (the
- * tool itself computes `depth + 1` internally) — so the agent can author + run a NESTED
- * workflow through it; the wrapped default is the CURRENT task's own workflow id (used only on
- * a no-args tool call). The task's cancellation folds into the agent run: an already-aborted
- * `controller.signal` cancels the agent up front; otherwise a one-shot listener fires
- * `agent.abort(reason)` when the task cancels, removed in `finally`. `agent.generate()` resolves
- * a partial `AgentResult` on a cancel (never rejects), returned as the task's completed value.
- *
- * A bound agent is effectively SINGLE-RUN: `context.tools.add` binds one {@link ToolInterface}
- * under the fixed {@link import('./constants.js').WORKFLOW_TOOL_NAME}, and `agent.generate()` /
- * `agent.abort()` are per-agent state. Two CONCURRENT tasks sharing the SAME `agent` instance
- * race on that one tool binding (last-write-wins) and on generate/abort — give each concurrent
- * task its OWN agent instance.
- *
- * @param agent - The live `AgentInterface` to run
- * @param options - The nested-workflow binding + depth/cycle bookkeeping (see {@link AgentFunctionOptions})
- * @returns A {@link WorkflowFunction} that runs `agent` to its settled result
- *
- * @example
- * ```ts
- * import { createAgentFunction, createWorkflowRunner } from '@src/core'
- *
- * const runner = createWorkflowRunner()
- * const review = createAgentFunction(myAgent, { runner })
- * await runner.execute(definition, { functions: { review } })
- * ```
- */
-export function createAgentFunction(
-	agent: AgentInterface,
-	options?: AgentFunctionOptions,
-): WorkflowFunction {
-	return async (controller) => {
-		const depth = options?.depth ?? 0
-		const ancestry = options?.ancestry ?? []
-		// GUARD (before running the agent): running it would let it author + run a NESTED workflow
-		// at `depth + 1`, so reject when that would exceed the bound, OR when this agent is already
-		// an ancestor (a re-entry cycle). The throw becomes the leaf's typed `DEPTH` failure.
-		if (depth + 1 > MAX_WORKFLOW_DEPTH) {
-			throw new WorkflowError('DEPTH', `agent '${agent.id}' exceeds max workflow depth`, {
-				agent: agent.id,
-				depth,
-				max: MAX_WORKFLOW_DEPTH,
-			})
-		}
-		const tag = agentTag(agent.id)
-		if (ancestry.includes(tag)) {
-			throw new WorkflowError('DEPTH', `agent '${agent.id}' is already an ancestor (cycle)`, {
-				agent: agent.id,
-				ancestry: [...ancestry],
-			})
-		}
-		// BIND the workflow tool so the agent can fan out into a nested workflow at `depth + 1` with
-		// THIS agent added to the ancestry — the propagation across the agent/tool boundary (closed
-		// over the tool at bind time, since a tool handler receives no ambient context). The current
-		// task's own workflow id is the tool's WRAPPED default, used only on a no-args call.
-		const runner = options?.runner
-		if (runner !== undefined) {
-			const workflowId = controller.task.phase.workflow.id
-			const wrapped: WorkflowDefinition = { id: workflowId, name: workflowId, phases: [] }
-			agent.context.tools.add(
-				createWorkflowTool(wrapped, runner, { depth, ancestry: [...ancestry, tag] }),
-			)
-		}
-		// Fold the task's cancellation into the agent run: an already-aborted signal cancels the
-		// agent up front; otherwise a one-shot listener fires `agent.abort(reason)` when the task
-		// cancels. `generate()` RESOLVES a partial on a cancel (never rejects).
-		const signal = controller.signal
-		const onAbort = (): void => agent.abort(signal.reason)
-		if (signal.aborted) {
-			agent.abort(signal.reason)
-		} else {
-			signal.addEventListener('abort', onAbort, { once: true })
-		}
-		try {
-			return await agent.generate()
-		} finally {
-			signal.removeEventListener('abort', onAbort)
-		}
-	}
-}
-
-/**
- * Wrap a {@link WorkflowDefinition} as an LLM-callable {@link ToolInterface} — it ADVERTISES
- * the SIMPLE flat authoring shape (`{ name?, steps: [{ name }] }`) as its `parameters` so
- * even a small model can author a complete tree, and its handler EXPANDS / COMPLETES the
- * authored blob, validates it against the STRICT contract, runs it through `runner`, and
- * returns the run SUMMARY (throwing a typed {@link WorkflowError} on failure).
- *
- * @remarks
- * A plain {@link ToolManagerInterface}-compatible tool (so `createMCPServer` / `createMCPRoutes`
- * expose it for free — nothing MCP is wired here). It is ALSO the propagation carrier
- * {@link createAgentFunction} binds onto a wrapped agent's `context.tools`: because a tool
- * handler receives ONLY the model-supplied `args` (no ambient context, no signal), the run's
- * depth + ancestry are CLOSED OVER at bind time via {@link WorkflowToolOptions}, and the
- * handler enforces the SAME depth / cycle guard itself (this function owns it now — the engine
- * carries none) before running the nested workflow at `depth + 1` with the extended ancestry.
- *
- * **Widened authoring surface (additive — the canonical contract + runner stay STRICT and
- * unchanged).** A 2B model reliably CALLS the tool but cannot reliably emit the full four-level
- * nested {@link WorkflowDefinition} (six required `id`/`name` strings, an all-or-nothing tree).
- * So the tool ACCEPTS three authoring forms and converges them on the SAME strict
- * {@link createWorkflowContract} gate before running (soundness preserved):
- * - the FLAT shape `{ name?, steps: [{ name }] }` — the ADVERTISED `parameters` (the simplest
- *   form, {@link import('./helpers.js').expandSteps}'d into one one-task phase per step);
- * - a nested DRAFT with any `id`/`name` OMITTED — {@link createWorkflowDraftContract}-parsed then
- *   {@link import('./helpers.js').completeDraft}'d (missing ids synthesized positionally);
- * - the full nested {@link WorkflowDefinition} — the advanced escape-hatch (documented in the
- *   description), accepted as the draft super-set.
- *
- * The handler conforms to the universal tool-handler contract (AGENTS §14): it returns the PLAIN
- * run-summary VALUE on success and THROWS a typed {@link WorkflowError} on every failure path. It
- * does NOT build a {@link ToolResult} itself — the `@orkestrel/agent` package's `ToolManager`
- * performs the ONE canonical wrap (`{ id, name, value }` on a return; `{ id, name, error }` on a
- * throw, ISOLATED so nothing escapes the run), so the outcome appears EXACTLY ONCE, identically,
- * over BOTH the agent loop and MCP (a throw → MCP `isError: true`):
- * - **No authored args** (an empty `arguments`) ⇒ runs the WRAPPED `definition`.
- * - **A `steps` array** ⇒ the FLAT form: parse it, {@link import('./helpers.js').expandSteps} it.
- * - **Otherwise** ⇒ the nested form: {@link createWorkflowDraftContract}-parse it,
- *   {@link import('./helpers.js').completeDraft} it.
- * - **Strict gate** ⇒ the expanded / completed result is validated against
- *   {@link createWorkflowContract}.`is`; a blob that can't expand, or whose result fails the strict
- *   gate (e.g. an explicit empty `id`, `concurrency: 0`) ⇒ THROW a `TOOL` {@link WorkflowError} (no run).
- * - **Over-deep / cyclic** ⇒ THROW a `DEPTH` {@link WorkflowError} when the nested run would exceed
- *   {@link MAX_WORKFLOW_DEPTH}, or the target workflow id is already an ancestor (a cycle) — the
- *   SAME `code` {@link createAgentFunction}'s own guard raises. Enforced HERE, INSIDE this
- *   handler, before ever calling `runner.execute` — the engine itself performs no such check.
- * - **Otherwise** ⇒ `runner.execute(target)`, RETURNING the plain summary of the terminal run
- *   (`{ status, count }`, via {@link workflowToolSummary}).
- *
- * The tool executes AUTHORED STRUCTURE, not consumer behavior: a nested tree authored through
- * it (flat, draft, or full form) carries no {@link WorkflowFunctions} registry, so EVERY one of
- * its tasks auto-completes under the no-handler rule. This handler validates and synthesizes
- * shape — it never runs a caller's handlers.
- *
- * @param definition - The workflow the tool runs when called with no authored args
- * @param runner - The {@link WorkflowRunnerInterface} that executes the (nested) workflow
- * @param options - The depth + ancestry to run the nested workflow under (see
- *   {@link WorkflowToolOptions}); omitted ⇒ depth `0` / empty ancestry (a top-level wrap)
- * @returns A {@link ToolInterface} (named {@link import('./constants.js').WORKFLOW_TOOL_NAME})
- *   whose `parameters` advertise the FLAT authoring schema (the nested form stays accepted)
- *
- * @example
- * ```ts
- * import { createWorkflowRunner, createWorkflowTool, createToolManager } from '@src/core'
- *
- * const runner = createWorkflowRunner()
- * const tool = createWorkflowTool(definition, runner)
- * const tools = createToolManager()
- * tools.add(tool) // a model can now author + run a workflow in one call
- * ```
- */
-export function createWorkflowTool(
-	definition: WorkflowDefinition,
-	runner: WorkflowRunnerInterface,
-	options?: WorkflowToolOptions,
-): ToolInterface {
-	const strict = createWorkflowContract()
-	const draft = createWorkflowDraftContract()
-	const steps: ContractInterface<WorkflowSteps> = createContract(workflowStepsShape)
-	const depth = options?.depth ?? 0
-	const ancestry = options?.ancestry ?? []
-	// The tool ADVERTISES the FLAT authoring shape (the simplest surface a small model can
-	// fill) — its JSON Schema, narrowed to the open tool-parameters record (§14, never `as`) via
-	// the shared `schemaToParameters` contracts helper. The full nested form is STILL accepted (the
-	// handler branches on the args' shape) but is documented in the description as the advanced
-	// escape-hatch.
-	const parameters = schemaToParameters(steps.schema)
-	return createTool({
-		name: WORKFLOW_TOOL_NAME,
-		description: WORKFLOW_TOOL_DESCRIPTION,
-		parameters,
-		// The universal tool-handler contract (§14): RETURN the plain run summary on success;
-		// THROW a typed WorkflowError on every failure path, which the ToolManager ISOLATES into
-		// the canonical tool result's top-level `error` (so nothing escapes the run and the
-		// outcome appears once, identically, over the agent loop AND MCP). The authoring surface
-		// is WIDENED at this boundary ONLY (the canonical contract + runner stay strict): empty
-		// args ⇒ the wrapped definition; a `steps` array ⇒ the FLAT form (expandSteps); else the
-		// nested DRAFT form (draft-parse + completeDraft). EVERY path then converges on the STRICT
-		// `createWorkflowContract().is` gate — a blob that can't expand / complete, or whose result
-		// fails the strict gate, ⇒ throw `TOOL` (no run); an over-deep / cyclic nested run ⇒ throw
-		// `DEPTH`; otherwise run at depth + 1 and return the terminal run's summary.
-		execute: async (args) => {
-			// Branch on the authored args' SHAPE (no ambient context — a tool handler gets only
-			// `args`): empty ⇒ the wrapped definition; a `steps` array ⇒ the FLAT form, parsed +
-			// expanded; otherwise the nested DRAFT form, parsed + completed. A parse failure leaves
-			// `target` undefined ⇒ the strict gate below throws `TOOL`.
-			let target: WorkflowDefinition | undefined
-			if (Object.keys(args).length === 0) {
-				target = definition
-			} else if (Array.isArray(args.steps)) {
-				const flat = steps.parse(args)
-				target = flat === undefined ? undefined : expandSteps(flat)
-			} else {
-				const parsed = draft.parse(args)
-				target = parsed === undefined ? undefined : completeDraft(parsed)
-			}
-			// The SOUNDNESS gate: whatever authoring form produced `target`, it must satisfy the
-			// STRICT canonical contract before it runs — the leniency never reaches the runner.
-			if (target === undefined || !strict.is(target)) {
-				throw new WorkflowError('TOOL', 'malformed workflow definition', {
-					workflow: definition.id,
-				})
-			}
-			if (depth + 1 > MAX_WORKFLOW_DEPTH) {
-				throw new WorkflowError(
-					'DEPTH',
-					`nested workflow exceeds max depth ${MAX_WORKFLOW_DEPTH}`,
-					{
-						workflow: target.id,
-						depth,
-						max: MAX_WORKFLOW_DEPTH,
-					},
-				)
-			}
-			const tag = workflowTag(target.id)
-			if (ancestry.includes(tag)) {
-				throw new WorkflowError('DEPTH', `workflow '${target.id}' is already an ancestor (cycle)`, {
-					workflow: target.id,
-					ancestry: [...ancestry],
-				})
-			}
-			const result = await runner.execute(target)
-			return workflowToolSummary(result)
-		},
-	})
 }
 
 /**

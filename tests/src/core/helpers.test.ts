@@ -5,27 +5,18 @@ import type {
 	TaskResult,
 	TaskStatus,
 	WorkflowDefinition,
-	WorkflowDraft,
-	WorkflowResult,
-	WorkflowSteps,
 } from '@src/core'
 import {
-	agentTag,
 	buildPhaseContext,
 	buildTaskContext,
 	buildWorkflowContext,
 	canTransitionTask,
 	collectResults,
-	completeDraft,
-	completePhaseDraft,
-	completeTaskDraft,
 	createWorkflow,
-	createWorkflowContract,
 	definitionToSnapshot,
 	deriveBoundary,
 	derivePhaseStatus,
 	deriveWorkflowStatus,
-	expandSteps,
 	failure,
 	findFailure,
 	insertEntry,
@@ -36,8 +27,6 @@ import {
 	phaseDefinitionToSnapshot,
 	success,
 	taskDefinitionToSnapshot,
-	workflowTag,
-	workflowToolSummary,
 } from '@src/core'
 import { describe, expect, it } from 'vitest'
 
@@ -583,131 +572,6 @@ describe('parkSignal — a one-shot promise-park on an AbortSignal, never reject
 		const parked = parkSignal(controller.signal)
 		controller.abort(new Error('boom'))
 		await expect(parked).resolves.toBeUndefined()
-	})
-})
-
-describe('ancestry tags (W-c2 depth/cycle chain identifiers)', () => {
-	it('namespaces a workflow id and an agent name distinctly (no collision)', () => {
-		expect(workflowTag('x')).toBe('workflow:x')
-		expect(agentTag('x')).toBe('agent:x')
-		// Same underlying string, different namespaced tags — so a `workflow` id never reads as an
-		// `agent` of the same name in the ancestry set.
-		expect(workflowTag('x')).not.toBe(agentTag('x'))
-	})
-})
-
-describe('workflow-tool result mapping (W-c2 — WorkflowResult → the handler summary)', () => {
-	it('workflowToolSummary summarizes a run as the terminal status + the result count', () => {
-		// Build a REAL WorkflowResult (no `as`): a live workflow from `createWorkflow`, and real
-		// TaskResults from the lineage builders. The summary reads only `status` + the result count.
-		const workflowContext = buildWorkflowContext({ id: 'wf-1', name: 'WF' })
-		const phaseContext = buildPhaseContext(workflowContext, { id: 'p', name: 'P' })
-		const taskResult = (id: string, status: TaskStatus): TaskResult => ({
-			task: buildTaskContext(phaseContext, { id, name: id }),
-			phase: phaseContext,
-			workflow: workflowContext,
-			status,
-			timestamp: 0,
-		})
-		const result: WorkflowResult = {
-			workflow: createWorkflow({ id: 'wf-1', name: 'WF', phases: [] }),
-			status: 'completed',
-			results: [taskResult('t0', 'completed'), taskResult('t1', 'failed')],
-		}
-		// The PLAIN summary value the handler returns directly (NOT a ToolResult — no synthetic
-		// id/name): the ToolManager performs the one canonical wrap around it (proven in factories.test.ts).
-		expect(workflowToolSummary(result)).toEqual({ status: 'completed', count: 2 })
-	})
-})
-
-// The draft-completion + flat-steps-expansion helpers (the tool's LENIENT authoring surfaces).
-// Pure + deterministic: they auto-fill ONLY omitted identity and converge on a strict
-// definition. The factory re-validates the result against the STRICT contract before running.
-describe('completeDraft — synthesize omitted ids/names into a strict definition', () => {
-	it('fills EVERY missing id positionally + defaults each name to its (resolved) id', () => {
-		const draft: WorkflowDraft = {
-			phases: [{ tasks: [{ run: 'a' }, { run: 'b' }] }, { tasks: [{ run: 'c' }] }],
-		}
-		const definition = completeDraft(draft)
-		// The completed tree satisfies the STRICT contract (the soundness anchor).
-		expect(createWorkflowContract().is(definition)).toBe(true)
-		// Positional id scheme: wf / phase-<i> / <phaseId>-task-<j>.
-		expect(definition.id).toBe('wf')
-		expect(definition.name).toBe('wf') // name defaults to the id
-		expect(definition.phases.map((phase) => phase.id)).toEqual(['phase-0', 'phase-1'])
-		expect(definition.phases[0]?.name).toBe('phase-0')
-		expect(definition.phases[0]?.tasks.map((task) => task.id)).toEqual([
-			'phase-0-task-0',
-			'phase-0-task-1',
-		])
-		expect(definition.phases[0]?.tasks[0]?.name).toBe('phase-0-task-0')
-		expect(definition.phases[1]?.tasks[0]?.id).toBe('phase-1-task-0')
-		// `run` carries over verbatim.
-		expect(definition.phases[0]?.tasks[0]?.run).toBe('a')
-		expect(definition.phases[1]?.tasks[0]?.run).toBe('c')
-	})
-
-	it('PRESERVES a provided id/name verbatim and nests synthesized task ids under a provided phase id', () => {
-		const definition = completeDraft({
-			id: 'mine',
-			phases: [{ id: 'p', name: 'Phase', tasks: [{ name: 'T', run: 'f' }] }],
-		})
-		expect(definition.id).toBe('mine')
-		expect(definition.name).toBe('mine') // name defaulted to the PROVIDED id
-		expect(definition.phases[0]?.id).toBe('p')
-		expect(definition.phases[0]?.name).toBe('Phase') // provided name kept
-		// The task gave a name but no id → id synthesized UNDER the provided phase id; name kept.
-		expect(definition.phases[0]?.tasks[0]?.id).toBe('p-task-0')
-		expect(definition.phases[0]?.tasks[0]?.name).toBe('T')
-	})
-
-	it('carries over description / concurrency / bail unchanged', () => {
-		const definition = completeDraft({
-			description: 'desc',
-			bail: true,
-			phases: [{ description: 'pd', concurrency: 3, tasks: [] }],
-		})
-		expect(definition.description).toBe('desc')
-		expect(definition.bail).toBe(true)
-		expect(definition.phases[0]?.description).toBe('pd')
-		expect(definition.phases[0]?.concurrency).toBe(3)
-	})
-
-	it('is deterministic — the same draft always yields the same definition', () => {
-		const draft: WorkflowDraft = { phases: [{ tasks: [{ run: 'x' }] }] }
-		expect(completeDraft(draft)).toEqual(completeDraft(draft))
-	})
-
-	it('completePhaseDraft / completeTaskDraft synthesize at their own positional index', () => {
-		expect(completePhaseDraft({ tasks: [] }, 2).id).toBe('phase-2')
-		expect(completeTaskDraft({ run: 't' }, 'phase-2', 5).id).toBe('phase-2-task-5')
-	})
-})
-
-describe('expandSteps — flatten a steps blob into a one-task-phase-per-step definition', () => {
-	it('maps each step to a one-task phase IN ORDER (a step`s name becomes the task`s run)', () => {
-		const flat: WorkflowSteps = {
-			name: 'pipeline',
-			steps: [{ name: 'fetch' }, { name: 'scan' }, { name: 'audit' }],
-		}
-		const definition = expandSteps(flat)
-		expect(createWorkflowContract().is(definition)).toBe(true)
-		expect(definition.name).toBe('pipeline')
-		// One phase per step, each holding exactly one task, in order.
-		expect(definition.phases).toHaveLength(3)
-		expect(definition.phases.map((phase) => phase.tasks.length)).toEqual([1, 1, 1])
-		expect(definition.phases.map((phase) => phase.id)).toEqual(['phase-0', 'phase-1', 'phase-2'])
-		expect(definition.phases[0]?.tasks[0]?.id).toBe('phase-0-task-0')
-		// a step's `name` → the task's `run`.
-		expect(definition.phases[0]?.tasks[0]?.run).toBe('fetch')
-		expect(definition.phases[1]?.tasks[0]?.run).toBe('scan')
-		expect(definition.phases[2]?.tasks[0]?.run).toBe('audit')
-	})
-
-	it('defaults the workflow id (and name) when no name is supplied', () => {
-		const definition = expandSteps({ steps: [{ name: 'only' }] })
-		expect(definition.id).toBe('wf')
-		expect(definition.name).toBe('wf')
 	})
 })
 

@@ -106,104 +106,6 @@ export interface WorkflowDefinition {
 	readonly bail?: boolean
 }
 
-// === Draft family (the tool's LENIENT authoring surface — id/name optional)
-//
-// A DRAFT mirrors the definition family EXACTLY except `id` and `name` are OPTIONAL at
-// all three levels, so a small model can omit the six identity strings. It is NOT a
-// runtime form — `createWorkflowDraftContract` validates it (a provided id/name still
-// has `minLength: 1`, so an explicitly-empty `id: ''` is REJECTED, not "absent"), and
-// `completeDraft` synthesizes any MISSING id positionally + defaults a missing name to
-// its id, yielding a strict `WorkflowDefinition` that is THEN re-validated against the
-// strict contract before running (soundness preserved). `run` stays optional (a plain
-// name string), mirroring the definition family.
-
-/**
- * A draft task — a {@link TaskDefinition} with OPTIONAL `id` / `name`.
- *
- * @remarks
- * The tool synthesizes a missing `id` positionally and defaults a missing `name` to
- * its `id` ({@link import('./helpers.js').completeDraft}). A PROVIDED `id` / `name` is
- * preserved verbatim (and must be non-empty — the draft contract's `minLength: 1`).
- */
-export interface TaskDraft {
-	readonly id?: string
-	readonly name?: string
-	readonly description?: string
-	/** The behavior reference — a registry key resolved against {@link WorkflowFunctions} at construction; omitted ⇒ no handler. */
-	readonly run?: string
-	/** Extra attempts after the first on failure (a non-negative integer); overrides the phase Runner default. Execution-only. */
-	readonly retries?: number
-	/** The per-attempt deadline in milliseconds (a non-negative integer); overrides the phase Runner default. Execution-only. */
-	readonly timeout?: number
-}
-
-/** A draft phase — a {@link PhaseDefinition} with OPTIONAL `id` / `name` and {@link TaskDraft} tasks. */
-export interface PhaseDraft {
-	readonly id?: string
-	readonly name?: string
-	readonly description?: string
-	readonly tasks: readonly TaskDraft[]
-	/** Max tasks in flight at once (a resource throttle); omitted ⇒ unbounded. */
-	readonly concurrency?: number
-	/** The per-phase failure-policy OVERRIDE; omitted ⇒ inherits the workflow `bail` (`effectiveBail = phase.bail ?? workflow.bail`). */
-	readonly bail?: boolean
-}
-
-/**
- * A draft workflow — a {@link WorkflowDefinition} with OPTIONAL `id` / `name` at all
- * three levels (workflow / phase / task).
- *
- * @remarks
- * The lenient authoring form `createWorkflowDraftContract` validates and
- * {@link import('./helpers.js').completeDraft} completes into a strict
- * {@link WorkflowDefinition}. `run` stays optional (a plain name string); the `bail`
- * policy carries over.
- */
-export interface WorkflowDraft {
-	readonly id?: string
-	readonly name?: string
-	readonly description?: string
-	readonly phases: readonly PhaseDraft[]
-	/** Failure policy: `false` (default) continues gracefully, `true` halts on the first failure. */
-	readonly bail?: boolean
-}
-
-// === Flat-steps family (the tool's ADVERTISED authoring surface — the simplest form)
-//
-// The deliberately-reduced surface (AGENTS §21) `createWorkflowTool` advertises as its
-// `parameters`: a flat ordered list of steps, each a `{ name }`. The tool expands
-// each step (via `expandSteps`) into its own one-task phase, in order, then validates
-// against the STRICT contract. The full nested form is still accepted (the tool
-// branches on the args' shape).
-
-/**
- * One flat step — `{ name }` — the building block of a {@link WorkflowSteps} blob.
- *
- * @remarks
- * `name` is the REGISTERED behavior name the step runs (it becomes the task's `run`,
- * NOT a human label) — resolved against a workflow-level {@link WorkflowFunctions}
- * registry at construction.
- */
-export interface WorkflowStep {
-	/** The registered behavior name this step runs (becomes the task's `run`). */
-	readonly name: string
-}
-
-/**
- * The FLAT authoring blob `createWorkflowTool` advertises — `{ name?, steps }` — the
- * simplest surface a small model can fill.
- *
- * @remarks
- * Each {@link WorkflowStep} becomes a one-task phase, in order
- * ({@link import('./helpers.js').expandSteps}); `name` is the optional workflow name
- * (defaulted when omitted). The expanded tree is validated against the STRICT
- * {@link import('./factories.js').createWorkflowContract} gate before running.
- */
-export interface WorkflowSteps {
-	readonly name?: string
-	readonly steps: readonly WorkflowStep[]
-}
-
 // === Context chain (lineage carried back UP the tree)
 
 /**
@@ -325,21 +227,21 @@ export interface PhaseUpdate {
  *   the offending current status + requested transition in the error `context`.
  * - `RESTORE` — a {@link import('./factories.js').restoreWorkflow} given a structurally
  *   invalid {@link WorkflowSnapshot} (a status outside the lifecycle vocabulary).
- * - `DEPTH` — a nested-workflow dispatch (W-c2) that the runner's depth / cycle guard
- *   rejected: running it would push the nested-workflow chain past
- *   {@link import('./constants.js').MAX_WORKFLOW_DEPTH}, OR its target agent (or a
- *   workflow it would author) is already an ancestor of the current run (a re-entry
- *   cycle). Raised on BOTH seams of the W-c2 recursion — an `agent`-task dispatch
- *   (`fail`ed with this code; it never runs) AND the
- *   {@link import('./factories.js').createWorkflowTool} handler (thrown, then ISOLATED
- *   by the `@orkestrel/agent` package's `ToolManager` into the tool
- *   result's `error`). The error `context` names the offending agent / workflow id + the depth.
- * - `TOOL` — the {@link import('./factories.js').createWorkflowTool} handler was handed
- *   a MALFORMED / over-constraint authored args blob (e.g. an empty `id`, `concurrency: 0`)
- *   that the contract rejected, so no workflow ran. The handler THROWS it (rather than
- *   returning a failure result), and the `@orkestrel/agent` package's `ToolManager`
- *   ISOLATES the throw into the canonical tool result's top-level `error` (AGENTS §14 — the
- *   universal tool-handler contract); the error `context` names the wrapped workflow id.
+ * - `DEPTH` — a nested-workflow dispatch (W-c2) that a depth / cycle guard rejected:
+ *   running it would push the nested-workflow chain past a bounded max depth, OR its
+ *   target agent (or a workflow it would author) is already an ancestor of the current
+ *   run (a re-entry cycle). Public type surface consumed by the `@orkestrel/tool`
+ *   package's workflow-tool / agent-function adapters, which construct
+ *   {@link import('./errors.js').WorkflowError}s with this code (thrown, then ISOLATED
+ *   by that package's `ToolManager` into the tool result's `error`). The error `context`
+ *   names the offending agent / workflow id + the depth.
+ * - `TOOL` — a workflow-authoring tool handler (in `@orkestrel/tool`) was handed a
+ *   MALFORMED / over-constraint authored args blob (e.g. an empty `id`, `concurrency: 0`)
+ *   that {@link import('./factories.js').createWorkflowContract} rejected, so no workflow
+ *   ran. Public type surface: `@orkestrel/tool` constructs this code and THROWS it
+ *   (rather than returning a failure result); its `ToolManager` ISOLATES the throw into
+ *   the canonical tool result's top-level `error` (AGENTS §14 — the universal
+ *   tool-handler contract); the error `context` names the wrapped workflow id.
  * - `MUTATION` — a GATED structural or patch edit was refused: a duplicate id on
  *   `append`/`add`, a target that does not exist or is not `pending`, an out-of-bounds
  *   `index`, a patch that failed shaper validation, or a live structural edit refused by
@@ -1572,8 +1474,8 @@ export interface WorkflowResult {
  *
  * The engine itself carries NO nesting bookkeeping — the depth / cycle guard for a nested
  * `agent` → workflow-tool → workflow chain lives entirely in the OPT-IN adapter factories
- * ({@link import('./factories.js').createAgentFunction}, {@link import('./factories.js').createWorkflowTool}),
- * closed over their own `depth` / `ancestry`, never threaded through `execute`'s options.
+ * shipped by `@orkestrel/tool`, closed over their own `depth` / `ancestry`, never threaded
+ * through `execute`'s options.
  */
 export type WorkflowRunOptions = WorkflowOptions & {
 	readonly signal?: AbortSignal
@@ -1589,9 +1491,8 @@ export type WorkflowRunOptions = WorkflowOptions & {
  * The runner is a PURE engine — it carries no `functions` / `tools` / `agents` registry
  * (each live task already resolved its own handler at construction from
  * {@link WorkflowOptions.functions}); wiring a `function`-form task to a tool or an agent is
- * an OPT-IN concern of `factories.ts`'s adapter factories
- * ({@link import('./factories.js').createToolFunction}, {@link import('./factories.js').createAgentFunction}),
- * which a caller composes into its OWN `functions` registry.
+ * an OPT-IN concern of the `@orkestrel/tool` package's adapter factories, which a caller
+ * composes into its OWN `functions` registry.
  * - `scheduler` — the {@link SchedulerInterface} that paces the tree (a cooperative
  *   `yield` between phases). Omitted ⇒ the shipped cross-environment default
  *   ({@link createScheduler}).
@@ -1603,58 +1504,6 @@ export type WorkflowRunOptions = WorkflowOptions & {
  */
 export interface WorkflowRunnerOptions {
 	readonly scheduler?: SchedulerInterface
-}
-
-/**
- * Options for {@link import('./factories.js').createAgentFunction} — the OPT-IN adapter that
- * wraps a live `AgentInterface` (`@orkestrel/agent`) as a {@link WorkflowFunction}, folding a
- * nested workflow-authoring depth / cycle guard into its closure.
- *
- * @remarks
- * All fields are optional: omitted entirely, the adapter runs the agent with no nested
- * workflow tool bound and no depth/cycle bound (depth `0`, empty ancestry).
- * - `runner` — when supplied, the adapter BINDS a depth/cycle-aware
- *   {@link import('./factories.js').createWorkflowTool} onto the agent's `context.tools` (the
- *   propagation seam), so the agent can author + run a NESTED workflow through it. Omitted ⇒
- *   the agent runs with no workflow tool bound.
- * - `depth` — this invocation's nesting depth (default `0`); the bound workflow tool runs its
- *   nested workflow at `depth + 1`, bounded by {@link import('./constants.js').MAX_WORKFLOW_DEPTH}.
- * - `ancestry` — the workflow / agent identifiers already in this run chain (default empty); a
- *   cycle (this agent already present) is rejected with a typed `DEPTH`
- *   {@link import('./errors.js').WorkflowError}.
- */
-export interface AgentFunctionOptions {
-	readonly runner?: WorkflowRunnerInterface
-	readonly depth?: number
-	readonly ancestry?: readonly string[]
-}
-
-/**
- * Options for {@link import('./factories.js').createWorkflowTool} — the depth + ancestry the
- * wrapped {@link WorkflowDefinition} runs the NESTED workflow at when an LLM invokes the tool.
- *
- * @remarks
- * This is the PROPAGATION carrier across the agent/tool boundary. A `Tool`'s handler receives
- * ONLY the model-supplied `args` (no ambient context, no signal — see
- * the `@orkestrel/agent` package's `ToolOptions`), so the run's position in the
- * workflow→agent→workflow chain CANNOT be threaded through a tool call at runtime. Instead the
- * runner CLOSES it over the tool at BIND time: when it dispatches an `agent` task at depth `D`
- * with ancestry `A`, it builds the agent's workflow tool with `{ depth: D, ancestry: A }`, so
- * the handler's closure carries them. On invocation the handler runs the nested workflow at
- * `depth: D + 1` with `ancestry: A ∪ { workflow:<id> }` — bounded by
- * {@link import('./constants.js').MAX_WORKFLOW_DEPTH} (an over-deep / cyclic nested run THROWS a
- * typed `DEPTH` {@link import('./errors.js').WorkflowError}, which the `ToolManager` isolates into
- * the tool result's top-level `error`, AGENTS §14).
- *
- * Both fields are OPTIONAL: a workflow tool built for a TOP-LEVEL caller (not by the runner's
- * agent-task binding) omits them — its nested run starts the chain at depth `1` with the bare
- * `workflow:<id>` ancestry.
- */
-export interface WorkflowToolOptions {
-	/** The depth the INVOKING agent runs at; the nested workflow runs at `depth + 1`. Default `0`. */
-	readonly depth?: number
-	/** The ancestry of the invoking run; the nested run extends it with its own `workflow:<id>`. Default empty. */
-	readonly ancestry?: readonly string[]
 }
 
 /**

@@ -20,11 +20,8 @@ import {
 // contract is typed `ContractInterface<WorkflowDefinition>` at the factory.
 //
 // Per-field `description`s ride INSIDE the advertised JSON Schema (compilers.ts
-// `compileSchema` emits a shape's `description` verbatim), so a small model authoring
-// a tree through `createWorkflowTool` gets field-level guidance — especially on the
-// `via` discriminant and the `run` union, which would otherwise be bare `enum`s with
-// zero hint. The guidance is advisory metadata only: it never changes what the guard /
-// parser accept (the contract stays byte-for-byte strict).
+// `compileSchema` emits a shape's `description` verbatim) — advisory metadata only: it
+// never changes what the guard / parser accept (the contract stays byte-for-byte strict).
 
 // The description-carrying `bail` toggle rides on the shared `literalShape` (the
 // `@orkestrel/contract` module) — a described single-value literal is just
@@ -104,142 +101,6 @@ export const workflowShape = objectShape({
 				'Failure policy: false (default) continues gracefully, true halts on the first failure.',
 		}),
 	),
-})
-
-// === Draft + flat-steps shapes (the tool's LENIENT authoring surfaces)
-//
-// These shapes are NOT part of the canonical `WorkflowDefinition` contract — they are
-// the WIDENED authoring surfaces `createWorkflowTool` accepts so a small model can
-// author a complete tree without emitting the full strict form. Both converge on the
-// STRICT `createWorkflowContract().is` gate after expansion/completion (factories.ts),
-// so soundness is preserved: the canonical contract stays unchanged and strict.
-
-/**
- * The shape of a TASK in a draft workflow — identical to {@link taskShape} EXCEPT `id`
- * and `name` are OPTIONAL (the tool synthesizes any missing one positionally).
- *
- * @remarks
- * A PROVIDED `id` / `name` still carries `minLength: 1`, so an explicitly-empty `id: ''`
- * is INVALID (rejected by the draft contract), never auto-filled — keeping "garbage"
- * distinct from "omitted". `run` stays optional, mirroring {@link taskShape}.
- */
-export const taskDraftShape = objectShape({
-	id: optionalShape(stringShape({ min: 1, description: 'Task id; auto-filled when omitted.' })),
-	name: optionalShape(
-		stringShape({ min: 1, description: 'Task name; defaults to the id when omitted.' }),
-	),
-	description: optionalShape(stringShape({ description: 'Optional task description.' })),
-	run: optionalShape(
-		stringShape({
-			min: 1,
-			description:
-				'The registered behavior name to invoke (a registry key, not a label); omitted has no handler.',
-		}),
-	),
-	retries: optionalShape(
-		integerShape({
-			min: 0,
-			description:
-				'Extra attempts after the first on failure; overrides the phase default. Omitted means none.',
-		}),
-	),
-	timeout: optionalShape(
-		integerShape({
-			min: 0,
-			description:
-				'Per-attempt deadline in milliseconds; overrides the phase default. Omitted means no deadline.',
-		}),
-	),
-})
-
-/**
- * The shape of a PHASE in a draft workflow — identical to {@link phaseShape} EXCEPT
- * `id` and `name` are OPTIONAL, and its tasks are {@link taskDraftShape}s.
- */
-export const phaseDraftShape = objectShape({
-	id: optionalShape(stringShape({ min: 1, description: 'Phase id; auto-filled when omitted.' })),
-	name: optionalShape(
-		stringShape({ min: 1, description: 'Phase name; defaults to the id when omitted.' }),
-	),
-	description: optionalShape(stringShape({ description: 'Optional phase description.' })),
-	tasks: arrayShape(taskDraftShape, { description: 'The phase tasks; they run CONCURRENTLY.' }),
-	concurrency: optionalShape(
-		integerShape({
-			min: 1,
-			description: 'Max tasks in flight at once (a resource throttle); omitted means unbounded.',
-		}),
-	),
-	bail: optionalShape(
-		literalShape([true, false], {
-			description: 'Per-phase failure-policy override; omitted inherits the workflow bail.',
-		}),
-	),
-})
-
-/**
- * The shape of a DRAFT workflow — identical to {@link workflowShape} EXCEPT `id` and
- * `name` are OPTIONAL at all three levels (workflow / phase / task), so a small model
- * can omit the six identity strings and let the tool synthesize them positionally.
- *
- * @remarks
- * The lenient counterpart {@link import('./factories.js').createWorkflowDraftContract}
- * compiles. `run` stays required; a provided `id` / `name` still has `minLength: 1` (so an
- * explicitly-empty `id: ''` is REJECTED, not auto-filled). After
- * {@link import('./helpers.js').completeDraft} fills the missing ids/names, the result is
- * validated against the STRICT {@link import('./factories.js').createWorkflowContract} gate
- * before running.
- */
-export const workflowDraftShape = objectShape({
-	id: optionalShape(stringShape({ min: 1, description: 'Workflow id; auto-filled when omitted.' })),
-	name: optionalShape(
-		stringShape({ min: 1, description: 'Workflow name; defaults to the id when omitted.' }),
-	),
-	description: optionalShape(stringShape({ description: 'Optional workflow description.' })),
-	phases: arrayShape(phaseDraftShape, {
-		description: 'The workflow phases; they run SEQUENTIALLY, in order.',
-	}),
-	bail: optionalShape(
-		literalShape([true, false], {
-			description:
-				'Failure policy: false (default) continues gracefully, true halts on the first failure.',
-		}),
-	),
-})
-
-/**
- * The shape of ONE flat step — `{ name }` — the building block of
- * {@link workflowStepsShape}.
- *
- * @remarks
- * `name` is the REGISTERED behavior name the step runs (it becomes the task's `run`). The
- * tool expands each step into a one-task phase, in order
- * ({@link import('./helpers.js').expandSteps}).
- */
-export const stepShape = objectShape({
-	name: stringShape({
-		min: 1,
-		description: 'The registered behavior name this step runs (becomes the task run).',
-	}),
-})
-
-/**
- * The FLAT authoring shape `createWorkflowTool` advertises as its `parameters` — the
- * simplest surface a small model can fill: `{ name?, steps: [{ name }] }`.
- *
- * @remarks
- * The deliberately-reduced surface (AGENTS §21): a flat ordered list of steps, each a
- * `{ name }`. The tool EXPANDS it ({@link import('./helpers.js').expandSteps}) into a
- * full {@link import('./types.js').WorkflowDefinition} — one one-task phase per step, in
- * order — then validates against the STRICT
- * {@link import('./factories.js').createWorkflowContract} gate. The full nested form is
- * STILL accepted by the tool (it branches on the args' shape) and is documented as the
- * advanced escape-hatch in the tool's description — but THIS is what `parameters` advertises.
- */
-export const workflowStepsShape = objectShape({
-	name: optionalShape(stringShape({ min: 1, description: 'Optional workflow name.' })),
-	steps: arrayShape(stepShape, {
-		description: 'The ordered steps to run, one after another (each becomes a one-task phase).',
-	}),
 })
 
 // === Update (patch) shapes — the mutation API's `update` payload validation

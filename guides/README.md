@@ -53,11 +53,6 @@ for `@orkestrel/timeout` — a runtime dependency. It documents **that
 package's** surface (the `Timeout` class and `TimeoutInterface`), not
 anything sourced in this repo; it is kept here for the same reason.
 
-[`src/agent.md`](src/agent.md) is a byte-identical mirror of the guide for
-`@orkestrel/agent` — a runtime dependency. It documents **that package's**
-surface, not anything sourced in this repo; it is kept here for the same
-reason.
-
 [`src/guide.md`](src/guide.md) is a byte-identical mirror of the guide for
 `@orkestrel/guide` — the devDependency powering this repo's guides-parity test
 suite (`tests/guides/src/parity.test.ts`). It documents **that package's**

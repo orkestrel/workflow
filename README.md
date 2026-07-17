@@ -7,8 +7,8 @@ per-phase `Runner`, `Abort`, `Timeout`, `Budget`, and a cooperative
 cross-environment `Scheduler`) rather than re-implementing its own
 concurrency / retry / abort machinery. Each task's `run` is a plain
 behavior-name string resolved once into a `handler`; wiring a task to a tool
-or an agent is an opt-in `createToolFunction` / `createAgentFunction`
-adapter composed into the caller's own `functions` registry.
+or an agent is an opt-in adapter shipped by the separate `@orkestrel/tool`
+package, composed into the caller's own `functions` registry.
 
 ## Install
 
@@ -26,9 +26,9 @@ npm install @orkestrel/workflow
 ## Status
 
 Pre-release (`0.0.1`): the definition contract, the live entity tree, the
-pure-engine runner (with a `run`-string / `handler` model, the opt-in
-`createToolFunction` / `createAgentFunction` adapters, and the
-depth/cycle-bounded agent-native recursion), the durable `WorkflowStore`
+pure-engine runner (a `run`-string / `handler` model — the opt-in tool/agent
+adapters and the depth/cycle-bounded agent-native recursion now ship in the
+separate `@orkestrel/tool` package), the durable `WorkflowStore`
 (in-memory + driver-pluggable), and the cooperative `Scheduler` (the
 cross-environment default plus the browser and Node environment backends)
 are all implemented and tested, but the public API is still unstable and

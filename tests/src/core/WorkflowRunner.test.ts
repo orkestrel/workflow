@@ -1,4 +1,3 @@
-import type { AgentInterface } from '@orkestrel/agent'
 import type {
 	TaskControllerInterface,
 	WorkflowDefinition,
@@ -6,43 +5,27 @@ import type {
 	WorkflowRunnerInterface,
 	WorkflowRunnerOptions,
 } from '@src/core'
-import { createAgent, createTool, createToolManager } from '@orkestrel/agent'
 import { createTokenBudget } from '@orkestrel/budget'
-import {
-	createAgentFunction,
-	createScheduler,
-	createToolFunction,
-	createWorkflow,
-	createWorkflowRunner,
-	isWorkflowError,
-	MAX_WORKFLOW_DEPTH,
-} from '@src/core'
+import { createScheduler, createWorkflow, createWorkflowRunner, isWorkflowError } from '@src/core'
 import { describe, expect, it, vi } from 'vitest'
 import type { TestGateInterface } from '../../setup.js'
-import {
-	createGate,
-	createRecorder,
-	createRecordingScheduler,
-	createScriptedProvider,
-	waitForDelay,
-} from '../../setup.js'
+import { createGate, createRecorder, createRecordingScheduler, waitForDelay } from '../../setup.js'
 
 // The W-c1 WorkflowRunner — the thin orchestrator that EXECUTES a live W-b tree by COMPOSING the
 // shipped substrate (one Runner/Queue per phase, the bail policy mapped onto fail-fast vs
 // settle-all, the abort/timeout/budget fold via AbortSignal.any, the scheduler pacing). Real data
-// stubs — scripted WorkflowFunction handlers + real ToolManager/agents, NO mocks (AGENTS §16).
-// Determinism comes from gates (createGate), not wall-clock races.
+// stubs — scripted WorkflowFunction handlers, NO mocks (AGENTS §16). Determinism comes from gates
+// (createGate), not wall-clock races.
 //
 // PROGRAMMATIC CORE, DECLARATIVE SHELL (this wave's redesign): `TaskDefinition.run` is a PLAIN
 // STRING resolved ONCE at construction against a `WorkflowOptions.functions` registry into the
 // live task's `handler`. The runner itself is a PURE engine — it carries no `functions` / `tools`
 // / `agents` of its own; every `execute(...)` call below threads `functions` through the RUN
 // options (`WorkflowRunOptions extends WorkflowOptions`), never through `createWorkflowRunner`.
-// `createToolFunction` / `createAgentFunction` (factories.ts) are the OPT-IN adapters a caller
-// composes into its OWN `functions` registry — their own dedicated coverage (happy path, error
-// paths, the depth/cycle guard, the tool-binding seam) lives in `factories.test.ts`; this file
-// keeps to the ENGINE's own behavior (dispatch, concurrency, bail, retries/timeout, abort/pause/
-// stop/destroy, live mid-run mutation), touching the adapters only enough to prove they compose.
+// The `@orkestrel/tool` package ships the OPT-IN tool/agent adapters a caller composes into its
+// OWN `functions` registry — their own dedicated coverage lives in that package; this file keeps
+// to the ENGINE's own behavior (dispatch, concurrency, bail, retries/timeout, abort/pause/stop/
+// destroy, live mid-run mutation) against plain `WorkflowFunction`s.
 
 const ROUND_TRIP_TIMEOUT_MS = 30_000
 vi.setConfig({ testTimeout: ROUND_TRIP_TIMEOUT_MS })
@@ -130,31 +113,6 @@ const parkUntilDeadline: WorkflowFunction = (controller: TaskControllerInterface
 		controller.signal.addEventListener('abort', () => resolve('timed-out'), { once: true })
 	})
 
-// ── W-c2 agent-task helpers (real agents + scripted providers, wired through `createAgentFunction`) ──
-
-/** A single-phase, single-task workflow whose lone task runs `name` (registered via `functions`). */
-function agentDefinition(name: string): WorkflowDefinition {
-	return {
-		id: 'wf',
-		name: 'WF',
-		phases: [{ id: 'a', name: 'A', tasks: [{ id: 't', name: 'T', run: name }] }],
-	}
-}
-
-// A REAL `ProviderInterface` (via the shared scripted provider, with a `delay` so an abort mid-run
-// has a real window to land) whose per-turn content lets `parkedProvider`-style abort tests observe
-// the folded signal. Used with `createAgentFunction` for the abort-fold coverage below.
-function parkedAgent(onAbort: () => void, delay = 200): AgentInterface {
-	const provider = createScriptedProvider([{ content: 'audited' }], { delay })
-	const agent = createAgent(provider)
-	const original = agent.abort.bind(agent)
-	agent.abort = (reason?: unknown) => {
-		onAbort()
-		original(reason)
-	}
-	return agent
-}
-
 describe('WorkflowRunner — phases sequential, tasks concurrent', () => {
 	it('starts every task of a phase before any settles, and phase 2 only after phase 1 settles', async () => {
 		const starts = createRecorder<readonly [string]>()
@@ -204,25 +162,20 @@ describe('WorkflowRunner — phases sequential, tasks concurrent', () => {
 })
 
 describe('WorkflowRunner — dispatch by function-registry name', () => {
-	it('a task registered via createToolFunction invokes the real tool and completes', async () => {
-		const tools = createToolManager()
+	it('a task registered via a plain WorkflowFunction runs it and completes', async () => {
 		const seen = createRecorder<readonly [Readonly<Record<string, unknown>>]>()
-		tools.add(
-			createTool({
-				name: 'scan',
-				execute: (args) => {
-					seen.handler(args)
-					return 'scanned'
-				},
-			}),
-		)
 		const definition: WorkflowDefinition = {
 			id: 'wf',
 			name: 'WF',
 			phases: [{ id: 'a', name: 'A', tasks: [{ id: 't', name: 'T', run: 'scan' }] }],
 		}
 		const result = await pacedRunner().execute(definition, {
-			functions: { scan: createToolFunction(tools, 'scan') },
+			functions: {
+				scan: (controller) => {
+					seen.handler(controller.input)
+					return 'scanned'
+				},
+			},
 		})
 		expect(result.status).toBe('completed')
 		expect(result.workflow.phase('a')?.task('t')?.result?.result).toEqual({
@@ -232,16 +185,7 @@ describe('WorkflowRunner — dispatch by function-registry name', () => {
 		expect(seen.count).toBe(1)
 	})
 
-	it('a failing tool (its result carries an error) fails the leaf', async () => {
-		const tools = createToolManager()
-		tools.add(
-			createTool({
-				name: 'boom',
-				execute: () => {
-					throw new Error('tool exploded')
-				},
-			}),
-		)
+	it('a failing function fails the leaf', async () => {
 		const definition: WorkflowDefinition = {
 			id: 'wf',
 			name: 'WF',
@@ -249,7 +193,11 @@ describe('WorkflowRunner — dispatch by function-registry name', () => {
 			phases: [{ id: 'a', name: 'A', tasks: [{ id: 't', name: 'T', run: 'boom' }] }],
 		}
 		const result = await pacedRunner().execute(definition, {
-			functions: { boom: createToolFunction(tools, 'boom') },
+			functions: {
+				boom: () => {
+					throw new Error('boom exploded')
+				},
+			},
 		})
 		expect(result.status).toBe('completed')
 		const recorded = result.workflow.phase('a')?.task('t')?.result
@@ -257,7 +205,6 @@ describe('WorkflowRunner — dispatch by function-registry name', () => {
 		expect(recorded?.result?.success).toBe(false)
 		const error = recorded?.result?.success === false ? recorded.result.error : undefined
 		expect(error).toBeInstanceOf(Error)
-		expect(error instanceof Error ? error.cause : undefined).toBe('tool exploded')
 	})
 
 	it('a no-handler task auto-completes (an unregistered function name)', async () => {
@@ -278,68 +225,6 @@ describe('WorkflowRunner — dispatch by function-registry name', () => {
 		const result = await pacedRunner().execute(definition)
 		expect(result.status).toBe('completed')
 		expect(result.workflow.phase('a')?.task('t')?.status).toBe('completed')
-	})
-
-	it('an agent task registered via createAgentFunction runs the real agent and boxes its result', async () => {
-		const agent = createAgent(createScriptedProvider([{ content: 'audited' }]))
-		const result = await pacedRunner().execute(agentDefinition('auditor'), {
-			functions: { auditor: createAgentFunction(agent) },
-		})
-		expect(result.status).toBe('completed')
-		const value = result.workflow.phase('a')?.task('t')?.result?.result
-		const content =
-			value?.success === true &&
-			typeof value.value === 'object' &&
-			value.value !== null &&
-			'content' in value.value
-				? value.value.content
-				: undefined
-		expect(content).toBe('audited')
-	})
-})
-
-describe('WorkflowRunner — all three dispatch branches compose in one run (P2.1)', () => {
-	it('a function + a tool-adapter + an agent-adapter task across 3 phases all complete and each is recorded', async () => {
-		const tools = createToolManager()
-		tools.add(createTool({ name: 'scan', execute: () => 'scanned' }))
-		const agent = createAgent(createScriptedProvider([{ content: 'audited' }]))
-		const fn: WorkflowFunction = (controller) => `built ${controller.task.id}`
-		const definition: WorkflowDefinition = {
-			id: 'wf',
-			name: 'WF',
-			phases: [
-				{ id: 'p1', name: 'P1', tasks: [{ id: 'fn', name: 'Fn', run: 'f' }] },
-				{ id: 'p2', name: 'P2', tasks: [{ id: 'tl', name: 'Tl', run: 'scan' }] },
-				{ id: 'p3', name: 'P3', tasks: [{ id: 'ag', name: 'Ag', run: 'auditor' }] },
-			],
-		}
-		const result = await pacedRunner().execute(definition, {
-			functions: {
-				f: fn,
-				scan: createToolFunction(tools, 'scan'),
-				auditor: createAgentFunction(agent),
-			},
-		})
-		expect(result.status).toBe('completed')
-		expect(result.workflow.phase('p1')?.task('fn')?.status).toBe('completed')
-		expect(result.workflow.phase('p2')?.task('tl')?.status).toBe('completed')
-		expect(result.workflow.phase('p3')?.task('ag')?.status).toBe('completed')
-		expect(result.results.map((r) => r.task.id)).toEqual(['fn', 'tl', 'ag'])
-		const fnValue = result.workflow.phase('p1')?.task('fn')?.result?.result
-		expect(fnValue).toEqual({ success: true, value: 'built fn' })
-		expect(result.workflow.phase('p2')?.task('tl')?.result?.result).toEqual({
-			success: true,
-			value: 'scanned',
-		})
-		const agValue = result.workflow.phase('p3')?.task('ag')?.result?.result
-		const agContent =
-			agValue?.success === true &&
-			typeof agValue.value === 'object' &&
-			agValue.value !== null &&
-			'content' in agValue.value
-				? agValue.value.content
-				: undefined
-		expect(agContent).toBe('audited')
 	})
 })
 
@@ -1034,72 +919,12 @@ describe('WorkflowRunner — pacing', () => {
 	})
 })
 
-describe('WorkflowRunner — agent-adapter task dispatch composes for real (W-c2)', () => {
-	it('fails the task when the agent throws (a genuine provider error)', async () => {
-		// A REAL `ProviderInterface` whose `stream` yields a reachable no-op delta then throws a
-		// non-abort error — drives `agent.generate()` to REJECT (a genuine provider failure, not a
-		// cancel), so the dispatched agent task `fail`s.
-		async function* stream(): AsyncGenerator<{ type: 'content'; text: string }, never> {
-			yield { type: 'content', text: '' }
-			throw new Error('provider boom')
-		}
-		const agent = createAgent({
-			id: 'throwing',
-			name: 'throwing',
-			stream,
-			async generate() {
-				throw new Error('provider boom')
-			},
-		})
-		const result = await pacedRunner().execute(agentDefinition('auditor'), {
-			functions: { auditor: createAgentFunction(agent) },
-		})
-		expect(result.status).toBe('completed')
-		const recorded = result.workflow.phase('a')?.task('t')?.result
-		expect(recorded?.status).toBe('failed')
-		expect(recorded?.result?.success).toBe(false)
-	})
-
-	it('a workflow cancel aborts the in-flight agent (the agent run sees the folded signal)', async () => {
-		const sawAbort = createRecorder<readonly []>()
-		const controllerAbort = new AbortController()
-		const agent = parkedAgent(() => sawAbort.handler())
-		const running = pacedRunner().execute(agentDefinition('auditor'), {
-			functions: { auditor: createAgentFunction(agent) },
-			signal: controllerAbort.signal,
-		})
-		await waitForDelay(20)
-		controllerAbort.abort(new Error('cancelled'))
-		const result = await running
-		expect(sawAbort.count).toBe(1)
-		expect(result.status).toBe('stopped')
-		expect(result.workflow.phase('a')?.task('t')?.status).toBe('skipped')
-	})
-
-	it('a task registered against an over-deep createAgentFunction fails with a typed DEPTH error (the guard lives in the adapter, not the engine)', async () => {
-		const provider = createScriptedProvider([{ content: 'x' }])
-		const agent = createAgent(provider)
-		const result = await pacedRunner().execute(agentDefinition('auditor'), {
-			functions: { auditor: createAgentFunction(agent, { depth: MAX_WORKFLOW_DEPTH }) },
-		})
-		const recorded = result.workflow.phase('a')?.task('t')?.result
-		expect(recorded?.status).toBe('failed')
-		const error = recorded?.result?.success === false ? recorded.result.error : undefined
-		expect(isWorkflowError(error) ? error.code : undefined).toBe('DEPTH')
-		expect(provider.started).toBe(0)
-	})
-})
-
-// NOTE on coverage reallocation (deviation-free, reasoned): the OLD suite's "fresh agent per
-// dispatch" (P2.5) and "throttle bounds many concurrent agent tasks" (P3.5) tests relied on a
-// per-call `WorkflowAgents` RESOLVER the engine invoked freshly on EVERY dispatch — that registry
-// was deleted with the redesign (a task's handler resolves ONCE at construction against
-// `WorkflowOptions.functions`), so "a fresh agent per task" is now simply "register a distinct
-// `createAgentFunction(agent)` per task id" — an authoring concern, not an engine behavior worth
-// a dedicated engine-level test. The engine-level depth/cycle-guard exhaustive matrix (off-by-one,
-// cycle-vs-depth context divergence, cross-boundary propagation through a bound workflow tool) now
-// lives with the adapter it belongs to — `createAgentFunction` / `createWorkflowTool` coverage in
-// `factories.test.ts` — rather than duplicated here against the pure engine.
+// NOTE on coverage reallocation (deviation-free, reasoned): the workflow↔agent adapter dispatch
+// (`createAgentFunction` / `createToolFunction` / `createWorkflowTool`) was EXTRACTED to the
+// `@orkestrel/tool` package, which now owns its own dedicated coverage (happy path, error paths,
+// the depth/cycle guard, the tool-binding seam, abort-fold). This engine-level suite keeps to the
+// PURE engine's own behavior (dispatch, concurrency, bail, retries/timeout, abort/pause/stop/
+// destroy, live mid-run mutation) against plain `WorkflowFunction`s, never a tool/agent package.
 
 describe('WorkflowRunner — execute(workflow) parity with execute(definition)', () => {
 	it('drives the caller-owned entity with the same WorkflowResult semantics; status transitions are observable live and snapshot() mid-run shows running states', async () => {

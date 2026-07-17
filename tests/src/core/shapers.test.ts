@@ -1,16 +1,6 @@
 import type { WorkflowDefinition } from '@src/core'
 import { literalShape } from '@orkestrel/contract'
-import {
-	createWorkflowContract,
-	phaseDraftShape,
-	phaseShape,
-	stepShape,
-	taskDraftShape,
-	taskShape,
-	workflowDraftShape,
-	workflowShape,
-	workflowStepsShape,
-} from '@src/core'
+import { createWorkflowContract, phaseShape, taskShape, workflowShape } from '@src/core'
 import { describe, expect, it } from 'vitest'
 
 // The workflow contract shape VALUES are well-formed `ContractShape` descriptors
@@ -115,47 +105,6 @@ describe('per-field descriptions (Rank 1)', () => {
 		expect(
 			typeof (run.type === 'optional' && run.inner.type === 'string' && run.inner.description),
 		).toBe('string')
-	})
-})
-
-// Rank 2 — the draft shapes mirror the strict shapes EXCEPT id/name are optional; run stays optional
-// in both, mirroring taskShape.
-describe('workflowDraftShape / phaseDraftShape / taskDraftShape — id/name optional', () => {
-	it('makes id and name OPTIONAL at all three levels, run stays optional (mirrors taskShape)', () => {
-		expect(workflowDraftShape.properties.id.type).toBe('optional')
-		expect(workflowDraftShape.properties.name.type).toBe('optional')
-		expect(phaseDraftShape.properties.id.type).toBe('optional')
-		expect(phaseDraftShape.properties.name.type).toBe('optional')
-		expect(taskDraftShape.properties.id.type).toBe('optional')
-		expect(taskDraftShape.properties.name.type).toBe('optional')
-		expect(taskDraftShape.properties.run.type).toBe('optional')
-	})
-
-	it('a PROVIDED id still carries minLength:1 (so an explicit empty id is rejected upstream)', () => {
-		const id = workflowDraftShape.properties.id
-		expect(id.type === 'optional' && id.inner).toMatchObject({ type: 'string', min: 1 })
-	})
-
-	it('nests draft phases under the draft workflow, and draft tasks under the draft phase', () => {
-		const phases = workflowDraftShape.properties.phases
-		expect(phases.type === 'array' && phases.items).toBe(phaseDraftShape)
-		const tasks = phaseDraftShape.properties.tasks
-		expect(tasks.type === 'array' && tasks.items).toBe(taskDraftShape)
-	})
-})
-
-// Rank 3 — the FLAT advertised shape: `{ name?, steps: [{ name }] }`.
-describe('workflowStepsShape / stepShape — the flat advertised surface', () => {
-	it('holds an optional name and an array of {name} steps', () => {
-		expect(workflowStepsShape.properties.name.type).toBe('optional')
-		const steps = workflowStepsShape.properties.steps
-		expect(steps.type).toBe('array')
-		expect(steps.type === 'array' && steps.items).toBe(stepShape)
-	})
-
-	it('a step requires a non-empty `name` (the registered behavior it runs) and carries no other field', () => {
-		expect(stepShape.properties.name).toMatchObject({ type: 'string', min: 1 })
-		expect(Object.keys(stepShape.properties)).toEqual(['name'])
 	})
 })
 
