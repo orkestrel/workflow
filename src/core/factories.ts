@@ -85,6 +85,7 @@ export function createWorkflowContract(): ContractInterface<WorkflowDefinition> 
 		// re-applies the shared `stringOf` / `boundsOf` combinators after coercion),
 		// so a non-`undefined` result satisfies `is` — no guard-gate wrapper needed.
 		parse: (value) => contract.parse(value),
+		explain: (value) => contract.explain(value),
 	}
 }
 
