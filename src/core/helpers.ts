@@ -530,13 +530,7 @@ export function moveEntry<T>(
  * @returns A deferred `promise` plus its `resolve` / `reject`
  */
 export function createDeferred<T>(): DeferredInterface<T> {
-	let resolve: (value: T) => void = () => {}
-	let reject: (reason: unknown) => void = () => {}
-	const promise = new Promise<T>((res, rej) => {
-		resolve = res
-		reject = rej
-	})
-	return { promise, resolve, reject }
+	return Promise.withResolvers<T>()
 }
 
 /**

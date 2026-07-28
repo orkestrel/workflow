@@ -79,6 +79,7 @@ import { PhaseManager } from './phases/PhaseManager.js'
  *   releases any parked {@link wait} waiter, and marks {@link destroyed} — all four idempotent.
  */
 export class Workflow implements WorkflowInterface {
+	declare readonly description?: string
 	readonly #context: WorkflowContext
 	readonly #bail: boolean
 	// The EXPLICIT workflow `bail` override (`options.bail`), when one was supplied — a deliberate
@@ -115,6 +116,9 @@ export class Workflow implements WorkflowInterface {
 
 	constructor(snapshot: WorkflowSnapshot, options?: WorkflowOptions) {
 		this.#context = buildWorkflowContext(snapshot)
+		if (snapshot.description !== undefined) {
+			Object.defineProperty(this, 'description', { value: snapshot.description })
+		}
 		// The snapshot carries the policy it ran under (the self-contained durable payload), so the
 		// snapshot's `bail` is the source of truth; an explicit `options.bail` still wins when given.
 		this.#bail = options?.bail ?? snapshot.bail
@@ -122,7 +126,10 @@ export class Workflow implements WorkflowInterface {
 		// persisted per-phase bail; omitted ⇒ each phase keeps its own persisted policy (identical restore).
 		this.#bailOverride = options?.bail
 		this.#functions = options?.functions
-		this.#emitter = new Emitter<WorkflowEventMap>({ on: options?.on, error: options?.error })
+		this.#emitter = new Emitter<WorkflowEventMap>({
+			...(options?.on === undefined ? {} : { on: options.on }),
+			...(options?.error === undefined ? {} : { error: options.error }),
+		})
 		this.#created = snapshot.created
 		this.#updated = snapshot.updated
 		this.#abort = createAbort()
@@ -151,10 +158,6 @@ export class Workflow implements WorkflowInterface {
 
 	get name(): string {
 		return this.#context.name
-	}
-
-	get description(): string | undefined {
-		return this.#context.description
 	}
 
 	get context(): WorkflowContext {

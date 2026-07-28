@@ -85,9 +85,9 @@ import { TaskManager } from '../tasks/TaskManager.js'
  *   has nothing left to pause for.
  */
 export class Phase implements PhaseInterface {
+	declare readonly description?: string
 	readonly #id: string
 	#name: string
-	#description: string | undefined
 	readonly #workflow: WorkflowInterface
 	// Escalate a derived-status change UP to the parent workflow (which re-derives under `bail`)
 	// — injected by the parent so the phase needs no back-reference plumbing of its own.
@@ -130,7 +130,12 @@ export class Phase implements PhaseInterface {
 	) {
 		this.#id = snapshot.id
 		this.#name = snapshot.name
-		this.#description = snapshot.description
+		if (snapshot.description !== undefined) {
+			Object.defineProperty(this, 'description', {
+				configurable: true,
+				value: snapshot.description,
+			})
+		}
 		this.#workflow = workflow
 		this.#escalateUp = escalate
 		this.#functions = functions
@@ -142,7 +147,10 @@ export class Phase implements PhaseInterface {
 		// reads its own `#bail`.
 		this.#bail = bail ?? snapshot.bail
 		this.#concurrency = snapshot.concurrency
-		this.#emitter = new Emitter<PhaseEventMap>({ on: options?.on, error: options?.error })
+		this.#emitter = new Emitter<PhaseEventMap>({
+			...(options?.on === undefined ? {} : { on: options.on }),
+			...(options?.error === undefined ? {} : { error: options.error }),
+		})
 		// Build the live tasks positionally from the snapshot — each wired to recompute THIS phase
 		// on a transition, carrying its own restore state (status + result + metadata) and resolving
 		// its `run` name against `#functions` into its runtime handler.
@@ -168,17 +176,13 @@ export class Phase implements PhaseInterface {
 		return this.#name
 	}
 
-	get description(): string | undefined {
-		return this.#description
-	}
-
 	get context(): PhaseContext {
 		// Computed fresh so a renamed phase's context reflects its CURRENT identity — the phase's
 		// own id/name/description plus the live parent workflow context.
 		return buildPhaseContext(this.#workflow.context, {
 			id: this.#id,
 			name: this.#name,
-			...(this.#description === undefined ? {} : { description: this.#description }),
+			...(this.description === undefined ? {} : { description: this.description }),
 		})
 	}
 
@@ -345,7 +349,12 @@ export class Phase implements PhaseInterface {
 			})
 		}
 		if (value.name !== undefined) this.#name = value.name
-		if (value.description !== undefined) this.#description = value.description
+		if (value.description !== undefined) {
+			Object.defineProperty(this, 'description', {
+				configurable: true,
+				value: value.description,
+			})
+		}
 		if (value.concurrency !== undefined) this.#concurrency = value.concurrency
 		if (value.bail !== undefined) this.#bail = value.bail
 	}

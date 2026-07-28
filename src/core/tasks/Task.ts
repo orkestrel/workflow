@@ -49,6 +49,7 @@ import { canTransitionTask } from '../helpers.js'
  *   NEVER persisted; `undefined` when `run` is omitted or unregistered (the no-handler rule).
  */
 export class Task implements TaskInterface {
+	declare readonly description?: string
 	readonly #context: TaskContext
 	readonly #phase: PhaseInterface
 	readonly #workflow: WorkflowInterface
@@ -67,7 +68,6 @@ export class Task implements TaskInterface {
 	// `patch` can rename SELF without mutating the immutable lineage `#context` a `TaskResult`
 	// stamps.
 	#name: string
-	#description: string | undefined
 	// PERSISTED declarative config, carried verbatim from the TaskDefinition / TaskSnapshot.
 	readonly #run: string | undefined
 	readonly #retries: number | undefined
@@ -94,7 +94,10 @@ export class Task implements TaskInterface {
 		this.#workflow = workflow
 		this.#recompute = recompute
 		this.#metadata = options?.metadata ?? {}
-		this.#emitter = new Emitter<TaskEventMap>({ on: options?.on, error: options?.error })
+		this.#emitter = new Emitter<TaskEventMap>({
+			...(options?.on === undefined ? {} : { on: options.on }),
+			...(options?.error === undefined ? {} : { error: options.error }),
+		})
 		this.#status = status
 		// A RESTORE seeds the recorded outcome (present for a `completed` / `failed` leaf), so
 		// the result tree round-trips; a fresh leaf starts with none. A leaf's terminal status
@@ -102,7 +105,12 @@ export class Task implements TaskInterface {
 		// override field — the override round-trip lives on the DERIVED Phase / Workflow nodes.
 		this.#result = result
 		this.#name = context.name
-		this.#description = context.description
+		if (context.description !== undefined) {
+			Object.defineProperty(this, 'description', {
+				configurable: true,
+				value: context.description,
+			})
+		}
 		// Carried verbatim from the TaskDefinition / TaskSnapshot (declarative, persisted).
 		this.#run = run
 		this.#retries = retries
@@ -121,10 +129,6 @@ export class Task implements TaskInterface {
 
 	get name(): string {
 		return this.#name
-	}
-
-	get description(): string | undefined {
-		return this.#description
 	}
 
 	get context(): TaskContext {
@@ -238,7 +242,12 @@ export class Task implements TaskInterface {
 			)
 		}
 		if (value.name !== undefined) this.#name = value.name
-		if (value.description !== undefined) this.#description = value.description
+		if (value.description !== undefined) {
+			Object.defineProperty(this, 'description', {
+				configurable: true,
+				value: value.description,
+			})
+		}
 	}
 
 	snapshot(): TaskSnapshot {

@@ -1,6 +1,7 @@
 import type { SchedulerInterface, SchedulerOptions } from '@src/core'
-import { isFunction } from '@orkestrel/contract'
+import type { AnyFunction } from '@orkestrel/contract'
 import type { IdleAPI } from './types.js'
+import { isFunction } from '@orkestrel/contract'
 
 /**
  * The idle-time {@link SchedulerInterface} — a browser cooperative-yield backend whose
@@ -75,10 +76,8 @@ export class IdleScheduler implements SchedulerInterface {
 		const cancel: unknown = Reflect.get(globalThis, 'cancelIdleCallback')
 		if (!isFunction(request) || !isFunction(cancel)) return undefined
 		return {
-			request: (callback) => Number(Reflect.apply(request, globalThis, [callback])),
-			cancel: (handle) => {
-				Reflect.apply(cancel, globalThis, [handle])
-			},
+			request: this.#request.bind(this, request),
+			cancel: this.#cancel.bind(this, cancel),
 		}
 	}
 
@@ -89,14 +88,11 @@ export class IdleScheduler implements SchedulerInterface {
 	#idle(idle: IdleAPI, signal?: AbortSignal): Promise<void> {
 		if (signal?.aborted === true) return Promise.reject(signal.reason)
 		return new Promise<void>((resolve, reject) => {
-			const onAbort = () => {
-				idle.cancel(handle)
-				reject(signal?.reason)
-			}
 			const handle = idle.request(() => {
 				signal?.removeEventListener('abort', onAbort) // load-bearing: prevents a post-resolve reject
 				resolve()
 			})
+			const onAbort = this.#abortIdle.bind(this, idle, handle, reject, signal)
 			signal?.addEventListener('abort', onAbort, { once: true })
 		})
 	}
@@ -108,15 +104,39 @@ export class IdleScheduler implements SchedulerInterface {
 	#sleep(ms: number, signal?: AbortSignal): Promise<void> {
 		if (signal?.aborted === true) return Promise.reject(signal.reason)
 		return new Promise<void>((resolve, reject) => {
-			const onAbort = () => {
-				clearTimeout(handle)
-				reject(signal?.reason)
-			}
 			const handle = setTimeout(() => {
 				signal?.removeEventListener('abort', onAbort) // load-bearing: prevents a post-resolve reject
 				resolve()
 			}, ms)
+			const onAbort = this.#abortTimeout.bind(this, handle, reject, signal)
 			signal?.addEventListener('abort', onAbort, { once: true })
 		})
+	}
+
+	#request(request: AnyFunction, callback: () => void): number {
+		return Number(Reflect.apply(request, globalThis, [callback]))
+	}
+
+	#cancel(cancel: AnyFunction, handle: number): void {
+		Reflect.apply(cancel, globalThis, [handle])
+	}
+
+	#abortIdle(
+		idle: IdleAPI,
+		handle: number,
+		reject: (reason?: unknown) => void,
+		signal?: AbortSignal,
+	): void {
+		idle.cancel(handle)
+		reject(signal?.reason)
+	}
+
+	#abortTimeout(
+		handle: ReturnType<typeof setTimeout>,
+		reject: (reason?: unknown) => void,
+		signal?: AbortSignal,
+	): void {
+		clearTimeout(handle)
+		reject(signal?.reason)
 	}
 }

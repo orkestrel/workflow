@@ -2,6 +2,7 @@ import type { TimeoutInterface } from '@orkestrel/timeout'
 import type {
 	ControllerInterface,
 	PhaseInterface,
+	RunnerEntryOptions,
 	RunnerInterface,
 	SchedulerInterface,
 	TaskInterface,
@@ -242,7 +243,7 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 		const holder: { runner: RunnerInterface<TaskInterface, void> | undefined } = {
 			runner: undefined,
 		}
-		const onCancel = (): void => holder.runner?.abort(runSignal.reason)
+		const onCancel = this.#abortActive.bind(this, holder, runSignal)
 		if (runSignal.aborted) onCancel()
 		else runSignal.addEventListener('abort', onCancel, { once: true })
 		try {
@@ -332,12 +333,7 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 		holder: { runner: RunnerInterface<TaskInterface, void> | undefined },
 	): Promise<boolean> {
 		const launched = new Set<string>()
-		let runner: RunnerInterface<TaskInterface, void> | undefined
-		const onAdd = (task: TaskInterface): void => {
-			if (launched.has(task.id)) return
-			launched.add(task.id)
-			runner?.spawn(task)
-		}
+		const onAdd = this.#spawnAdded.bind(this, launched, holder)
 		phase.emitter.on('add', onAdd)
 		try {
 			const tasks = phase.tasks.tasks()
@@ -366,11 +362,9 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 				// substrate unit. The phase Runner's defaults are the (unset) runner-level retries/timeout,
 				// so a task with neither behaves exactly as before; one that declares them OVERRIDES the
 				// queue default for that unit alone.
-				entries: (task) => ({ retries: task.retries, timeout: task.timeout }),
-				handler: (controller) =>
-					this.#runTask(workflow, controller.input, controller, runSignal, bail, attempts),
+				entries: this.#entry.bind(this),
+				handler: this.#runUnit.bind(this, workflow, runSignal, bail, attempts),
 			})
-			runner = created
 			holder.runner = created
 			try {
 				// The Runner sequences + bounds the work; its ordered results are unused (the OUTCOME
@@ -403,6 +397,40 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 			// A no-op for every task the substrate already settled (terminal statuses ignore `skip`).
 			for (const task of phase.tasks.tasks()) this.#skip(task)
 		}
+	}
+
+	#abortActive(
+		holder: { runner: RunnerInterface<TaskInterface, void> | undefined },
+		runSignal: AbortSignal,
+	): void {
+		holder.runner?.abort(runSignal.reason)
+	}
+
+	#spawnAdded(
+		launched: Set<string>,
+		holder: { runner: RunnerInterface<TaskInterface, void> | undefined },
+		task: TaskInterface,
+	): void {
+		if (launched.has(task.id)) return
+		launched.add(task.id)
+		holder.runner?.spawn(task)
+	}
+
+	#entry(task: TaskInterface): RunnerEntryOptions {
+		return {
+			...(task.retries === undefined ? {} : { retries: task.retries }),
+			...(task.timeout === undefined ? {} : { timeout: task.timeout }),
+		}
+	}
+
+	#runUnit(
+		workflow: WorkflowInterface,
+		runSignal: AbortSignal,
+		bail: boolean,
+		attempts: Map<string, number>,
+		controller: ControllerInterface<TaskInterface, void>,
+	): Promise<void> {
+		return this.#runTask(workflow, controller.input, controller, runSignal, bail, attempts)
 	}
 
 	// Run ONE task: drive the live entity through its transitions around its OWN resolved
@@ -571,7 +599,7 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 		if (runSignal.aborted) return
 		let onAbort: (() => void) | undefined
 		const cancelled = new Promise<void>((resolve) => {
-			onAbort = () => resolve()
+			onAbort = resolve.bind(undefined, undefined)
 			runSignal.addEventListener('abort', onAbort, { once: true })
 		})
 		try {
@@ -603,7 +631,7 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 		if (options?.signal !== undefined) signals.push(options.signal)
 		if (timeout !== undefined) signals.push(timeout.signal)
 		if (options?.budget !== undefined) signals.push(options.budget.signal)
-		return signals.length === 1 ? signals[0] : AbortSignal.any(signals)
+		return signals.length === 1 ? workflow.signal : AbortSignal.any(signals)
 	}
 
 	// HALT from `index`: when the halt is a GENUINE run-level CANCEL (F1-CRITICAL), force the

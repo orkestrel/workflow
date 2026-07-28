@@ -72,15 +72,21 @@ export class Scheduler implements SchedulerInterface {
 	#sleep(ms: number, signal?: AbortSignal): Promise<void> {
 		if (signal?.aborted === true) return Promise.reject(signal.reason)
 		return new Promise<void>((resolve, reject) => {
-			const onAbort = () => {
-				clearTimeout(handle)
-				reject(signal?.reason)
-			}
 			const handle = setTimeout(() => {
 				signal?.removeEventListener('abort', onAbort) // load-bearing: prevents a post-resolve reject
 				resolve()
 			}, ms)
+			const onAbort = this.#abort.bind(this, handle, reject, signal)
 			signal?.addEventListener('abort', onAbort, { once: true })
 		})
+	}
+
+	#abort(
+		handle: ReturnType<typeof setTimeout>,
+		reject: (reason?: unknown) => void,
+		signal?: AbortSignal,
+	): void {
+		clearTimeout(handle)
+		reject(signal?.reason)
 	}
 }

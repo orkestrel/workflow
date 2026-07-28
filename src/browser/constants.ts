@@ -10,8 +10,8 @@ import type { SchedulerPriority } from '@src/core'
  * map to translate the caller's portable priority into the value passed to
  * `scheduler.postTask`, so the urgency hint is honoured by the host.
  */
-export const POST_TASK_PRIORITY: Readonly<Record<SchedulerPriority, string>> = {
+export const POST_TASK_PRIORITY: Readonly<Record<SchedulerPriority, string>> = Object.freeze({
 	user: 'user-blocking',
 	normal: 'user-visible',
 	background: 'background',
-}
+})

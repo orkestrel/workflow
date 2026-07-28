@@ -366,9 +366,9 @@ describe('deriveWorkflowStatus — exhaustive truth table under BOTH bail modes'
 function permutations<T>(items: readonly T[]): readonly (readonly T[])[] {
 	if (items.length <= 1) return [items]
 	const out: T[][] = []
-	for (let index = 0; index < items.length; index += 1) {
+	for (const [index, item] of items.entries()) {
 		const rest = [...items.slice(0, index), ...items.slice(index + 1)]
-		for (const permutation of permutations(rest)) out.push([items[index], ...permutation])
+		for (const permutation of permutations(rest)) out.push([item, ...permutation])
 	}
 	return out
 }

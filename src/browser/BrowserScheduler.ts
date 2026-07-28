@@ -95,10 +95,6 @@ export class BrowserScheduler implements SchedulerInterface {
 		if (signal?.aborted === true) return Promise.reject(signal.reason)
 		return new Promise<void>((resolve, reject) => {
 			const internal = new AbortController()
-			const onAbort = () => {
-				internal.abort()
-				reject(signal?.reason)
-			}
 			const task = post(
 				() => {
 					signal?.removeEventListener('abort', onAbort)
@@ -106,6 +102,7 @@ export class BrowserScheduler implements SchedulerInterface {
 				},
 				{ priority: POST_TASK_PRIORITY[priority], signal: internal.signal },
 			)
+			const onAbort = this.#abortTask.bind(this, internal, reject, signal)
 			// `postTask` returns a promise that rejects when the internal controller aborts;
 			// swallow that rejection (the abort path already rejected with the real reason).
 			if (task instanceof Promise) task.catch(() => {})
@@ -128,15 +125,30 @@ export class BrowserScheduler implements SchedulerInterface {
 	#timer(ms: number, signal?: AbortSignal): Promise<void> {
 		if (signal?.aborted === true) return Promise.reject(signal.reason)
 		return new Promise<void>((resolve, reject) => {
-			const onAbort = () => {
-				clearTimeout(handle)
-				reject(signal?.reason)
-			}
 			const handle = setTimeout(() => {
 				signal?.removeEventListener('abort', onAbort) // load-bearing: prevents a post-resolve reject
 				resolve()
 			}, ms)
+			const onAbort = this.#abortTimeout.bind(this, handle, reject, signal)
 			signal?.addEventListener('abort', onAbort, { once: true })
 		})
+	}
+
+	#abortTask(
+		internal: AbortController,
+		reject: (reason?: unknown) => void,
+		signal?: AbortSignal,
+	): void {
+		internal.abort()
+		reject(signal?.reason)
+	}
+
+	#abortTimeout(
+		handle: ReturnType<typeof setTimeout>,
+		reject: (reason?: unknown) => void,
+		signal?: AbortSignal,
+	): void {
+		clearTimeout(handle)
+		reject(signal?.reason)
 	}
 }

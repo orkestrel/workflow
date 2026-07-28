@@ -76,17 +76,7 @@ import { Runner } from './Runner.js'
  * ```
  */
 export function createWorkflowContract(): ContractInterface<WorkflowDefinition> {
-	const contract = createContract(workflowShape)
-	return {
-		schema: contract.schema,
-		is: contract.is,
-		generate: (random) => contract.generate(random),
-		// The contract's own parser already enforces every leaf refinement (it
-		// re-applies the shared `stringOf` / `boundsOf` combinators after coercion),
-		// so a non-`undefined` result satisfies `is` — no guard-gate wrapper needed.
-		parse: (value) => contract.parse(value),
-		explain: (value) => contract.explain(value),
-	}
+	return createContract(workflowShape)
 }
 
 /**

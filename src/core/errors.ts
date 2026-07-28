@@ -32,7 +32,7 @@ export class WorkflowError extends Error {
 		super(message)
 		this.name = 'WorkflowError'
 		this.code = code
-		this.context = context
+		if (context !== undefined) this.context = context
 	}
 }
 

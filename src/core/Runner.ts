@@ -105,12 +105,15 @@ export class Runner<TInput, TResult> implements RunnerInterface<TInput, TResult>
 	constructor(options: RunnerOptions<TInput, TResult>) {
 		this.#handler = options.handler
 		this.#entries = options.entries
-		this.#emitter = new Emitter<RunnerEventMap<TResult>>({ on: options?.on, error: options?.error })
+		this.#emitter = new Emitter<RunnerEventMap<TResult>>({
+			...(options.on === undefined ? {} : { on: options.on }),
+			...(options.error === undefined ? {} : { error: options.error }),
+		})
 		this.#queue = createQueue<RunnerUnit<TInput>, TResult>({
-			handler: (unit, execution) => this.#dispatch(unit, execution),
-			concurrency: options.concurrency,
-			retries: options.retries,
-			timeout: options.timeout,
+			handler: this.#dispatch.bind(this),
+			...(options.concurrency === undefined ? {} : { concurrency: options.concurrency }),
+			...(options.retries === undefined ? {} : { retries: options.retries }),
+			...(options.timeout === undefined ? {} : { timeout: options.timeout }),
 		})
 	}
 

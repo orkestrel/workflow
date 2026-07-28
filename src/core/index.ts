@@ -1,4 +1,4 @@
-export type * from './types.js'
+export * from './types.js'
 export * from './Scheduler.js'
 export * from './factories.js'
 export * from './constants.js'

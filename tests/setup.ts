@@ -389,3 +389,9 @@ export async function settleSnapshot(definition: WorkflowDefinition): Promise<Wo
 	const result = await runner.execute(definition, { functions: RELEASE_FUNCTIONS })
 	return result.workflow.snapshot()
 }
+
+/** Whether a repository-relative Vue SFC path belongs to the private browser application. */
+export function isBrowserVuePath(path: string): boolean {
+	const normalized = path.replaceAll('\\', '/')
+	return normalized.startsWith('app/browser/')
+}

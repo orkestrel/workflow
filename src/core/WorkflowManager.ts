@@ -71,7 +71,9 @@ export class WorkflowManager implements WorkflowManagerInterface {
 	add(definition: WorkflowDefinition): WorkflowInterface {
 		// Mints keyed by the definition's own id — a re-add under the same id overwrites,
 		// exactly as `createWorkflow` keys the live tree by `definition.id`.
-		const workflow = createWorkflow(definition, { functions: this.#functions })
+		const workflow = createWorkflow(definition, {
+			...(this.#functions === undefined ? {} : { functions: this.#functions }),
+		})
 		this.#workflows.set(workflow.id, workflow)
 		return workflow
 	}
@@ -86,7 +88,9 @@ export class WorkflowManager implements WorkflowManagerInterface {
 		// registry in so the rehydrated tree is RUNNABLE (a restored tree is otherwise inert).
 		const snapshot = await this.#store.get(id)
 		if (snapshot === undefined) return undefined
-		const workflow = restoreWorkflow(snapshot, { functions: this.#functions })
+		const workflow = restoreWorkflow(snapshot, {
+			...(this.#functions === undefined ? {} : { functions: this.#functions }),
+		})
 		this.#workflows.set(workflow.id, workflow)
 		return workflow
 	}

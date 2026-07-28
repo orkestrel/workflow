@@ -890,18 +890,26 @@ describe('Runner', () => {
 					return controller.input
 				}
 				// Child n waits on gate[n-1]; the test opens them last-to-first.
-				await gates[controller.input - 1].promise
+				const gate = gates[controller.input - 1]
+				if (gate === undefined) throw new Error('missing child gate')
+				await gate.promise
 				return controller.input
 			},
 		})
 		const run = runner.execute([0])
 		await waitForDelay(10)
 		// Release in reverse spawn order — child 3 finishes first, child 1 last.
-		gates[2].resolve()
+		const first = gates[0]
+		const second = gates[1]
+		const third = gates[2]
+		if (first === undefined || second === undefined || third === undefined) {
+			throw new Error('missing spawn gate')
+		}
+		third.resolve()
 		await waitForDelay(0)
-		gates[1].resolve()
+		second.resolve()
 		await waitForDelay(0)
-		gates[0].resolve()
+		first.resolve()
 		const results = await run
 		// Spawn order (1, 2, 3) regardless of the reversed completion order.
 		expect(results).toEqual([0, 1, 2, 3])
