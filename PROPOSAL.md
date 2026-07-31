@@ -1,10 +1,11 @@
-# Native Workflow over MCP
+# Supervised Workflow over MCP
 
-**Status:** proposal; no Tool, MCP, provider, or Harness behavior described here ships from this repository today  
-**Evidence date:** 2026-07-31  
-**Objective:** make `@orkestrel/workflow` a durable standalone workflow engine that an MCP server can expose through one conceptual `workflow` tool, so Claude Code, Codex, Cursor, and other capable clients can start and control long-running work without owning the execution process.
+**Status:** proposal. Nothing described here ships from this repository, or from any sibling package, today. `@orkestrel/supervisor` does not exist; every type, factory, adapter, and behavior below is proposed, not implemented.
+**Evidence date:** 2026-07-31
+**Binding decisions:** `tmp/verdict.md` — the orchestrator's reconciliation of two independent adversarial rounds. This document implements those rulings; it does not reopen them.
+**Objective:** make `@orkestrel/workflow` a durable standalone workflow engine that an MCP server exposes through one conceptual `supervisor` tool, so Claude Code, Codex, Cursor, and other capable clients can start and control long-running work without owning the execution process — and give that server one package, `@orkestrel/supervisor`, that owns the fenced record every external effect is joined to.
 
-The primary product is Workflow projected through MCP. Workflow is authoritative for logical execution and its snapshot; the integration record is authoritative for epochs, leases, and provider observations. A future Harness is only a native-aware adapter/supervisor for installed provider harnesses; it is neither a replacement for those harnesses nor a reimplementation of their session, approval, recovery, or process capabilities.
+The primary product is Workflow projected through MCP. Workflow is authoritative for logical execution and its snapshot. `@orkestrel/supervisor` is authoritative for the fenced record, executors, journals, and process trees. It is a native-aware adapter over installed provider harnesses — never a replacement for them, and never a reimplementation of their session, approval, recovery, or process capabilities.
 
 ## Failure modes this proposal closes
 
@@ -15,194 +16,662 @@ The primary product is Workflow projected through MCP. Workflow is authoritative
 - Cancellation is reported as termination before an external provider process actually exits.
 - Provider continuation is confused with `Task.resume()`, which only opens a live cooperative pause gate.
 - Two restorers launch the same pending attempt after a crash.
+- A recovery pass spends retry budget on an attempt whose external unit is still alive and re-attachable.
+- A timed-out attempt leaves an uncooperative external unit alive while a later attempt starts a second one, and nothing records both.
 - A required persistence write never settles and strands execution indefinitely.
 - An integration invents Tool adapters, Workflow error codes, or client capabilities that do not exist.
 
 ## Reconciled position
 
-The supplied architecture (Opus), local source-audit (Sol), and official provider-research (Grok) tracks converge on the following boundary. Opus favored a clean consumer boundary, Sol established what Workflow and sibling packages actually ship, and Grok established which native provider capabilities can be relied on or must be feature-detected:
+Four owners, four authorities, no overlap.
 
-1. Workflow remains the host-independent logical-execution and snapshot authority; the integration record owns epoch, lease, and provider-observation truth.
-2. MCP owns protocol negotiation and projection, using the existing generic Tool primitives rather than adding Tool behavior to Workflow.
-3. The MCP server process owns continued execution. The calling client receives a durable handle and may disconnect.
-4. Installed provider harnesses retain authority over their own sessions, approvals, turns, and native recovery.
-5. A later Harness package may normalize supervision around those native capabilities, but must not dominate or delay Workflow→MCP.
+1. **Workflow** remains the host-independent logical-execution and snapshot authority. It is **not amended** by this proposal — no `claim` field, no `stake()` checkpoint, no new `TaskSnapshot` member. The join key it already publishes is sufficient.
+2. **`@orkestrel/supervisor`** owns the fenced record: epochs and leases, per-attempt units, native identities, bounded redacted journals, executors, and the process trees it launched.
+3. **The application** owns policy: authorization, which executors are enabled, journal retention, tenant binding, and workspace selection.
+4. **MCP** owns protocol negotiation and projection, using the existing generic Tool primitives rather than adding Tool behavior to Workflow.
 
-Rejected placements:
+The MCP server process owns continued execution; the calling client receives a durable handle and may disconnect. Installed provider harnesses retain authority over their own sessions, approvals, turns, and native recovery.
 
-| Placement                                          | Decision | Reason                                                                                                                                                                                                 |
-| -------------------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Workflow depends on Tool or MCP                    | Reject   | It would break the host-independent core boundary and invert the composition direction.                                                                                                                |
-| Tool owns Workflow runtime or provider supervision | Reject   | Tool 0.0.8 supplies generic definitions, a total call-envelope guard, invocation, and registry primitives; it neither validates arguments against schemas nor has a Workflow/provider adapter surface. |
-| Agent core owns subprocess supervision             | Reject   | Agent is an inference/conversation runtime; process trees and MCP service lifetime are different responsibilities.                                                                                     |
-| Empty package created before a real consumer       | Reject   | The first package boundary must be justified by working MCP/provider composition and tests.                                                                                                            |
-| Harness replaces native provider harnesses         | Reject   | It would discard stronger session, approval, recovery, and supervision semantics already owned upstream.                                                                                               |
+### Why workflow is not amended
+
+`TaskSnapshot.attempts` is documented "never reset by recovery" (`src/core/types.ts:443`), and the runner's required `'attempt'` checkpoint resolves before the handler is constructed. At the instant any irreversible effect becomes possible, `(workflow.id, task.id, attempts)` is already durable, already unique for that launch, and already derivable inside a handler from `controller.task.phase.workflow.id`, `controller.task.id`, and `controller.attempt` — with zero API growth. `WorkflowStoreInterface.set` is a blind whole-snapshot upsert with no revision and no compare-and-set, so nothing inside workflow could fence a claim written there; a claim field would tell a second restorer that a unit is re-attachable while the first restorer still holds it. And one replaceable claim slot is structurally incapable of holding both a timed-out attempt's still-live unit and a later attempt's new one. A per-attempt unit registry can. That registry is `@orkestrel/supervisor`.
+
+If a future consumer ever forces executor-written per-attempt identity into workflow, it ships as `readonly handle?: JSONRecord` on `TaskOperation`, written through the existing `report` path — one field family, one mechanism, no new checkpoint member, no boolean that must lie.
+
+### Rejected placements
+
+| Placement                                             | Decision | Reason                                                                                                                                                                             |
+| ----------------------------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Workflow depends on Tool, MCP, or Supervisor          | Reject   | It would break the host-independent core boundary and invert the composition direction.                                                                                            |
+| Workflow gains a durable executor-written claim       | Reject   | Nothing inside workflow can fence a blind whole-snapshot upsert, and one claim slot cannot hold two concurrent attempts.                                                            |
+| Tool owns Workflow runtime or provider supervision    | Reject   | Tool 0.0.8 supplies generic definitions, a total call-envelope guard, invocation, and registry primitives; it neither validates arguments against schemas nor adapts providers.     |
+| Agent core owns subprocess supervision                | Reject   | Agent is an inference/conversation runtime; process trees and MCP service lifetime are different responsibilities.                                                                  |
+| A package named `harness`                             | Reject   | The provider products are harnesses; the name makes every authority sentence ambiguous.                                                                                            |
+| A separate lease package before a second consumer     | Reject   | The lease lives in its own supervisor module behind its own contract, so later extraction is mechanical. It is not a package until something else needs it.                        |
+| `@orkestrel/agent` or `@orkestrel/terminal` on supervisor's dependency edges | Reject   | Those executors are composed where those dependencies already live. Supervising a CLI must not install an inference runtime.                                                       |
+| Supervisor replaces native provider harnesses         | Reject   | It would discard stronger session, approval, recovery, and supervision semantics already owned upstream.                                                                            |
+| An empty package created before a real consumer       | Reject   | The first package boundary must be justified by working MCP/provider composition and tests.                                                                                        |
 
 ## Current Workflow guarantees and limits
 
-The proposal is grounded in the current local source, types, guide, and real tests—not in planned API assumptions.
+Grounded in current local source, types, guide, and real tests — not in planned API assumptions.
 
-| Current guarantee                                                                         | Consequence                                                                                                                           |
-| ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| JSON `Workflow → Phase → Task` definitions; named functions resolve once into handlers    | MCP can persist and validate definitions without serializing behavior.                                                                |
-| Sequential phases, concurrent tasks, optional phase concurrency and bail policy           | The server can expose deterministic structure without inventing a DAG.                                                                |
-| Live pause/resume/stop, task activity, events, folded signals, deadlines, retries         | MCP controls can project existing mechanisms rather than duplicating them.                                                            |
-| Owned exact-JSON snapshots, restore, explicit recovery, consumed attempts                 | A reconnect can inspect authoritative durable state; recovery never silently replenishes retries.                                     |
-| Initial, attempt, settlement, and final persistence checkpoints with one coalesced writer | Handler dispatch follows a required durable attempt checkpoint; distributed fencing still belongs to the external epoch/lease record. |
-| Same-object execution claim through a process-local `WeakSet`                             | One object cannot be driven twice locally, but distributed duplicate launch is still possible.                                        |
-| Pending and recovered-retryable tasks omit old activity                                   | A recovered attempt cannot present stale activity as current work.                                                                    |
+| Current guarantee                                                                         | Consequence                                                                                                                          |
+| ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| JSON `Workflow → Phase → Task` definitions; named functions resolve once into handlers    | MCP can persist and validate definitions without serializing behavior.                                                               |
+| Sequential phases, concurrent tasks, optional phase concurrency and bail policy           | The server can expose deterministic structure without inventing a DAG.                                                               |
+| Live pause/resume/stop, task activity, events, folded signals, deadlines, retries         | MCP controls can project existing mechanisms rather than duplicating them.                                                           |
+| Owned exact-JSON snapshots, restore, explicit recovery, consumed attempts                 | A reconnect can inspect authoritative durable state; recovery never silently replenishes retries.                                    |
+| `TaskSnapshot.attempts` never reset by recovery                                           | `(workflow.id, task.id, attempts)` is a durable, unique, already-published join key for one launch.                                  |
+| Initial, attempt, settlement, and final persistence checkpoints with one coalesced writer | Handler dispatch follows a required durable attempt checkpoint; distributed fencing belongs to the supervisor record.                |
+| `WorkflowStoreInterface.set` is a blind whole-snapshot upsert with no revision            | Workflow cannot fence itself. A lease must live outside it, over a store that has compare-and-set semantics.                         |
+| Same-object execution claim through a process-local `WeakSet`                             | One object cannot be driven twice locally, but distributed duplicate launch is still possible.                                       |
+| Pending and recovered-retryable tasks omit old activity                                   | A recovered attempt cannot present stale activity as current work.                                                                   |
+| `recoverWorkflowSnapshot` demotes retryable `running` to `pending` and fails the exhausted | Applying recovery before the supervisor reconciles its record spends budget on a possibly re-attachable attempt.                     |
 
 Hardening cannot provide distributed exclusivity, provider idempotency, operating-system process termination, remote authorization, or cancellation of an arbitrary never-settling store Promise. Those are explicit integration responsibilities. In particular, adding a Promise timeout would not cancel a late backend write and could permit stale data to arrive out of order.
 
 ## Proposed ownership
 
-| Owner                               | Owns                                                                                                                      | Does not own                                                                   |
-| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| Workflow                            | definitions, live entities, runner, activity, snapshots, restore/recovery, store contract                                 | Tool schemas, MCP messages, provider protocols, subprocesses                   |
-| Tool                                | generic definitions, total call-envelope guard, invocation, registry                                                      | schema-based argument validation, Workflow lifecycle policy, provider adapters |
-| MCP composition                     | the conceptual `workflow` tool, generic MCP Tasks/progress/resources, session/transport projection, authorization         | Workflow engine internals or client-terminal lifetime                          |
-| Database + SQLite/IndexedDB drivers | atomic durable storage through existing driver and transaction seams                                                      | Workflow recovery policy                                                       |
-| Provider native harness             | provider session/turn lifecycle, native approvals/input, native reconnect/recovery                                        | Workflow's logical task and durable snapshot authority                         |
-| Future Harness                      | native-aware normalization, bounded redacted journal, epoch fencing, process tree only where native supervision is absent | replacement provider runtime, generic Workflow engine, automatic approval      |
+| Owner                               | Owns                                                                                                                          | Does not own                                                                    |
+| ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| Workflow                            | definitions, live entities, runner, activity, snapshots, restore/recovery, store contract                                     | Tool schemas, MCP messages, provider protocols, subprocesses, leases            |
+| Supervisor core                     | leases and epochs, per-attempt units, native identities, journal, executor contract, the function executor, the workflow adapter | inference runtimes, terminals, MCP messages, authorization, retention policy    |
+| Supervisor server                   | the provider executor, provider adapters, launched process trees, stream framing                                              | provider session semantics, approval policy, credential handling                |
+| Tool                                | generic definitions, total call-envelope guard, invocation, registry                                                          | schema-based argument validation, Workflow lifecycle policy, provider adapters  |
+| MCP composition                     | the conceptual `supervisor` tool, generic MCP tasks/progress, session/transport projection, authorization                     | Workflow engine internals, supervisor record internals, client terminal lifetime |
+| Application                         | executor enablement, authorization, tenant/workspace binding, journal retention, the agent and human executors               | the fenced record, provider protocols, the workflow engine                      |
+| Database + SQLite/IndexedDB drivers | atomic durable storage through existing driver and transaction seams                                                          | Workflow recovery policy, supervisor recovery policy                            |
+| Provider native harness             | provider session/turn lifecycle, native approvals/input, native reconnect/recovery                                            | Workflow's logical task and durable snapshot authority                          |
 
-Dependency direction remains:
+Dependency direction:
 
 ```text
-Workflow ← MCP composition → Tool
-    ↓
-Database → SQLite or IndexedDB at the application edge
+Workflow ← Supervisor core → Contract
+    ↑           ↓
+    └── MCP composition → Tool
+                ↓
+Supervisor server → provider-native protocols + Node process APIs
+                ↓
+Database → SQLite (server, leases possible) or IndexedDB (browser, leases impossible)
 
-future Harness → Workflow + provider-native protocols
-MCP composition → future Harness only when a provider-backed WorkflowFunction needs it
+Application → Supervisor + Agent      (the agent executor)
+Application → Supervisor + Terminal   (the human executor)
 ```
 
-Workflow must not import Tool, MCP, Terminal, Agent, or a future Harness. Browser and server implementations remain disjoint; provider processes and MCP service lifetime are server/application concerns.
+Workflow must not import Tool, MCP, Terminal, Agent, or Supervisor. Supervisor must not import Tool, MCP, Agent, or Terminal. Browser and server implementations remain disjoint; provider processes and MCP service lifetime are server/application concerns.
 
-## The Workflow MCP surface
+## `@orkestrel/supervisor` — the proposed type surface
 
-The integration should publish one conceptual tool named `workflow`. This proposal intentionally does not freeze a speculative public TypeScript interface. Its command axis remains single-word and initially covers:
+One published package with a `core` and a `server` environment. The lease lives in its own core module behind its own contract, so a later extraction is mechanical rather than a rewrite. Every type below is proposed; none exists.
+
+### Identity and the fenced record
+
+```ts
+/** The durable join key for one launch — exactly workflow's own `(workflow.id, task.id, attempts)`. */
+export interface UnitContext {
+	readonly workflow: string
+	readonly task: string
+	readonly attempt: number
+}
+
+/** The fence a supervisor process holds over one workflow id. */
+export interface Lease {
+	readonly id: string
+	readonly owner: string
+	readonly epoch: number
+	readonly expiry: number
+}
+
+/** How a reconciled unit is to be resumed — the three outcomes, never two. */
+export type RecoveryMode = 'reattach' | 'relaunch' | 'quarantine'
+
+/** A unit's live mode. Intent-without-launch is derived from an absent `identity`, never stored twice. */
+export type UnitStatus = 'running' | 'settled' | 'quarantined'
+
+/** The durable per-attempt row — one row per launch, never one replaceable slot per task. */
+export interface UnitSnapshot {
+	readonly id: string
+	readonly context: UnitContext
+	readonly executor: string
+	readonly epoch: number
+	readonly revision: number
+	readonly status: UnitStatus
+	readonly payload: JSONRecord
+	/** The provider-minted native identity; absent until the identity commit lands. */
+	readonly identity?: string
+	/** The terminal external outcome, reusing workflow's JSON-safe failure shape. */
+	readonly result?: Result<JSONValue, TaskFailure>
+	/** Why this unit was quarantined; present only when `status` is `quarantined`. */
+	readonly reason?: string
+	readonly created: number
+	readonly updated: number
+}
+
+/** The whole durable record for one workflow id — the lease plus every attempt it ever authorized. */
+export interface RunSnapshot {
+	readonly id: string
+	readonly lease: Lease
+	readonly units: readonly UnitSnapshot[]
+}
+```
+
+Two units of the same `(workflow, task)` that carry the **same** `identity` are a reattachment; two that carry **different** identities are two external effects. Nothing else needs to be stored to say so, and "no duplicate external unit" is therefore a property the record proves rather than a claim a field asserts.
+
+### Observations and the journal
+
+```ts
+/** What was observed. Names its axis; never `kind` or `type`. */
+export type ObservationCategory = 'identity' | 'activity' | 'request' | 'settlement' | 'diagnostic'
+
+/** One bounded, redacted, JSON-serializable thing an executor saw. */
+export interface Observation {
+	readonly id: string
+	readonly sequence: number
+	readonly timestamp: number
+	readonly category: ObservationCategory
+	/** Redacted human-facing text, capped in bytes. */
+	readonly note?: string
+	/** Commands run and files changed — workflow's own milestone type, not a new one. */
+	readonly operations?: readonly TaskOperation[]
+	/** Awaiting approval, rate limited — workflow's own limit type, not a new one. */
+	readonly constraints?: readonly TaskConstraint[]
+	readonly progress?: TaskProgress
+	/** The native identity, present only on an `identity` observation. */
+	readonly identity?: string
+}
+
+/** The bounded redacted record of what executors saw, keyed by unit. */
+export interface JournalInterface {
+	append(context: UnitContext, observation: Observation): Promise<Result<void, SupervisorError>>
+	entries(context: UnitContext, limit?: number): Promise<readonly Observation[]>
+	/** Drop entries older than `before`; returns how many were dropped. */
+	prune(before: number): Promise<number>
+}
+```
+
+There is no `Monitor` class and no journal entry wrapper. `TaskActivity` already **is** the milestone type: `TaskOperation` is "commands run / files changed" and `TaskConstraint` is "awaiting approval / rate limited". The journal stores `Observation`s directly; a wrapper carrying only `{ context, observation }` would add no boundary, invariant, composition, translation, or lifecycle, so it does not exist. The one-subscription-per-epoch invariant belongs to the MCP subscription layer, not here.
+
+### The executor seam
+
+```ts
+/** A live external effect an executor launched or re-attached to. */
+export interface ExecutionInterface {
+	/** Resolves with the provider-minted native identity the moment the provider reports one. */
+	readonly identity: Promise<string>
+	/** Bounded observations, ending when the execution settles. */
+	readonly events: AsyncIterable<Observation>
+	/** The settled external outcome; rejects only on a genuine transport fault. */
+	readonly result: Promise<ExecutionResult>
+	abort(): void
+}
+
+/** The external outcome, in workflow's own JSON-safe boxed shape. */
+export type ExecutionResult = Result<JSONValue, TaskFailure>
+
+/** What an executor receives. Deliberately NOT the live `TaskControllerInterface`. */
+export interface ExecutionInput {
+	readonly unit: UnitContext
+	readonly payload: JSONRecord
+	readonly signal: AbortSignal
+}
+
+/**
+ * One way of causing external work. Equivalence holds ONLY at the workflow lifecycle/result
+ * seam: `launch` and `result` are universal, everything else is capability-dependent and
+ * feature-detected by presence.
+ */
+export interface ExecutorInterface {
+	readonly name: string
+	launch(input: ExecutionInput): Promise<Result<ExecutionInterface, SupervisorError>>
+	/** Re-attach to an existing native session; absent ⇒ this executor can never reattach. */
+	attach?(identity: string, options?: ExecutionOptions): Promise<Result<ExecutionInterface, SupervisorError>>
+	/** Authoritative liveness: `true` alive, `false` PROVEN absent, failure ⇒ undeterminable. */
+	probe?(identity: string): Promise<Result<boolean, SupervisorError>>
+	stop?(identity: string): Promise<Result<void, SupervisorError>>
+	steer?(identity: string, message: string): Promise<Result<void, SupervisorError>>
+	reply?(identity: string, request: string, message: string): Promise<Result<void, SupervisorError>>
+}
+```
+
+`probe`'s three-valued shape is load-bearing. Success `true` is life, success `false` is **proof** of absence, and a failure is "cannot tell" — which is precisely the distinction C2 demands and precisely what a `boolean` alone would destroy. An executor that omits `probe` can never prove absence, so its interrupted units always quarantine. That is a feature: it makes fail-closed the default for any adapter that has not earned the right to relaunch.
+
+Capability absence is expressed by an absent optional method, not by a `capabilities` bag — a second label that could drift from the methods it describes. The uniform run-facing surface converts absence into a typed failure: `unit.steer(...)` on an executor without `steer` returns `failure(SupervisorError 'UNSUPPORTED')` and never pretends to succeed.
+
+### The unit — the only place effects are fenced
+
+```ts
+export interface UnitInterface {
+	readonly context: UnitContext
+	readonly executor: string
+	readonly epoch: number
+	readonly revision: number
+	readonly status: UnitStatus
+	readonly identity: string | undefined
+	/** The decided recovery, set by `reconcile`; `undefined` on a freshly launched unit. */
+	readonly recovery: RecoveryMode | undefined
+	/** The live external handle, when one is held. */
+	readonly execution: ExecutionInterface | undefined
+	/** Commit the provider-minted native identity under this unit's epoch; resolves the new revision. */
+	identify(identity: string): Promise<Result<number, SupervisorError>>
+	/** Append one bounded redacted observation under the fence. */
+	observe(observation: Observation): Promise<Result<void, SupervisorError>>
+	/** Record the terminal external outcome under the fence. */
+	settle(result: ExecutionResult): Promise<Result<void, SupervisorError>>
+	/** Terminally mark this unit undeterminable — a first-class state, not a retry. */
+	quarantine(reason: string): Promise<Result<void, SupervisorError>>
+	stop(): Promise<Result<void, SupervisorError>>
+	steer(message: string): Promise<Result<void, SupervisorError>>
+	reply(request: string, message: string): Promise<Result<void, SupervisorError>>
+	snapshot(): UnitSnapshot
+}
+```
+
+Recording and control live on the same entity on purpose. Both must be fenced: a stale epoch must no more be able to kill a live provider session than to publish an observation into it. Splitting them would put the fence in two places and let one of them rot.
+
+### Run, supervisor, store, errors
+
+```ts
+export interface UnitManagerInterface {
+	readonly count: number
+	unit(id: string): UnitInterface | undefined
+	units(): readonly UnitInterface[]
+}
+
+export interface LaunchInput {
+	readonly context: UnitContext
+	readonly executor: string
+	readonly payload: JSONRecord
+	readonly signal: AbortSignal
+}
+
+/** One supervised workflow id, under one held lease. */
+export interface RunInterface {
+	readonly id: string
+	readonly lease: Lease
+	readonly units: UnitManagerInterface
+	/** The whole launch transaction: intent commit, external launch, identity commit. */
+	launch(input: LaunchInput): Promise<Result<UnitInterface, SupervisorError>>
+	/** The authoritative durable read MCP `inspect` projects. */
+	inspect(): Promise<Result<RunSnapshot, SupervisorError>>
+	/** Release the lease; idempotent. */
+	destroy(): Promise<void>
+}
+
+/** The record-reconciled snapshot, produced BEFORE `recoverWorkflow` is applied. */
+export interface Reconciliation {
+	readonly snapshot: WorkflowSnapshot
+	readonly units: readonly UnitInterface[]
+}
+
+export interface SupervisorInterface {
+	readonly emitter: EmitterInterface<SupervisorEventMap>
+	/** This supervisor process's owner identity — the value written into every lease. */
+	readonly id: string
+	readonly executors: ExecutorManagerInterface
+	readonly runs: RunManagerInterface
+	readonly journal: JournalInterface
+	/** Acquire a fresh fenced epoch for a workflow id; `CONFLICT` when a live epoch holds it. */
+	open(id: string): Promise<Result<RunInterface, SupervisorError>>
+	/** Decide reattach / relaunch / quarantine per live unit and project the snapshot. */
+	reconcile(snapshot: WorkflowSnapshot): Promise<Result<Reconciliation, SupervisorError>>
+	destroy(): Promise<void>
+}
+
+export interface SupervisorStoreInterface {
+	/** Atomically acquire or renew the lease; `CONFLICT` when a live epoch holds it. */
+	acquire(id: string, options?: LeaseOptions): Promise<Result<Lease, SupervisorError>>
+	/** Read the whole durable record for one workflow id. */
+	get(id: string): Promise<RunSnapshot | undefined>
+	/** Commit one unit row inside the lease's transaction; `FENCED` when the epoch moved. */
+	set(lease: Lease, unit: UnitSnapshot): Promise<Result<UnitSnapshot, SupervisorError>>
+	release(lease: Lease): Promise<void>
+	delete(id: string): Promise<void>
+}
+
+export type SupervisorErrorCode =
+	| 'CONFLICT'
+	| 'FENCED'
+	| 'LAUNCH'
+	| 'PROTOCOL'
+	| 'QUARANTINE'
+	| 'STORE'
+	| 'UNSUPPORTED'
+
+export class SupervisorError extends Error {
+	readonly code: SupervisorErrorCode
+	readonly context?: Readonly<Record<string, unknown>>
+}
+
+export function isSupervisorError(value: unknown): value is SupervisorError
+```
+
+`ExecutorManagerInterface` and `RunManagerInterface` follow the same accessor shape: `count` plus `executor(name)` / `executors()` and `run(id)` / `runs()`, with `add` / `remove` on the executor registry only.
+
+`SupervisorEventMap` carries seven present-tense events: `open(id, epoch)`, `launch(unit)`, `observe(unit, observation)`, `settle(unit)`, `quarantine(unit, reason)`, `fence(unit)`, `close(id)`. `fence` is how an application learns that a stale epoch tried to write — the single most useful operational signal the record produces.
+
+### Factories
+
+```ts
+/** The supervisor entity; defaults to a memory store and an unbounded-in-process journal. */
+export function createSupervisor(options?: SupervisorOptions): SupervisorInterface
+
+/** The durable record over any `@orkestrel/database` driver that implements `transaction`. */
+export function createDatabaseSupervisorStore(
+	driver?: DriverInterface,
+	options?: SupervisorStoreOptions,
+): SupervisorStoreInterface
+
+/** The in-process executor: a plain function, run under the same fenced record. */
+export function createFunctionExecutor(
+	run: ExecutionFunction,
+	options?: ExecutorOptions,
+): ExecutorInterface
+
+/** THE adapter — turn any executor into a `WorkflowFunction`. */
+export function createWorkflowFunction(
+	executor: ExecutorInterface,
+	options: WorkflowFunctionOptions,
+): WorkflowFunction
+
+export interface WorkflowFunctionOptions {
+	readonly supervisor: SupervisorInterface
+	/** Derive the durable request from the controller; omitted ⇒ `controller.input` verbatim. */
+	readonly payload?: PayloadFunction
+}
+
+export type PayloadFunction = (controller: TaskControllerInterface) => JSONRecord
+```
+
+Supporting option and input types, each grouped by entity with one-word leaves:
+
+```ts
+export interface SupervisorOptions {
+	readonly on?: SupervisorHooks
+	readonly error?: EmitterErrorHandler
+	/** This process's owner identity; generated when omitted. */
+	readonly id?: string
+	readonly store?: SupervisorStoreInterface
+	readonly journal?: JournalInterface
+	readonly executors?: Readonly<Record<string, ExecutorInterface>>
+	readonly lease?: LeaseOptions
+}
+
+export type SupervisorHooks = EmitterHooks<SupervisorEventMap>
+
+/** How long a granted lease stays valid without renewal, in milliseconds. */
+export interface LeaseOptions {
+	readonly expiry?: number
+}
+
+export interface SupervisorStoreOptions {
+	readonly lease?: LeaseOptions
+}
+
+export interface ExecutorOptions {
+	readonly name?: string
+}
+
+export interface ExecutionOptions {
+	readonly signal?: AbortSignal
+}
+
+export interface ProviderRequest {
+	readonly unit: UnitContext
+	readonly payload: JSONRecord
+	readonly workspace: string
+}
+```
+
+`createWorkflowFunction` is the **only** adapter. It derives `UnitContext` from `controller.task.phase.workflow.id`, `controller.task.id`, and `controller.attempt`; calls `run.launch`; drains `execution.events` into `controller.report` and `unit.observe`; awaits `execution.result`; calls `unit.settle`; then returns the `JSONValue` or throws so workflow records the `TaskFailure`. Everything capability-dependent stays behind the executor. There is no second adapter per executor and no executor-specific `WorkflowFunction`.
+
+## The four executors
+
+| Executor  | Owning package                  | Why there                                                                                                          |
+| --------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| Function  | `@orkestrel/supervisor` core    | No dependency beyond workflow and contract; it is the reference implementation the fence is tested against.        |
+| Provider  | `@orkestrel/supervisor/server`  | Needs Node process APIs and stream framing; browsers cannot spawn a harness.                                       |
+| Agent     | the application                 | Composing it inside supervisor would put `@orkestrel/agent` on every consumer's install, including CLI-only servers. |
+| Human     | the application                 | Same reason for `@orkestrel/terminal`, plus the prompt broker's lifetime is a product decision.                    |
+
+### Function — supervisor core
+
+```ts
+export type ExecutionFunction = (input: ExecutionInput) => Promise<JSONValue> | JSONValue
+```
+
+A plain in-process function, run under the fenced record. `ExecutionFunction` is `WorkflowFunction`'s supervisor-side twin, and the difference is deliberate: an executor receives the fenced `UnitContext`, the durable `payload`, and the folded `signal`, but **not** the live `TaskControllerInterface`. Handing executors the controller would let a provider adapter drive workflow state directly, putting two writers on the task and inverting the layering the whole proposal exists to establish. The adapter is the single writer of workflow state; executors only yield observations.
+
+The function executor mints its own identity at launch and commits it immediately, so its indeterminate interval is a single synchronous statement wide. It implements `probe` honestly: an in-process function cannot survive its process, so after a restart absence is proven and recovery is `relaunch`. That makes it the cleanest vehicle for fence and reconciliation tests without a provider anywhere in the picture.
+
+### Provider — supervisor server
+
+`createProviderExecutor(provider, options)` over a provider-adapter contract, with three shipped implementations. The executor owns every process tree, every stream frame, and every kill. The adapter owns only translation:
+
+```ts
+export interface ProviderCommand {
+	readonly file: string
+	readonly arguments: readonly string[]
+	readonly environment?: Readonly<Record<string, string>>
+}
+
+export interface ProviderMessage {
+	/** Names its axis. */
+	readonly command: 'steer' | 'reply'
+	readonly text: string
+	readonly request?: string
+}
+
+export interface ProviderInterface {
+	readonly name: string
+	launch(request: ProviderRequest): ProviderCommand
+	/** Re-attach to a native session; absent ⇒ no native reattach exists. */
+	attach?(identity: string): ProviderCommand
+	/** Authoritatively report whether a native session exists; absent ⇒ absence can never be proved. */
+	probe?(identity: string): ProviderCommand
+	/** Narrow one decoded frame; `undefined` ignores a forward-compatible unknown frame. */
+	observe(frame: unknown): Observation | undefined
+	/** Encode a steer/reply for the provider's live input channel; absent ⇒ `UNSUPPORTED`. */
+	encode?(message: ProviderMessage): string
+}
+```
+
+Shipped: `createClaudeProvider`, `createCodexProvider`, `createCursorProvider`. Because the adapter never spawns, **only a process the provider executor launched may be killed by that executor**. A native supervisor's own processes are addressed through that supervisor's own commands, never by pid.
+
+| Provider/version evidence     | Preferred integration                                                                                                                                                                                                                                                                                                                                                                                                                                             | Fallback/limit                                                                                                                                                                 |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Claude Code 2.1.220           | Feature-detect Agent Teams/Agent View supervision and native session operations; use `agents --json`, attach/logs/stop/respawn, peek/reply where available. Claude documents Agent View as a research preview with working/input/idle/completed/failed/stopped states and a persistent supervisor. [Agent View](https://code.claude.com/docs/en/agent-view), [sessions](https://code.claude.com/docs/en/sessions), [CLI](https://code.claude.com/docs/en/cli-usage) | Headless stream JSON plus session resume. Permission hooks may route real requests but must never auto-answer or bypass policy. [Hooks](https://code.claude.com/docs/en/hooks) |
+| Codex CLI 0.145.0             | Prefer Codex App Server: a long-lived bidirectional JSONL service with persisted threads/turns/items, streaming events, approval/input requests, resume/read/list, and interrupt. [App Server README](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md), [harness architecture](https://openai.com/index/unlocking-the-codex-harness/)                                                                                                       | `codex exec` is a one-shot fallback and loses App Server's richer native lifecycle.                                                                                            |
+| Cursor CLI 2026.07.23-e383d2b | Headless `-p --output-format stream-json`, preserve `session_id`, ignore forward-compatible unknown fields, and use native resume/list commands. [Using the CLI](https://docs.cursor.com/en/cli/using), [parameters](https://docs.cursor.com/en/cli/reference/parameters), [output format](https://docs.cursor.com/en/cli/reference/output-format), [headless](https://docs.cursor.com/en/cli/headless)                                                             | No equivalent native persistent supervisor was verified, so `probe` is omitted and an interrupted unit quarantines rather than relaunching. A terminal result may be absent on failure. |
+
+### Agent — the application
+
+A live `@orkestrel/agent` turn. `launch` calls `agent.stream({ signal })` and drains `events`; each `AgentChunk` folds into a bounded observation — `token` and `think` deltas into a capped redacted `note`, each `tool` chunk into a `TaskOperation`, `usage` into `TaskProgress` — and `await result` produces the `ExecutionResult`, resolving partial on a cancel exactly as the agent runtime already promises.
+
+It lives in the application because `ExecutorInterface` is a total public contract with no supervisor-internal access: an out-of-package executor is a first-class citizen, not a plugin. Putting `@orkestrel/agent` on supervisor's dependency edges would make every server that supervises a CLI install an inference runtime it never loads. If a second consumer ever appears, the natural home is whichever package already depends on both — never supervisor.
+
+An agent turn holds no durable native session that survives process death, so the agent executor implements `probe` as proven absence after a restart. That makes relaunch *technically* safe and *semantically* dangerous: the tokens are already spent and any tool the turn dispatched may have already acted. The application decides; a tool-calling agent should fail closed.
+
+### Human — the application
+
+A durable input request over `@orkestrel/terminal`'s prompt forms. `launch` calls `PromptInterface.park` and commits the returned `Ticket.id` as the native identity; the parked prompt emits a `request` observation carrying a `TaskConstraint` (which is what MCP projects as `input_required`), and the answer emits a `settlement` observation. `probe` consults `PromptInterface.pending`: present is life, an authoritative empty broker is proven absence, and an unreachable broker is undeterminable.
+
+It lives in the application for the same dependency reason as the agent executor, plus one of its own: how long a question stays askable, and to whom, is product policy.
+
+The human executor is the sharpest illustration of why a per-attempt registry was required. A task with a `timeout` can have its attempt deadline fire while a human is still looking at the prompt; workflow starts attempt N+1, which parks a second prompt. Two live external units, one task. One replaceable claim slot could hold only one of them and would silently lose the other. Two unit rows hold both, and the fence decides which may publish.
+
+## The launch transaction
+
+Intent before effect. Nothing crosses the external boundary before the intent row commits.
+
+```text
+1. W  the required 'attempt' checkpoint resolves true          [workflow, already ships]
+      ⇒ (workflow.id, task.id, attempts) is durable and unique
+2. S  ONE transaction: re-read the lease row, confirm the epoch,
+      insert the intent unit row (status 'running', no identity, revision 1)
+3. X  executor.launch(input) — the external boundary is crossed HERE and not before
+4. S  unit.identify(id) — the native identity commits under the SAME epoch, revision 2
+5. S  observations, settlement, and control are accepted only while
+      the lease epoch and the unit revision both still match
+```
+
+The whole sequence lives in `RunInterface.launch`, which is the single place any of it may happen. **Absence of a unit row for attempt N proves no effect occurred**, which is what makes relaunch safe in that state and only in that state.
+
+A reattachment takes the same path with step 3 replaced: when the record already holds a reconciled re-attachable unit for the same `(workflow, task)`, `RunInterface.launch` commits the attempt-N+1 intent row **carrying that unit's existing identity** and adopts its `ExecutionInterface` instead of launching. Two rows, one identity, one external effect — visible in the record, derived rather than flagged.
+
+## Recovery
+
+Three outcomes, never two.
+
+- **reattach** — a native identity is recorded and the provider confirms the unit lives.
+- **relaunch** — only on authoritative proof of absence from the provider or prompt store. A transient attach failure is not proof, and a missing `probe` is not proof.
+- **quarantine** — an intent row exists but the launch outcome is undeterminable. A first-class terminal state, not a retry. For non-idempotent work it fails closed.
+
+### `recoverWorkflow` is never applied blindly
+
+The shipped `recoverWorkflow` preserves consumed attempts, converts retryable `running` work to `pending`, and turns an exhausted `running` task into a recovery failure (`recoverWorkflowSnapshot`, `src/core/helpers.ts:450`). Applying it before the supervisor reconciles its own record consumes retry budget for an attempt that may still be re-attachable. The order is fixed:
+
+```ts
+const snapshot = await store.get(id)                      // workflow's durable snapshot
+const run = await supervisor.open(id)                     // acquire a FRESH epoch; CONFLICT ⇒ someone else owns it
+const reconciled = await supervisor.reconcile(snapshot)   // decide per unit, FIRST
+const workflow = recoverWorkflow(reconciled.snapshot)     // only NOW
+await runner.execute(workflow, { signal, timeout })
+```
+
+`reconcile` probes each live unit through its recorded `executor` name, sets each unit's `recovery`, holds an `ExecutionInterface` for every `reattach`, and projects the snapshot: a quarantined unit's task is written `failed` with a `TaskFailure` of origin `'recovery'` **before** `recoverWorkflow` sees it, so recovery never demotes work whose outcome is already terminal, and a re-attachable unit's task is left for recovery to demote to `pending` normally — because the reattachment is carried by the record, not by the tree. That is the whole point of a per-attempt registry: the tree does not need to express reattachment, so workflow does not need to change.
+
+## Fencing
+
+`StorageInterface` — the capability a driver passes into one transaction scope — already exposes everything a lease needs, inside that scope: `read`, `write`, an atomic `insert` that rejects `CONFLICT` when the key exists, `delete`, `keys`, `scan`, and `clear`, with the driver committing when the callback fulfills and rolling back when it rejects, and `commit` / `rollback` observable on `DatabaseEventMap`. `insert` is exactly a lease-acquire primitive. `DatabaseInterface.transaction(scope, options?)` hands the scope a `DatabaseStorageInterface`, and `SQLiteDriver` implements `transaction?` as a callback-scoped real `BEGIN` / `COMMIT` / `ROLLBACK`.
+
+**No amendment to `@orkestrel/database` is required.** `createDatabaseSupervisorStore` composes `acquire` as one transaction — `insert` the lease row, or `read` it and take over only when its `expiry` has passed — and `set` as one transaction that re-reads the lease, compares the epoch, and writes the unit row at `revision + 1` or fails `FENCED`.
+
+`IndexedDBDriver` deliberately omits `transaction?`, because an `IDBTransaction` can auto-commit when the microtask queue drains and no callback could truthfully remain inside one native transaction. **So a browser can observe and drive a supervised run and can never hold a lease.** That is a design fact of the storage substrate, not an omission to be worked around, and the browser build of supervisor exposes `inspect` and the read side of the journal without `acquire`.
+
+## Honest limits
+
+There is no exactly-once. Fencing prevents stale publication; it cannot undo an external side effect that already happened. The irreducible indeterminate interval is:
+
+> from the earliest instant `executor.launch` may have been accepted by the provider, to the instant the native identity commit for that unit is durable.
+
+Inside that interval a crash leaves an intent row with no identity, and the record honestly cannot say whether an effect occurred. Production policy chooses one of three answers and states which: provider idempotency keys, native recovery through a `probe` that can prove absence, or fail-closed quarantine. The supervisor's contribution is that the interval is *named, bounded, and observable* — not that it is closed.
+
+`RunInterface.launch` also cannot make a never-settling store Promise settle. A blocked required checkpoint blocks the run, and operators need a backend-specific health and shutdown policy outside both workflow core and supervisor core.
+
+## What must land in `@orkestrel/mcp` first
+
+The supervisor projection is blocked on generic MCP work tracked in that repository's own proposal (`/home/user/mcp/PROPOSAL.md`); it is not restated here.
+
+- **Target 2026-07-28 first.** The durable id returned in an ordinary tool result is the substrate. The Tasks extension is optional augmentation, never the substrate — it has no implementations, and 2026-07-28 removed blocking `tasks/result`.
+- **No MCP resources in the first slice.** `inspect` already carries the authoritative read.
+- **An independent service host.** A client-spawned stdio process cannot honestly promise to outlive the client that spawned it; `@orkestrel/sea` is the deployment answer.
+- **The durable tool is named `supervisor`.** Toolbox keeps `workflow` for its bounded author-and-run-in-one-call operation, which the application must bound so it cannot become a second long-run path. Renaming toolbox's to `execute` remains a good independent improvement.
+- **MRTR cannot push a later input request into a completed call.** Detached runs surface `input_required` through a subscription plus an explicit `reply` command.
+
+### The `supervisor` tool's command axis
 
 | Command   | Meaning                                                                                                                     |
 | --------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `start`   | Validate a definition, durably accept it, begin server-owned execution, and promptly return a durable workflow/task handle. |
-| `inspect` | Return the authoritative current snapshot, activity, persistence outcome, and external-attempt observation.                 |
-| `pause`   | Close Workflow's cooperative dispatch gates; it does not suspend arbitrary JavaScript or an OS process.                     |
-| `resume`  | Reopen a live Workflow pause gate; it is not provider session continuation or crash recovery.                               |
-| `stop`    | Request graceful Workflow stop and, where applicable, provider interruption/termination through the owning adapter.         |
-| `steer`   | Send provider-native steering to an active external session when that provider supports it.                                 |
-| `reply`   | Supply required provider input or approval through the native channel; never auto-approve.                                  |
+| `start`   | Validate a definition, durably accept it, begin server-owned execution, and promptly return a durable workflow handle.       |
+| `inspect` | Return the authoritative `RunSnapshot`, the workflow snapshot, activity, persistence outcome, and journal tail.              |
+| `pause`   | Close Workflow's cooperative dispatch gates; it does not suspend arbitrary JavaScript or an OS process.                      |
+| `resume`  | Reopen a live Workflow pause gate; it is not provider session continuation or crash recovery.                                |
+| `stop`    | Request graceful Workflow stop and, through the owning unit, provider interruption/termination where supported.              |
+| `steer`   | Send provider-native steering to an active unit whose executor implements `steer`; otherwise `UNSUPPORTED`.                  |
+| `reply`   | Supply required input or approval through the native channel; never auto-approve.                                            |
 
-When negotiated, MCP elicitation carries required operator input with related-task metadata. Otherwise a Terminal/application adapter may park on real operator input. Neither path polls, fabricates a reply, or bypasses provider permission policy.
-
-The durable workflow id is stable across transports, sessions, and recovery. A provider session id and MCP task id are correlated identifiers, not replacements for it. The server stores those correlations with an epoch/attempt record before treating a launch as owned.
-
-### Capability-negotiated MCP Tasks
-
-MCP Tasks were introduced as **experimental** in protocol version 2025-11-25. They are durable request state machines designed for polling and deferred results, and both peers must declare category-specific support during initialization. Tool-level `execution.taskSupport` further declares required, optional, or forbidden task augmentation. See the official [MCP Tasks specification](https://modelcontextprotocol.io/specification/2025-11-25/basic/utilities/tasks).
-
-When both client and server support task-augmented `tools/call`:
-
-1. `workflow` declares optional or required task support only after generic MCP Tasks exist in the MCP package.
-2. A task-augmented `start` returns `CreateTaskResult` promptly; the actual Tool result is retrieved through `tasks/result`.
-3. Clients use `tasks/get`, optional paginated `tasks/list`, and—when negotiated—`tasks/cancel`.
-4. The initial progress token remains valid for the task lifetime and projects accepted Workflow activity through MCP [progress notifications](https://modelcontextprotocol.io/specification/2025-11-25/basic/utilities/progress).
-5. `notifications/tasks/status` may reduce latency, but clients must not depend on it; `tasks/get` remains the resynchronization path.
-
-When a client lacks compatible Tasks support, `start` returns the durable workflow id through an ordinary tool result. Follow-up `workflow` calls operate on that id. After generic MCP resources and subscription/change notifications exist in the MCP package, current snapshots may also be exposed as [MCP resources](https://modelcontextprotocol.io/specification/2025-11-25/server/resources). Events are bounded hints; an authoritative snapshot read repairs missed, duplicated, reordered, or post-reconnect delivery.
-
-The current local MCP 0.0.8 surface implements protocol 2025-06-18 initialization, ping, `tools/list`, and `tools/call` over Tool plus its sessions/transports. It does not yet implement Tasks, resources, or Workflow integration. Generic protocol support must land before the Workflow projection. No claim is made that Claude Code, Codex, or Cursor currently negotiates every experimental Tasks feature; capability detection decides the path at runtime.
+When negotiated, MCP elicitation carries required operator input with related-task metadata. Otherwise the human executor parks on a real operator. Neither path polls, fabricates a reply, or bypasses provider permission policy. The durable workflow id is stable across transports, sessions, and recovery; a provider session id and an MCP task id are correlated identifiers, not replacements for it.
 
 ### State mapping
 
-| Workflow/integration observation                                                                | MCP task projection                                                                 |
+| Supervisor/workflow observation                                                                 | MCP task projection                                                                 |
 | ----------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
 | Accepted and nonterminal                                                                        | `working`                                                                           |
-| Native provider explicitly needs approval/input to continue                                     | `input_required` plus related-task metadata and the provider's real input channel   |
+| A `request` observation from a real provider or prompt broker                                   | `input_required` plus related-task metadata and the real input channel              |
 | Workflow execution completes, including graceful mode with failed tasks recorded as result data | `completed`; the Tool result still exposes the Workflow status/results/fault fields |
-| Provider launch/protocol failure or required persistence fault prevents a valid result          | `failed`                                                                            |
+| `LAUNCH` / `PROTOCOL` / `STORE` failure, or a required persistence fault                        | `failed`                                                                            |
+| `QUARANTINE`                                                                                    | `failed`, with the quarantine reason in the result — never a retry                  |
 | Valid MCP cancellation or observed Workflow stop                                                | `cancelled`                                                                         |
 
-`input_required` must arise from a real provider/MCP elicitation observation, never from an arbitrary Workflow constraint or a stale log line. MCP requires a cancelled task to remain cancelled even if underlying execution later completes. Therefore inspection records both **requested cancellation** and **observed termination**; a cancelled protocol state must not falsely assert that an uncooperative process has exited.
+`input_required` must arise from a real observation, never from an arbitrary Workflow constraint or a stale log line. MCP requires a cancelled task to remain cancelled even if underlying execution later completes, so inspection records both **requested cancellation** and **observed termination**; a cancelled protocol state must not falsely assert that an uncooperative process has exited.
 
 ## Authority, persistence, and recovery
 
-The authoritative chain is:
-
 ```text
-durable Workflow snapshot + epoch/attempt record
+durable Workflow snapshot  +  fenced supervisor record (lease, units, journal)
         ↓
-live Workflow entity and provider observation
+live Workflow entity and live ExecutionInterface observations
         ↓
-MCP Task/resource/tool projection
+MCP task/tool projection
         ↓
 client cache and UI
 ```
 
-The projection never reconstructs truth by replaying notifications alone. A reconnect reads the durable record, acquires a fresh epoch lease transactionally, feature-detects native provider recovery, and then either reconnects, resumes as a new persisted attempt, or records a normalized failure. Only the current epoch may publish provider observations or settle the logical task.
-
-Minimum durable integration data:
-
-- workflow id, definition/snapshot, revision, and persistence fault;
-- current epoch and lease owner/expiry;
-- logical task plus consumed Workflow attempt;
-- provider, native session/thread identifier, launch/continuation command, and observed process/session state;
-- requested controls and observed acknowledgements/termination;
-- bounded, redacted observation journal with sequence and timestamps.
-
-Raw prompts, credentials, complete transcripts, and unbounded stdout/stderr do not belong in Workflow activity or the journal. Store references or redacted summaries when retention is authorized.
+The projection never reconstructs truth by replaying notifications alone. Only the current epoch may publish observations or settle a unit. Raw prompts, credentials, complete transcripts, and unbounded stdout/stderr never enter Workflow activity or the journal; store references or redacted summaries when retention is authorized.
 
 ### Crash and race matrix
 
-| Boundary                                                       | Required behavior                                                                                                                                                    |
-| -------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Crash before initial checkpoint                                | No accepted handle and no launch.                                                                                                                                    |
-| Crash after attempt checkpoint, before launch                  | `Task.start()` already consumed that attempt before the checkpoint. Recovery may launch again only within the remaining retry budget and under a fresh fenced epoch. |
-| Launch succeeds before native id/process observation is stored | Probe native recovery first; never blindly launch a duplicate. If identity cannot be established, fail closed for non-idempotent work.                               |
-| External side effect occurs before settlement checkpoint       | Recovery uses the provider/native id and application idempotency key; Workflow alone cannot prove exactly-once effects.                                              |
-| Provider waits for approval/input                              | Record the native observation; project `input_required`; park on the native input mechanism, not polling.                                                            |
-| Session disappears or cannot resume                            | Start a new persisted provider attempt only if retry policy permits; this is not `Task.resume()`.                                                                    |
-| Two restorers race                                             | A storage transaction grants one epoch/lease; stale epochs cannot launch, journal, or settle.                                                                        |
-| Unknown/malformed stream frame                                 | Preserve a bounded redacted diagnostic, ignore forward-compatible unknown fields when allowed, and fail the attempt on malformed required structure.                 |
-| Activity becomes silent                                        | Surface silence as observation; do not infer failure or kill work without explicit application policy.                                                               |
-| Task is paused until its deadline                              | Deadline continues; the attempt may time out before provider dispatch, matching Workflow semantics.                                                                  |
-| Cancel races completion                                        | Serialize the authoritative observation; retain MCP's terminal cancellation rule once cancellation succeeds and separately record late native completion.            |
-| Store Promise never settles                                    | The run remains blocked at the required checkpoint; operators need a backend-specific health/termination policy outside Workflow core.                               |
-| MCP reconnect or authorization changes                         | Reauthenticate, authorize the workflow id, read current state, then resume hints; never trust a prior transport session as authority.                                |
-
-## Future Harness package handoff
-
-This is deliberately short. The future Harness package should be built only when the Workflow MCP path has a real provider-backed consumer. It adapts installed Claude Code, Codex, and Cursor harnesses and is not a drop-in replacement for them. It owns its normalized provider sessions, launched-process trees only where native supervision is absent, bounded redacted journals, epoch fencing, and native recovery.
-
-| Provider/version evidence     | Preferred integration                                                                                                                                                                                                                                                                                                                                                                                                                                               | Fallback/limit                                                                                                                                                                 |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Claude Code 2.1.220           | Feature-detect Agent Teams/Agent View supervision and native session operations; use `agents --json`, attach/logs/stop/respawn, peek/reply where available. Claude documents Agent View as a research preview with working/input/idle/completed/failed/stopped states and a persistent supervisor. [Agent View](https://code.claude.com/docs/en/agent-view), [sessions](https://code.claude.com/docs/en/sessions), [CLI](https://code.claude.com/docs/en/cli-usage) | Headless stream JSON plus session resume. Permission hooks may route real requests but must never auto-answer or bypass policy. [Hooks](https://code.claude.com/docs/en/hooks) |
-| Codex CLI 0.145.0             | Prefer Codex App Server: a long-lived bidirectional JSONL service with persisted threads/turns/items, streaming events, approval/input requests, resume/read/list, and interrupt. [App Server README](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md), [harness architecture](https://openai.com/index/unlocking-the-codex-harness/)                                                                                                       | `codex exec` is a one-shot fallback and loses App Server's richer native lifecycle.                                                                                            |
-| Cursor CLI 2026.07.23-e383d2b | Headless `-p --output-format stream-json`, preserve `session_id`, ignore forward-compatible unknown fields, and use native resume/list commands. [Using the CLI](https://docs.cursor.com/en/cli/using), [parameters](https://docs.cursor.com/en/cli/reference/parameters), [output format](https://docs.cursor.com/en/cli/reference/output-format), [headless](https://docs.cursor.com/en/cli/headless)                                                             | No equivalent native persistent supervisor was verified; own and terminate only the process tree the adapter launched. A terminal result may be absent on failure.             |
-
-The Harness remains a native-aware adapter/supervisor over those installed harnesses, preserving their own session, approval, recovery, and process capabilities. Terminal supplies operator interaction only where needed; it does not become the execution owner. Approvals and credentials always use the provider's real policy/input channel.
+| Boundary                                                       | Required behavior                                                                                                                                                      |
+| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Crash before initial checkpoint                                | No accepted handle and no launch.                                                                                                                                        |
+| Crash after attempt checkpoint, before the intent commit        | No unit row exists for attempt N, which **proves** no effect occurred. Relaunch is safe within the remaining retry budget under a fresh epoch. **(C1)**                  |
+| Crash after the intent commit, before the identity commit       | The irreducible interval. `probe` proves life ⇒ reattach; proves absence ⇒ relaunch; cannot tell, or is absent ⇒ quarantine. **(C1, C2, C5)**                            |
+| Restore applies `recoverWorkflow` before reconciliation         | Forbidden. Reconcile the supervisor record first, then recover; otherwise a re-attachable attempt's retry budget is spent. **(C3)**                                      |
+| A timed-out attempt leaves a live external unit                 | Attempt N's unit row stays `running` while attempt N+1 commits its own row. Both are addressable; the fence decides which may publish. **(C1)**                          |
+| External side effect occurs before the settlement checkpoint    | Recovery uses the recorded native identity and the application's idempotency key; neither workflow nor supervisor can prove exactly-once effects. **(C5)**               |
+| Provider waits for approval/input                               | Record a `request` observation; project `input_required`; park on the native input mechanism, not polling.                                                               |
+| Session disappears or cannot resume                             | A new persisted attempt only if retry policy permits and absence was proved; this is not `Task.resume()`.                                                                |
+| Two restorers race                                              | `SupervisorStoreInterface.acquire` grants exactly one epoch through the driver's atomic `insert`; the loser gets `CONFLICT` and stale epochs cannot launch, journal, or settle. **(C4)** |
+| A browser tries to hold a lease                                 | `IndexedDBDriver` has no `transaction`, so it cannot. Browsers observe and drive; they never fence. **(C4)**                                                             |
+| Unknown/malformed stream frame                                  | `ProviderInterface.observe` returns `undefined` for a forward-compatible unknown frame; a malformed required frame fails the attempt with `PROTOCOL` and a bounded redacted `diagnostic` observation. |
+| Activity becomes silent                                         | Surface silence as observation; do not infer failure or kill work without explicit application policy.                                                                   |
+| Task is paused until its deadline                               | The deadline continues; the attempt may time out before provider dispatch, matching Workflow semantics.                                                                  |
+| Cancel races completion                                         | Serialize the authoritative observation; retain MCP's terminal cancellation rule once cancellation succeeds and separately record late native completion.                |
+| Store Promise never settles                                     | The run remains blocked at the required checkpoint; operators need a backend-specific health/termination policy outside core.                                            |
+| MCP reconnect or authorization changes                          | Reauthenticate, authorize the workflow id, read current state, then resume hints; never trust a prior transport session as authority.                                    |
 
 ## Security and operational limits
 
-- Authorize every inspect/control/result request against the durable workflow id; task ids and provider session ids are not bearer secrets.
+- Authorize every inspect/control/result request against the durable workflow id; task ids, unit ids, and provider session ids are not bearer secrets.
 - Bind leases and provider observations to a tenant/workspace boundary.
 - Redact secrets before persistence; cap journal entries, bytes, and age; never persist environment dumps.
-- Keep stdout/stderr parsing defensive and forward-compatible while rejecting malformed required frames.
-- Never translate `reply` into unconditional approval. Preserve provider permission modes and audit the human/native decision.
-- Terminate only process trees launched and owned by the adapter. Native supervisors remain the source of process ownership when present.
-- Require application-level idempotency for external side effects; neither Workflow checkpoints nor MCP Tasks create exactly-once execution.
+- Keep stream parsing defensive and forward-compatible while rejecting malformed required frames.
+- Never translate `reply` into unconditional approval. Preserve provider permission modes and audit the human or native decision.
+- Terminate only process trees the provider executor launched and owns. Native supervisors remain the source of process ownership when present.
+- Require application-level idempotency for external side effects; neither Workflow checkpoints, supervisor fencing, nor MCP tasks create exactly-once execution.
 - Expose the never-settling-store limitation in service health and shutdown behavior rather than hiding it behind a core timeout.
 
 ## Implementation campaign
 
-1. **Close current Workflow parity.** Finish and independently verify the present Workflow hardening: snapshot ownership, recovery, pause/activity semantics, persistence faulting, and real-clock scheduler coverage. Publish no future behavior in the shipped guide.
-2. **Add generic MCP 2025-11-25 primitives.** Upgrade protocol negotiation first; implement Tasks, progress association, cancellation, pagination, status notifications, and resources/subscriptions as generic MCP mechanisms with protocol fixtures. Preserve the existing Tool boundary.
-3. **Compose the `workflow` tool in MCP/application code.** Use Workflow's existing contract, runner, store, snapshots, activity, controls, recovery, and events. Return a durable handle promptly and keep execution in the server process. Do not add a Workflow dependency on MCP/Tool.
-4. **Prove reconnect and authority.** Add transactional epoch/lease storage through existing Database/SQLite capabilities; test server restart, duplicate restorer, notification loss, cancellation races, and authorization changes. No Database/SQLite/IndexedDB republish is justified unless inspection finds a missing required primitive.
-5. **Exercise native clients.** Capability-negotiate Claude Code, Codex, and Cursor rather than assuming Tasks support. Verify ordinary durable-id fallback and Tasks paths wherever each client actually supports them.
-6. **Create Harness only for a real provider consumer.** Start with the Codex App Server adapter because it exposes the richest documented persistent protocol, then Claude native supervision, then Cursor headless/process ownership. Keep the package native-aware and narrow.
-7. **Run live gates explicitly.** Opt-in credentials and installed CLIs only; never make ordinary unit gates depend on live provider availability.
+Serial where a unit depends on another's contract; parallel otherwise. One writer at a time in the main checkout.
 
-Package baseline inspected on 2026-07-31: Workflow 0.0.7, Contract 0.0.9, Database 0.0.7, IndexedDB 0.0.6, SQLite 0.0.6, Tool 0.0.8, MCP 0.0.8, Agent 0.0.12, Terminal 0.0.5, Scaffold 0.0.13, and Workspace 0.0.2. Exact installed Workflow dependencies resolve to Contract 0.0.9 and Database 0.0.7. Versions record the inspected baseline; they do not imply feature support.
+| Unit | Work                                                                                                                                    | Role / engine        | Depends on | Acceptance                                                                                                                                                          |
+| ---- | --------------------------------------------------------------------------------------------------------------------------------------- | -------------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| U0   | Close current Workflow parity: snapshot ownership, recovery, pause/activity, persistence faulting, real-clock scheduler coverage.        | `verifier` / Sonnet  | —          | All five workflow gates green; the shipped guide describes no future behavior.                                                                                       |
+| U1   | Scaffold `@orkestrel/supervisor` (core + server, configs, test projects, barrels) from `@orkestrel/scaffold` 0.0.13.                     | `builder` / Sonnet   | —          | `npm run check` and an empty `npm test` pass; no published behavior yet.                                                                                             |
+| U2   | `src/core/types.ts`: the whole contract above, plus TSDoc and naming conformance.                                                        | `implementer` / Opus | U1         | Every member is one word; no `kind`/`type` discriminant; no sentinel; `check` green on an implementation-free contract.                                               |
+| U3   | `errors.ts`, `validators.ts`, `helpers.ts`: `SupervisorError`, `isSupervisorError`, wire guards for `UnitSnapshot` / `RunSnapshot` / `Observation`, the unit-id derivation. | `codex` route `implementer` / Sol | U2 | Every guard is total and returns `false` off-shape for cycles, depth, and hostile prototypes; each is unit-tested.                                                    |
+| U4   | The lease module: `SupervisorStoreInterface`, a memory store, and `createDatabaseSupervisorStore` over `StorageInterface.insert` inside one `transaction`. | `codex` route `implementer` / Sol | U3 | `acquire` grants one epoch under real concurrency; `set` fails `FENCED` after the epoch moves; both proved over a real temporary SQLite file.                        |
+| U5   | `Supervisor`, `Run`, `Unit` classes and `RunInterface.launch` — the whole C1 transaction, in one place.                                  | `codex` route `implementer` / Sol | U4 | No code path reaches an executor before the intent row commits; a test asserts the record contains no unit row when launch is interrupted before commit.             |
+| U6   | `reconcile`: probe dispatch, the three outcomes, the snapshot projection, and the C3 ordering.                                           | `codex` route `implementer` / Sol | U5 | A missing `probe` yields `quarantine`, never `relaunch`; a transient probe failure yields `quarantine`, never `relaunch`; the projected snapshot spends no budget for a re-attachable attempt. |
+| U7   | `JournalInterface` with a memory implementation, byte/entry/age caps, and redaction.                                                     | `codex` route `implementer` / Sol | U3 | Caps are enforced at write; a secret-bearing frame is redacted before persistence; `prune` reports what it dropped.                                                   |
+| U8   | `createWorkflowFunction` and `createFunctionExecutor`.                                                                                   | `implementer` / Opus | U5, U7     | One adapter serves every executor; a supervised function task completes, fails, and cancels identically to an unsupervised one at the workflow lifecycle/result seam. |
+| U9   | Server: `createProviderExecutor`, `ProviderInterface`, and the Claude/Codex/Cursor adapters.                                             | `codex` route `implementer` / Sol | U8         | Only launched process trees are killed; unknown frames are ignored forward-compatibly; malformed required frames fail `PROTOCOL`; each adapter is proved against a protocol-faithful fixture. |
+| U10  | The two falsification tests (below).                                                                                                     | `codex` route `implementer` / Sol | U9         | Both fail first against a deliberately mis-ordered launch, then pass.                                                                                                |
+| U11  | `guides/src/supervisor.md` plus parity coverage and showcase.                                                                            | `implementer` / Opus | U9         | Every backticked API resolves to a real export; every public export is documented; parity green.                                                                     |
+| U12  | Application composition sample: the agent and human executors, authorization, retention, workspace binding.                              | `application` / Sonnet | U9       | Neither `@orkestrel/agent` nor `@orkestrel/terminal` appears in supervisor's dependency graph.                                                                        |
+| U13  | Generic MCP 2026-07-28 primitives, then the `supervisor` tool composition.                                                               | per `/home/user/mcp/PROPOSAL.md` | U11 | Protocol-conformance fixtures pass before the supervisor projection uses them.                                                                                        |
+| U14  | Authoritative tree-wide gates.                                                                                                           | `verifier` / Sonnet  | U13        | `format → lint → check → build → test` green, output read.                                                                                                           |
+
+### The two falsification tests
+
+Both engines named these independently. Neither uses a mock, a fake clock, or module replacement.
+
+1. **`crash after provider commit, before identity commit — two restorers over one real temporary SQLite file`.** Drive a supervised task to the point where the intent row is committed and the executor has accepted, then terminate before `identify`. Start two restorers against the same file. Assert: exactly one `acquire` succeeds and the other returns `CONFLICT`; the winner's `reconcile` returns `quarantine` when the executor omits `probe` or the probe fails transiently, and `reattach` only when a probe proves life; the loser's fenced `set` returns `FENCED`; and `recoverWorkflow` is never called before `reconcile` resolves.
+2. **`no duplicate external unit`.** Across a full crash-and-restore cycle including a timed-out attempt, assert that the number of **distinct** `identity` values recorded across every unit of one `(workflow, task)` never exceeds the number of launches the record authorized, and that a reattachment adds a unit row without adding an identity.
+
+Package baseline recorded 2026-07-31: Workflow 0.0.8, MCP 0.0.8, Tool 0.0.8, Agent 0.0.13, Toolbox 0.0.2, Workspace 0.0.2, Scaffold 0.0.13, Contract 0.0.9, Database 0.0.7, Terminal 0.0.5. Versions record the inspected baseline; they do not imply feature support.
 
 ## Validation strategy
 
@@ -211,30 +680,35 @@ No mocks, module replacement, fake clocks, or fake provider behavior.
 | Layer            | Deterministic coverage                                                                                                                                                                 | Live coverage                                                                       |
 | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
 | Workflow         | Real entities/functions/stores; crash-boundary and pause/deadline cases; storage recorder/temporary database                                                                           | Existing package gates only                                                         |
-| MCP              | Protocol-faithful fixture peer over real transport; capability permutations; Tasks lifecycle, polling, result, cancel, progress, resources, reconnect                                  | Each supported native client against a local server                                 |
-| Provider adapter | Scripted executable/fixture server that speaks the provider's documented stream/protocol and owns a real child process; malformed/unknown frames, approval/input, resume, interruption | Opt-in installed CLI/App Server smoke with disposable workspace and bounded timeout |
-| Persistence      | Temporary SQLite/database, real transactions, two competing restorers, epoch fencing, restart                                                                                          | Service restart with the same durable database                                      |
+| Supervisor core  | Real function executor; intent-before-effect ordering; the three recovery outcomes; fence rejection; journal caps and redaction                                                        | None required                                                                       |
+| Persistence      | Temporary SQLite, real transactions, two competing restorers, epoch fencing, restart; IndexedDB proving a browser cannot acquire                                                       | Service restart against the same durable database                                   |
+| Provider adapter | Scripted executable/fixture server speaking each provider's documented stream/protocol and owning a real child process; malformed/unknown frames, approval/input, resume, interruption | Opt-in installed CLI/App Server smoke with a disposable workspace and bounded timeout |
+| MCP              | Protocol-faithful fixture peer over a real transport; capability permutations; durable-id path and, where negotiated, task augmentation                                                | Each supported native client against a local server                                 |
 
-Live assertions must prove session/thread recovery, approval/input parking, process ownership, requested-cancel versus observed termination, redaction, and no duplicate launch. A provider unavailable or unauthenticated is a reported skipped opt-in gate, never simulated success.
+Live assertions must prove session recovery, approval/input parking, process ownership, requested-cancel versus observed-termination, redaction, and no duplicate external unit. A provider that is unavailable or unauthenticated is a reported skipped opt-in gate, never simulated success.
 
 ## Acceptance criteria
 
-- Workflow remains independent of Tool, MCP, Agent, Terminal, and Harness.
-- Generic MCP Tasks/resources/progress pass protocol-conformance fixtures before Workflow uses them.
-- `workflow start` promptly returns a durable handle and server execution survives client disconnect.
-- Both negotiated Tasks and durable-id fallback paths resynchronize from authoritative state.
-- `inspect`, `pause`, `resume`, `stop`, `steer`, and `reply` preserve the semantics and authority described above.
-- Crash/race matrix cases have deterministic real-implementation tests, including two-restorer fencing.
+- Workflow remains independent of Tool, MCP, Agent, Terminal, and Supervisor, and gains no new `TaskSnapshot` member, checkpoint, or claim field.
+- Supervisor's dependency graph contains neither `@orkestrel/agent` nor `@orkestrel/terminal`.
+- Every proposed public member is one word; every discriminant names its axis; absence is `undefined` everywhere.
+- No code path reaches an executor before the intent row commits, and `RunInterface.launch` is the only place the sequence exists.
+- `reconcile` runs before `recoverWorkflow` in every documented and tested recovery path.
+- `relaunch` is reachable only from proven absence; a missing or failing `probe` yields `quarantine`.
+- Two restorers over one real temporary SQLite file produce one epoch, one `CONFLICT`, and no duplicate external unit.
+- An unsupported executor operation returns a typed `UNSUPPORTED` failure and never reports success.
+- Generic MCP primitives pass protocol-conformance fixtures before the supervisor projection uses them.
+- `supervisor start` promptly returns a durable handle and server execution survives client disconnect.
 - No integration auto-approves, reads secrets into journals, or claims process termination before observation.
 - Native provider support is feature-detected and live-tested at the recorded version; unsupported features degrade to the documented fallback.
-- Shipped guides describe only implemented behavior; this proposal is the sole home for future behavior until implementation lands.
+- Shipped guides describe only implemented behavior; this proposal is the sole home for proposed behavior until implementation lands.
 
 ## Open verification questions
 
-- Which of Claude Code, Codex, and Cursor actually negotiates MCP 2025-11-25 Tasks, task-augmented tool calls, cancellation, resources, subscriptions, and elicitation at implementation time?
-- Does the chosen MCP transport keep the server process alive independently of every supported client, or is a separate service host required?
-- What transactional lease primitive and expiry policy best fit the deployed SQLite/server topology?
+- Which of Claude Code, Codex, and Cursor exposes a command that **authoritatively** reports a session's absence, as opposed to failing to attach to it? That answer alone decides how much work can ever be relaunched rather than quarantined.
+- Does the chosen MCP transport keep the server process alive independently of every supported client, or is `@orkestrel/sea` required from day one?
+- What lease expiry policy fits the deployed SQLite/server topology, and what does an operator do with a run whose owner died mid-interval?
 - Which provider operations acknowledge steering, reply, interrupt, and termination strongly enough to record as observed rather than requested?
-- What tenant/workspace authorization model governs workflow ids, MCP task ids, resources, and native provider session identifiers?
+- What tenant/workspace authorization model governs workflow ids, unit ids, MCP task ids, and native provider session identifiers?
 
-These questions are release gates, not invitations to speculate in Workflow's public types.
+These are release gates, not invitations to speculate in a public type.
