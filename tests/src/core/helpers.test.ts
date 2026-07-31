@@ -12,19 +12,19 @@ import {
 	buildWorkflowContext,
 	canTransitionTask,
 	collectResults,
-	createWorkflow,
 	definitionToSnapshot,
 	deriveBoundary,
 	derivePhaseStatus,
 	deriveWorkflowStatus,
+	errorToMessage,
 	failure,
 	findFailure,
 	insertEntry,
 	isTerminalStatus,
-	isWorkflowSnapshot,
 	moveEntry,
 	parkSignal,
 	phaseDefinitionToSnapshot,
+	resolveTaskSilence,
 	success,
 	taskDefinitionToSnapshot,
 } from '@src/core'
@@ -375,10 +375,12 @@ function permutations<T>(items: readonly T[]): readonly (readonly T[])[] {
 
 describe('canTransitionTask — the legal §10 transition graph', () => {
 	it('allows the legal moves off pending and running', () => {
-		for (const to of ['running', 'skipped', 'stopped'] as const) {
+		const pending: readonly TaskStatus[] = ['running', 'skipped', 'stopped']
+		const running: readonly TaskStatus[] = ['completed', 'failed', 'skipped', 'stopped']
+		for (const to of pending) {
 			expect(canTransitionTask('pending', to)).toBe(true)
 		}
-		for (const to of ['completed', 'failed', 'skipped', 'stopped'] as const) {
+		for (const to of running) {
 			expect(canTransitionTask('running', to)).toBe(true)
 		}
 	})
@@ -426,9 +428,17 @@ describe('lineage context builders (the chain UP the tree)', () => {
 		const phase = buildPhaseContext(workflow, { id: 'p', name: 'P' })
 		const task = buildTaskContext(phase, { id: 't', name: 'T' })
 		expect(workflow).toEqual({ id: 'w', name: 'W', description: 'desc' })
-		expect(phase.workflow).toBe(workflow)
-		expect(task.phase).toBe(phase)
+		expect(phase.workflow).toEqual(workflow)
+		expect(phase.workflow).not.toBe(workflow)
+		expect(task.phase).toEqual(phase)
+		expect(task.phase).not.toBe(phase)
 		expect(task.phase.workflow.id).toBe('w')
+		expect(Object.isFrozen(workflow)).toBe(true)
+		expect(Object.isFrozen(phase)).toBe(true)
+		expect(Object.isFrozen(phase.workflow)).toBe(true)
+		expect(Object.isFrozen(task)).toBe(true)
+		expect(Object.isFrozen(task.phase)).toBe(true)
+		expect(Object.isFrozen(task.phase.workflow)).toBe(true)
 	})
 
 	it('omits an absent description rather than storing undefined', () => {
@@ -497,7 +507,14 @@ describe('definitionToSnapshot — the initial, all-pending construction input',
 			name: 'T',
 			run: 'f',
 		})
-		expect(task).toEqual({ id: 't', name: 'T', status: 'pending', metadata: {}, run: 'f' })
+		expect(task).toEqual({
+			id: 't',
+			name: 'T',
+			status: 'pending',
+			metadata: {},
+			attempts: 0,
+			run: 'f',
+		})
 	})
 
 	it('persists the EFFECTIVE per-phase bail — a phase override wins, else it inherits the workflow', () => {
@@ -575,43 +592,6 @@ describe('parkSignal — a one-shot promise-park on an AbortSignal, never reject
 	})
 })
 
-describe('isWorkflowSnapshot — the §14 boundary narrow for an opaque snapshot read', () => {
-	// A REAL snapshot (createWorkflow(...).snapshot()) — the value DatabaseWorkflowStore reads back
-	// from its opaque JSON column. The guard narrows `unknown` → WorkflowSnapshot by shape, total
-	// (never throws), so the durable store can impose the type at the storage boundary with no cast.
-	const definition: WorkflowDefinition = {
-		id: 'release',
-		name: 'Release',
-		phases: [
-			{
-				id: 'build',
-				name: 'Build',
-				tasks: [{ id: 't', name: 'T', run: 'f' }],
-			},
-		],
-	}
-	const snapshot = createWorkflow(definition).snapshot()
-	// A JSON round-trip mimics the real storage read (a structured clone / a driver row).
-	const revived: unknown = JSON.parse(JSON.stringify(snapshot))
-
-	it('accepts a real WorkflowSnapshot (and its JSON-revived form)', () => {
-		expect(isWorkflowSnapshot(snapshot)).toBe(true)
-		expect(isWorkflowSnapshot(revived)).toBe(true)
-	})
-
-	it('rejects non-snapshots without throwing (totality, AGENTS §14)', () => {
-		// Off-shape primitives / structures all return false, never an error.
-		for (const value of [undefined, null, 42, 'snapshot', [], {}, { id: 'x' }]) {
-			expect(isWorkflowSnapshot(value)).toBe(false)
-		}
-		// A record missing one required field, or with a wrong-typed field, is rejected.
-		expect(isWorkflowSnapshot({ ...snapshot, bail: 'yes' })).toBe(false)
-		expect(isWorkflowSnapshot({ ...snapshot, phases: 'none' })).toBe(false)
-		const { created: _omit, ...withoutCreated } = snapshot
-		expect(isWorkflowSnapshot(withoutCreated)).toBe(false)
-	})
-})
-
 describe('success / failure — the Result constructors (AGENTS §12)', () => {
 	it('success boxes a value as { success: true, value }', () => {
 		expect(success(42)).toEqual({ success: true, value: 42 })
@@ -626,13 +606,36 @@ describe('success / failure — the Result constructors (AGENTS §12)', () => {
 	})
 })
 
+describe('errorToMessage', () => {
+	it('normalizes empty and hostile values without throwing', () => {
+		const hostileMessage = Object.create(Error.prototype)
+		Object.defineProperty(hostileMessage, 'message', {
+			get: () => {
+				throw new Error('hostile message')
+			},
+		})
+		const hostileString = {
+			toString: () => {
+				throw new Error('hostile string')
+			},
+		}
+
+		expect(errorToMessage(new Error('boom'))).toBe('boom')
+		expect(errorToMessage('plain')).toBe('plain')
+		expect(errorToMessage('')).toBe('unknown failure')
+		expect(errorToMessage(hostileMessage)).toBe('unknown failure')
+		expect(errorToMessage(hostileString)).toBe('unknown failure')
+		expect(errorToMessage(Symbol('reason'))).toBe('Symbol(reason)')
+	})
+})
+
 describe('findFailure — the first Failure in a positional result list', () => {
 	const outcome = (id: string, ok: boolean): TaskResult => ({
 		task: { id, name: id, phase: { id: 'p', name: 'P', workflow: { id: 'w', name: 'W' } } },
 		phase: { id: 'p', name: 'P', workflow: { id: 'w', name: 'W' } },
 		workflow: { id: 'w', name: 'W' },
 		status: ok ? 'completed' : 'failed',
-		result: ok ? success('v') : failure(new Error(`${id} failed`)),
+		result: ok ? success('v') : failure({ origin: 'handler', message: `${id} failed` }),
 		timestamp: 0,
 	})
 
@@ -805,5 +808,20 @@ describe('deriveBoundary — the index of the first pending status (the pending-
 		// Mixed statuses are not expected in practice (a pending prefix-of-suffix invariant is
 		// upheld elsewhere), but the helper itself is a pure `findIndex` — pin that behavior.
 		expect(deriveBoundary(['completed', 'pending', 'completed'])).toBe(1)
+	})
+})
+
+describe('resolveTaskSilence — runtime inheritance', () => {
+	it('inherits only a finite positive default and lets any present invalid task value disable it', () => {
+		expect(resolveTaskSilence(undefined, 10)).toBe(10)
+		expect(resolveTaskSilence(5, 10)).toBe(5)
+		expect(resolveTaskSilence(0, 10)).toBeUndefined()
+		expect(resolveTaskSilence(-1, 10)).toBeUndefined()
+		expect(resolveTaskSilence(Number.NaN, 10)).toBeUndefined()
+		expect(resolveTaskSilence(Number.POSITIVE_INFINITY, 10)).toBeUndefined()
+		expect(resolveTaskSilence(undefined, Number.NaN)).toBeUndefined()
+		expect(resolveTaskSilence(2_147_483_647, 10)).toBe(2_147_483_647)
+		expect(resolveTaskSilence(2_147_483_648, 10)).toBeUndefined()
+		expect(resolveTaskSilence(undefined, 2_147_483_648)).toBeUndefined()
 	})
 })

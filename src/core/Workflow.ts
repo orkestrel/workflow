@@ -20,6 +20,7 @@ import type {
 } from './types.js'
 import { createAbort } from '@orkestrel/abort'
 import { Emitter } from '@orkestrel/emitter'
+import { cloneWorkflowSnapshot } from './cloners.js'
 import { WorkflowError } from './errors.js'
 import {
 	buildWorkflowContext,
@@ -50,18 +51,20 @@ import { PhaseManager } from './phases/PhaseManager.js'
  *   reachable ONLY under `bail: true` (a single failed task halts the workflow); under
  *   `bail: false` a failed phase folds into `completed`. {@link #recompute} diffs on each phase
  *   change; a CHANGE emits.
- * - **Override (AGENTS §10).** `skip` / `stop` FORCE the status; the override is PERSISTED in the
- *   snapshot's own `override` field and restored DIRECTLY (no divergence guess). The snapshot also
- *   persists `bail`, so a restore re-derives status identically without a silent policy default.
+ * - **Override (AGENTS §10).** `skip` / `stop` FORCE the status; an executed task-free pending tree
+ *   may also be force-completed vacuously. The override is PERSISTED in the snapshot's own
+ *   `override` field and restored DIRECTLY (no divergence guess). The snapshot also persists
+ *   `bail`, so a restore re-derives status identically without a silent policy default.
  * - **Result tree.** `results()` flattens every phase's `results()` ({@link collectResults}) — the
  *   workflow tier; `phase(id)` + each `phase.task(id)` navigate DOWN, a task's `phase` / `workflow`
  *   navigate UP.
  * - **Snapshot.** `snapshot()` serializes the whole live tree to a {@link WorkflowSnapshot} (pure
  *   JSON); {@link import('./factories.js').restoreWorkflow} rebuilds an equivalent live tree.
  * - **Observable (AGENTS §13).** The owned {@link emitter} ({@link WorkflowEventMap}) fires
- *   `start` / `complete` / `fail` / `stop` on a derived-status CHANGE; the emitter isolates a
- *   listener throw and routes it to its `error` handler (the `error` option); `fail` carries
- *   the failing task's {@link TaskResult}.
+ *   `start` / `complete` / `fail` / `pause` / `resume` / `skip` / `stop` after the
+ *   corresponding status or runtime-gate change; the emitter isolates a listener throw and
+ *   routes it to its `error` handler (the `error` option); `fail` carries the failing task's
+ *   {@link TaskResult}.
  * - **Structural API (AGENTS §7).** `add` / `remove` / `move` / `update` gate BEFORE
  *   delegating to {@link phases} (the manager gates the target's own existence/status/id/
  *   bounds), then emit the matching {@link WorkflowEventMap} event on success only. NATIVE,
@@ -73,10 +76,10 @@ import { PhaseManager } from './phases/PhaseManager.js'
  *   naturally accepted.
  * - **Runtime lifecycle (AGENTS §10).** `pause` / `resume` / `wait` gate execution at the runner's
  *   phase/task boundaries WITHOUT touching {@link status} — `paused` is runtime-only, never
- *   persisted. `destroy` is a terminal teardown: it aborts {@link signal}, `stop`s every
- *   non-terminal live phase (so an engine parked on a phase's own gate unparks and the tree
- *   lands coherent), forces the `stop` override on THIS workflow when not already terminal,
- *   releases any parked {@link wait} waiter, and marks {@link destroyed} — all four idempotent.
+ *   persisted. `destroy` is a terminal teardown: it `stop`s every non-terminal task and
+ *   phase (releasing their gates and liveness resources), aborts {@link signal}, forces the
+ *   workflow `stop` override when needed, releases its parked waiter, and marks
+ *   {@link destroyed} — all idempotent.
  */
 export class Workflow implements WorkflowInterface {
 	declare readonly description?: string
@@ -93,6 +96,7 @@ export class Workflow implements WorkflowInterface {
 	// time (construction / a later live `add`'s mint), so mutating the object passed in AFTER
 	// construction changes only later mints, never tasks already resolved — do not mutate it.
 	readonly #functions: WorkflowFunctions | undefined
+	readonly #silence: number | undefined
 	readonly #phases: PhaseManager = new PhaseManager()
 	// The PUSH observation surface (§13) — owned, never inherited. The emitter isolates a
 	// listener throw (routing it to the `error` handler), never the cascade.
@@ -102,7 +106,7 @@ export class Workflow implements WorkflowInterface {
 	#updated: number
 	// The last computed status — the baseline a recompute diffs against to detect a CHANGE.
 	#status: WorkflowStatus
-	// The forced status of a `skip` / `stop`, overriding the derived value; `undefined` ⇒ derived.
+	// The forced status of `skip` / `stop` or vacuous completion; `undefined` ⇒ derived.
 	#override: WorkflowStatus | undefined
 	// This workflow's own cancellation handle (AGENTS core precedent) — `signal` fires on `destroy`.
 	readonly #abort: AbortInterface
@@ -126,6 +130,7 @@ export class Workflow implements WorkflowInterface {
 		// persisted per-phase bail; omitted ⇒ each phase keeps its own persisted policy (identical restore).
 		this.#bailOverride = options?.bail
 		this.#functions = options?.functions
+		this.#silence = options?.silence
 		this.#emitter = new Emitter<WorkflowEventMap>({
 			...(options?.on === undefined ? {} : { on: options.on }),
 			...(options?.error === undefined ? {} : { error: options.error }),
@@ -141,9 +146,9 @@ export class Workflow implements WorkflowInterface {
 		// and the workflow-level `#functions` registry, so each of its tasks resolves its `run`
 		// name into a runtime handler ONCE at construction.
 		for (const phase of snapshot.phases) this.#append(phase, options)
-		// Restore the override DIRECTLY from the snapshot's own field (present only when a whole-
-		// workflow skip / stop forced it) — no fragile status-divergence guess. Then seed the
-		// baseline from the EFFECTIVE status so a recompute diffs against the right value.
+		// Restore the override DIRECTLY from the snapshot's own field (present when whole-workflow
+		// skip / stop or vacuous completion forced it) — no fragile status-divergence guess. Then
+		// seed the baseline from the EFFECTIVE status so a recompute diffs against the right value.
 		this.#override = snapshot.override
 		this.#status = this.status
 	}
@@ -203,7 +208,7 @@ export class Workflow implements WorkflowInterface {
 
 	skip(): void {
 		// `skip` (AGENTS §10) FORCES the workflow to `skipped`, overriding the derived value — then
-		// recompute so the change is detected (no WorkflowEventMap event for a skip). IDEMPOTENT /
+		// recompute so the change is detected and the `skip` event is emitted. IDEMPOTENT /
 		// NO-OP once `status` is already terminal (a settled workflow cannot be re-forced) — but a
 		// parked `wait()` waiter is ALWAYS released regardless (a terminal workflow must never hold
 		// one; kept unconditional for safety even though a terminal entity should have none parked).
@@ -227,10 +232,15 @@ export class Workflow implements WorkflowInterface {
 		// Forces the workflow to `completed` (overriding the derived value), reusing the same #force
 		// override machinery as skip/stop. `completed` IS a WorkflowEventMap event, so the emit fires.
 		// Used by the runner to settle an EXECUTED no-op tree (no work happened ⇒ vacuously done) —
-		// its ONLY legitimate use, so this is a NO-OP unless `status` is still `pending` (mirrors the
-		// runner's own `#completable` gate — a running/failed/skipped/stopped/completed tree is never
-		// force-completed).
-		if (this.status === 'pending') this.#force('completed')
+		// its ONLY legitimate use, so this is a NO-OP unless `status` is still `pending` AND the
+		// whole tree contains no tasks. Empty phases remain vacuous; any pending task is real work
+		// and cannot be erased by a root override.
+		if (
+			this.status === 'pending' &&
+			this.#phases.phases().every((phase) => phase.tasks.count === 0)
+		) {
+			this.#force('completed')
+		}
 	}
 
 	pause(): void {
@@ -239,6 +249,7 @@ export class Workflow implements WorkflowInterface {
 		if (this.#paused || isTerminalStatus(this.status) || this.#destroyed) return
 		this.#paused = true
 		this.#gate = createDeferred<void>()
+		this.#emitter.emit('pause')
 	}
 
 	resume(): void {
@@ -246,24 +257,29 @@ export class Workflow implements WorkflowInterface {
 		if (!this.#paused) return
 		this.#paused = false
 		this.#release()
+		this.#emitter.emit('resume')
 	}
 
 	destroy(): void {
 		// Idempotent terminal teardown — calling `destroy` twice never throws.
 		if (this.#destroyed) return
 		this.#destroyed = true
-		this.#abort.abort()
-		// Cascade: permanently end every non-terminal live phase FIRST, so an engine parked on a
-		// phase's own gate unparks (each phase's `stop` always releases its parked waiter) and the
-		// whole tree lands coherent — not just this workflow's own gate.
-		for (const phase of this.#phases.phases()) {
-			if (!isTerminalStatus(phase.status)) phase.stop()
-		}
-		// Force the `stop` override unless the workflow already reached a terminal status on its
-		// own (a completed/failed/skipped/stopped tree needs no forced override).
+		const phases = this.#phases.phases()
 		if (!isTerminalStatus(this.status)) this.stop()
+		for (const phase of phases) phase.stop()
+		for (const phase of phases) {
+			for (const task of phase.tasks.tasks()) {
+				if (!isTerminalStatus(task.status)) task.stop()
+			}
+		}
 		this.#paused = false
 		this.#release()
+		this.#abort.abort()
+		for (const phase of phases) {
+			for (const task of phase.tasks.tasks()) task.emitter.destroy()
+			phase.emitter.destroy()
+		}
+		this.#emitter.destroy()
 	}
 
 	wait(): Promise<void> {
@@ -369,7 +385,7 @@ export class Workflow implements WorkflowInterface {
 		// in force) + the `bail` policy this tree ran under + the phases' snapshots in positional
 		// order + the creation / update stamps. Persisting `override` and `bail` makes the payload
 		// self-contained, so a restore reinstates the override directly and re-derives identically.
-		return {
+		return cloneWorkflowSnapshot({
 			id: this.id,
 			name: this.name,
 			...(this.description === undefined ? {} : { description: this.description }),
@@ -379,7 +395,7 @@ export class Workflow implements WorkflowInterface {
 			phases: this.#phases.phases().map((phase) => phase.snapshot()),
 			created: this.#created,
 			updated: this.#updated,
-		}
+		})
 	}
 
 	// The top of the cascade: recompute the derived status after a phase change (the callback
@@ -390,12 +406,16 @@ export class Workflow implements WorkflowInterface {
 		const next = this.status
 		if (next === this.#status) return
 		this.#status = next
-		this.#updated = Date.now()
+		if (isTerminalStatus(next)) {
+			this.#paused = false
+			this.#release()
+		}
+		this.#updated = Math.max(Date.now(), this.#updated)
 		this.#emitFor(next)
 	}
 
-	// Apply a forced status (skip / stop): set the override, then recompute so the change is
-	// detected + emitted (when the status maps to an event).
+	// Apply a forced status (skip / stop / vacuous complete): set the override, then recompute so
+	// the change is detected + emitted (when the status maps to an event).
 	#force(status: WorkflowStatus): void {
 		this.#override = status
 		this.#recompute()
@@ -403,20 +423,15 @@ export class Workflow implements WorkflowInterface {
 
 	// Emit the WorkflowEventMap event matching a newly-entered status. `running` ⇒ `start`,
 	// `completed` ⇒ `complete`, `failed` ⇒ `fail` (with the failing task's result, reachable only
-	// under `bail: true`), `stopped` ⇒ `stop`. `pending` / `skipped` have no event.
+	// under `bail: true`), `skipped` ⇒ `skip`, `stopped` ⇒ `stop`. `pending` has no event.
 	#emitFor(status: WorkflowStatus): void {
 		if (status === 'running') this.#emitter.emit('start', this.id)
 		else if (status === 'completed') this.#emitter.emit('complete')
 		else if (status === 'failed') this.#emitter.emit('fail', this.#failure())
+		else if (status === 'skipped') this.#emitter.emit('skip')
 		else if (status === 'stopped') this.#emitter.emit('stop')
 	}
 
-	// The failing task's REAL recorded {@link TaskResult} — the first failed result across every
-	// phase — so the `fail` event carries the true cause. A workflow derives `failed` ONLY under
-	// `bail` when some task failed with a `Failure` result, so one always exists when
-	// `#emitFor('failed')` calls this: assert that invariant (§12 programmer-error guard, mirroring
-	// `Runner.#dispatch`) rather than fabricating a synthetic, lineage-degenerate result that would
-	// mask the true cause while still type-checking.
 	// Delegate an `add` to the phase manager and emit `add` (the inserted phase + its final
 	// `at` index) on success — the shared tail of the hooked and un-hooked `add` branches.
 	#addTo(
@@ -441,6 +456,12 @@ export class Workflow implements WorkflowInterface {
 		return deriveBoundary(this.#phases.phases().map((phase) => phase.status))
 	}
 
+	// The failing task's REAL recorded {@link TaskResult} — the first failed result across every
+	// phase — so the `fail` event carries the true cause. A workflow derives `failed` ONLY under
+	// `bail` when some task failed with a `Failure` result, so one always exists when
+	// `#emitFor('failed')` calls this: assert that invariant (§12 programmer-error guard, mirroring
+	// `Runner.#dispatch`) rather than fabricating a synthetic, lineage-degenerate result that would
+	// mask the true cause while still type-checking.
 	#failure(): TaskResult {
 		const found = findFailure(this.results())
 		if (found === undefined) {
@@ -462,6 +483,7 @@ export class Workflow implements WorkflowInterface {
 			options?.phases?.[phase.id],
 			this.#bailOverride,
 			this.#functions,
+			this.#silence,
 		)
 		this.#phases.append(created)
 	}
@@ -480,6 +502,7 @@ export class Workflow implements WorkflowInterface {
 			undefined,
 			this.#bailOverride,
 			this.#functions,
+			this.#silence,
 		)
 	}
 

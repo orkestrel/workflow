@@ -1,7 +1,12 @@
 import type { TaskInterface, WorkflowDefinition, WorkflowInterface } from '@src/core'
-import { createWorkflow, isWorkflowError, restoreWorkflow } from '@src/core'
+import { MAX_TIMER_MS, createWorkflow, isWorkflowError, restoreWorkflow } from '@src/core'
 import { describe, expect, it } from 'vitest'
-import { captureError, createErrorRecorder, recordEmitterEvents } from '../../../setup.js'
+import {
+	captureError,
+	createErrorRecorder,
+	recordEmitterEvents,
+	waitForDelay,
+} from '../../../setup.js'
 
 // The leaf state machine (W-b): the legal AGENTS §10 transition graph + each illegal
 // transition rejected, the recorded TaskResult (Success on complete, Failure on fail),
@@ -54,6 +59,215 @@ describe('Task — identity + lineage', () => {
 	})
 })
 
+describe('Task — activity, liveness, and cooperative control', () => {
+	it('seeds activity on start and atomically replaces determinate and indeterminate frames', () => {
+		const task = loneTask(createWorkflow(buildSingleTaskWorkflow()))
+		expect(task.activity).toBeUndefined()
+		expect(task.snapshot().activity).toBeUndefined()
+		task.start()
+		expect(task.activity?.operations).toEqual([])
+		expect(task.activity?.constraints).toEqual([])
+
+		const operation = { id: 'build', name: 'Build', started: 1 }
+		const determinate = task.report({
+			note: 'compiling',
+			progress: { current: 2, total: 4, unit: 'files' },
+			operations: [operation],
+			constraints: [{ id: 'cpu', name: 'CPU quota', started: 2 }],
+		})
+		expect(determinate.success).toBe(true)
+		operation.name = 'changed'
+		expect(task.activity?.operations[0]?.name).toBe('Build')
+		expect(Object.isFrozen(task.activity)).toBe(true)
+		expect(Object.isFrozen(task.activity?.progress)).toBe(true)
+		expect(Object.isFrozen(task.activity?.operations)).toBe(true)
+		expect(Object.isFrozen(task.activity?.operations[0])).toBe(true)
+		expect(Object.isFrozen(task.activity?.constraints)).toBe(true)
+		expect(Object.isFrozen(task.activity?.constraints[0])).toBe(true)
+
+		const indeterminate = task.report({ progress: { current: 5 } })
+		expect(indeterminate.success).toBe(true)
+		expect(task.activity?.note).toBeUndefined()
+		expect(task.activity?.progress).toEqual({ current: 5 })
+		expect(task.activity?.operations).toEqual([])
+		expect(task.activity?.constraints).toEqual([])
+	})
+
+	it('refuses invalid or out-of-lifecycle reports without changing the prior frame', () => {
+		const task = loneTask(createWorkflow(buildSingleTaskWorkflow()))
+		const pending = task.report({ note: 'early' })
+		expect(pending.success).toBe(false)
+		if (pending.success) throw new Error('expected transition refusal')
+		expect(pending.error.code).toBe('TRANSITION')
+		task.start()
+		const accepted = task.report({ note: 'valid' })
+		expect(accepted.success).toBe(true)
+		const before = task.activity
+		const invalid = task.report({ progress: { current: 2, total: 1 } })
+		expect(invalid.success).toBe(false)
+		if (invalid.success) throw new Error('expected mutation refusal')
+		expect(invalid.error.code).toBe('MUTATION')
+		expect(task.activity).toBe(before)
+		task.complete('done')
+		expect(task.report({}).success).toBe(false)
+		expect(task.pulse()).toBe(false)
+		expect(task.snapshot().activity).toBe(before)
+	})
+
+	it('contains hostile report getters atomically and captures shifting fields once', () => {
+		const task = loneTask(createWorkflow(buildSingleTaskWorkflow()))
+		task.start()
+		const accepted = task.report({ note: 'prior' })
+		if (!accepted.success) throw accepted.error
+		const prior = accepted.value
+		const refused = task.report({
+			get note(): string {
+				throw new Error('hostile')
+			},
+		})
+		expect(refused.success).toBe(false)
+		expect(task.activity).toBe(prior)
+
+		let reads = 0
+		const operation = {
+			get id() {
+				reads += 1
+				return reads === 1 ? 'stable' : ''
+			},
+			name: 'Operation',
+			started: 0,
+		}
+		const shifted = task.report({ operations: [operation] })
+		expect(shifted.success).toBe(true)
+		expect(reads).toBe(1)
+		expect(task.activity?.operations[0]?.id).toBe('stable')
+	})
+
+	it('pulses liveness without replacing the frame and emits the refreshed frame', async () => {
+		const task = loneTask(createWorkflow(buildSingleTaskWorkflow()))
+		const events = recordEmitterEvents(task.emitter, ['pulse'])
+		task.start()
+		const reported = task.report({ note: 'quiet work' })
+		if (!reported.success) throw reported.error
+		const before = reported.value
+		await waitForDelay(2)
+		expect(task.pulse()).toBe(true)
+		expect(task.activity?.note).toBe('quiet work')
+		expect(task.activity?.updated).toBeGreaterThanOrEqual(before.updated)
+		expect(events.pulse.calls).toEqual([[task.activity]])
+	})
+
+	it('never regresses a future restored activity stamp on retry, report, or pulse', () => {
+		const source = createWorkflow(
+			{
+				...buildSingleTaskWorkflow(),
+				phases: [
+					{
+						id: 'p',
+						name: 'P',
+						tasks: [{ id: 't', name: 'T', run: 'f', retries: 1 }],
+					},
+				],
+			},
+			{ functions: { f: () => null } },
+		)
+		const running = loneTask(source)
+		running.start()
+		const snapshot = source.snapshot()
+		const phase = snapshot.phases[0]
+		const leaf = phase?.tasks[0]
+		if (phase === undefined || leaf?.activity === undefined) {
+			throw new Error('expected running activity')
+		}
+		const future = Date.now() + 60_000
+		const restored = restoreWorkflow(
+			{
+				...snapshot,
+				phases: [
+					{
+						...phase,
+						tasks: [{ ...leaf, activity: { ...leaf.activity, updated: future } }],
+					},
+				],
+			},
+			{ functions: { f: () => null } },
+		)
+		const task = loneTask(restored)
+
+		task.start()
+		expect(task.activity?.updated).toBe(future)
+		expect(task.report({ note: 'still working' }).success).toBe(true)
+		expect(task.activity?.updated).toBe(future)
+		expect(task.pulse()).toBe(true)
+		expect(task.activity?.updated).toBe(future)
+	})
+
+	it('rearms a reusable silence deadline after both report and pulse, then clears on terminal', async () => {
+		const workflow = createWorkflow(buildSingleTaskWorkflow(), { silence: 15 })
+		const task = loneTask(workflow)
+		const events = recordEmitterEvents(task.emitter, ['silence'])
+		task.start()
+		await waitForDelay(25)
+		expect(task.silent).toBe(true)
+		expect(events.silence.count).toBe(1)
+
+		expect(task.report({ note: 'resumed' }).success).toBe(true)
+		expect(task.silent).toBe(false)
+		await waitForDelay(25)
+		expect(events.silence.count).toBe(2)
+
+		expect(task.pulse()).toBe(true)
+		expect(task.silent).toBe(false)
+		await waitForDelay(25)
+		expect(events.silence.count).toBe(3)
+		task.complete('done')
+		await waitForDelay(25)
+		expect(events.silence.count).toBe(3)
+	})
+
+	it('allows a task override to disable inherited silence and releases pause on stop', async () => {
+		const workflow = createWorkflow(buildSingleTaskWorkflow(), {
+			silence: 10,
+			phases: { p: { tasks: { t: { silence: 0 } } } },
+		})
+		const task = loneTask(workflow)
+		expect(task.silence).toBeUndefined()
+		task.pause()
+		const waiting = task.wait()
+		expect(task.paused).toBe(true)
+		task.stop()
+		await waiting
+		expect(task.paused).toBe(false)
+		expect(task.signal.aborted).toBe(true)
+
+		const skipped = loneTask(createWorkflow(buildSingleTaskWorkflow()))
+		skipped.skip()
+		expect(skipped.signal.aborted).toBe(true)
+	})
+
+	it('accepts the host timer maximum and disables overflow without immediate silence', async () => {
+		const maximum = loneTask(createWorkflow(buildSingleTaskWorkflow(), { silence: MAX_TIMER_MS }))
+		const maximumEvents = recordEmitterEvents(maximum.emitter, ['silence'])
+		maximum.start()
+		await Promise.resolve()
+		expect(maximum.silence).toBe(MAX_TIMER_MS)
+		expect(maximum.silent).toBe(false)
+		expect(maximumEvents.silence.count).toBe(0)
+		maximum.stop()
+
+		const overflow = loneTask(
+			createWorkflow(buildSingleTaskWorkflow(), { silence: MAX_TIMER_MS + 1 }),
+		)
+		const overflowEvents = recordEmitterEvents(overflow.emitter, ['silence'])
+		overflow.start()
+		await waitForDelay(2)
+		expect(overflow.silence).toBeUndefined()
+		expect(overflow.silent).toBe(false)
+		expect(overflowEvents.silence.count).toBe(0)
+		overflow.stop()
+	})
+})
+
 describe('Task — legal transitions', () => {
 	it('start moves pending → running', () => {
 		const task = loneTask(createWorkflow(buildSingleTaskWorkflow()))
@@ -81,38 +295,58 @@ describe('Task — legal transitions', () => {
 		expect(typeof result.timestamp).toBe('number')
 	})
 
-	it('fail records a Failure result boxing the error', () => {
+	it('fail records a normalized JSON failure', () => {
 		const task = loneTask(createWorkflow(buildSingleTaskWorkflow()))
 		task.start()
 		const boom = new Error('boom')
-		task.fail(boom)
+		task.fail({ origin: 'handler', message: boom.message })
 		expect(task.status).toBe('failed')
 		const result = task.result
 		expect(result?.status).toBe('failed')
 		if (result?.result === undefined) throw new Error('expected a boxed result')
 		expect(result.result.success).toBe(false)
 		if (result.result.success) throw new Error('expected a Failure')
-		expect(result.result.error).toBe(boom)
+		expect(result.result.error).toEqual({ origin: 'handler', message: 'boom' })
 	})
 
-	it('fail normalises a non-Error reason to an Error (preserving cause)', () => {
+	it('fail preserves a normalized failure reason', () => {
 		const task = loneTask(createWorkflow(buildSingleTaskWorkflow()))
 		task.start()
-		task.fail('plain string reason')
+		task.fail({ origin: 'recovery', message: 'plain string reason' })
 		const result = task.result
 		if (result?.result === undefined || result.result.success) {
 			throw new Error('expected a Failure')
 		}
-		expect(result.result.error).toBeInstanceOf(Error)
-		expect(result.result.error.message).toBe('plain string reason')
-		expect(result.result.error.cause).toBe('plain string reason')
+		expect(result.result.error).toEqual({
+			origin: 'recovery',
+			message: 'plain string reason',
+		})
 	})
 
-	it('boxes a falsy / undefined completion value as a present Success (value, not absence)', () => {
+	it('fail replaces invalid or empty boundary messages with the literal fallback', () => {
+		for (const failure of [
+			{ origin: 'other', message: '' },
+			{ origin: 'handler', message: 1 },
+		]) {
+			const task = loneTask(createWorkflow(buildSingleTaskWorkflow()))
+			task.start()
+			Reflect.apply(task.fail, task, [failure])
+			const result = task.result
+			if (result?.result === undefined || result.result.success) {
+				throw new Error('expected a normalized Failure')
+			}
+			expect(result.result.error).toEqual({
+				origin: 'handler',
+				message: 'unknown failure',
+			})
+		}
+	})
+
+	it('boxes every falsy JSON completion value as a present Success', () => {
 		// The boxed `result` is PRESENT for every `completed` leaf — even when the produced value is
 		// falsy or `undefined`. A success with no payload must still read as a Success whose `value`
 		// is that falsy value, never get mistaken for "no result" (the §10 completed ⇒ boxed rule).
-		for (const value of [undefined, null, 0, '', false]) {
+		for (const value of [null, 0, '', false]) {
 			const task = loneTask(createWorkflow(buildSingleTaskWorkflow()))
 			task.start()
 			task.complete(value)
@@ -174,7 +408,9 @@ describe('Task — illegal transitions are rejected (guarded §10)', () => {
 
 	it('failing a pending task throws TRANSITION', () => {
 		const task = loneTask(createWorkflow(buildSingleTaskWorkflow()))
-		expect(workflowCode(captureError(() => task.fail(new Error('x'))))).toBe('TRANSITION')
+		expect(workflowCode(captureError(() => task.fail({ origin: 'handler', message: 'x' })))).toBe(
+			'TRANSITION',
+		)
 		expect(task.status).toBe('pending')
 	})
 
@@ -191,7 +427,9 @@ describe('Task — illegal transitions are rejected (guarded §10)', () => {
 		task.complete('done')
 		expect(workflowCode(captureError(() => task.start()))).toBe('TRANSITION')
 		expect(workflowCode(captureError(() => task.complete('again')))).toBe('TRANSITION')
-		expect(workflowCode(captureError(() => task.fail(new Error('x'))))).toBe('TRANSITION')
+		expect(workflowCode(captureError(() => task.fail({ origin: 'handler', message: 'x' })))).toBe(
+			'TRANSITION',
+		)
 		expect(workflowCode(captureError(() => task.skip()))).toBe('TRANSITION')
 		expect(workflowCode(captureError(() => task.stop()))).toBe('TRANSITION')
 		expect(task.status).toBe('completed')
@@ -199,6 +437,37 @@ describe('Task — illegal transitions are rejected (guarded §10)', () => {
 })
 
 describe('Task — emits (§13) after each transition', () => {
+	it('emits pause and resume once after each real runtime-gate change', () => {
+		const task = loneTask(createWorkflow(buildSingleTaskWorkflow()))
+		const states: boolean[] = []
+		const events = recordEmitterEvents(task.emitter, ['pause', 'resume'])
+		task.emitter.on('pause', () => states.push(task.paused))
+		task.emitter.on('resume', () => states.push(task.paused))
+
+		task.pause()
+		task.pause()
+		task.resume()
+		task.resume()
+
+		expect(events.pause.calls).toEqual([[]])
+		expect(events.resume.calls).toEqual([[]])
+		expect(states).toEqual([true, false])
+		expect(task.snapshot()).not.toHaveProperty('paused')
+	})
+
+	it('does not emit resume when terminal cleanup releases a paused task', () => {
+		const task = loneTask(createWorkflow(buildSingleTaskWorkflow()))
+		const events = recordEmitterEvents(task.emitter, ['pause', 'resume'])
+		task.pause()
+		task.stop()
+		task.pause()
+		task.resume()
+
+		expect(task.paused).toBe(false)
+		expect(events.pause.calls).toEqual([[]])
+		expect(events.resume.count).toBe(0)
+	})
+
 	it('fires start / complete with the result', () => {
 		const task = loneTask(createWorkflow(buildSingleTaskWorkflow()))
 		const events = recordEmitterEvents(task.emitter, ['start', 'complete', 'fail', 'skip', 'stop'])
@@ -214,7 +483,7 @@ describe('Task — emits (§13) after each transition', () => {
 		const task = loneTask(createWorkflow(buildSingleTaskWorkflow()))
 		const events = recordEmitterEvents(task.emitter, ['start', 'fail'])
 		task.start()
-		task.fail(new Error('nope'))
+		task.fail({ origin: 'handler', message: 'nope' })
 		expect(events.fail.count).toBe(1)
 		expect(events.fail.calls[0]?.[0]?.status).toBe('failed')
 	})
@@ -302,7 +571,7 @@ describe('Task — own event precedes the cascade (cause before effect)', () => 
 		task.emitter.on('fail', () => order.push('task'))
 		workflow.emitter.on('fail', () => order.push('workflow'))
 		task.start()
-		task.fail(new Error('boom'))
+		task.fail({ origin: 'handler', message: 'boom' })
 		expect(order).toEqual(['task', 'workflow'])
 	})
 
@@ -354,11 +623,46 @@ describe('Task — emit-safety (§13)', () => {
 })
 
 describe('Task — metadata round-trips through the snapshot', () => {
-	it('carries the construction metadata into snapshot()', () => {
+	it('owns construction metadata before carrying it into snapshot()', () => {
+		const details = { owner: 'ada' }
 		const workflow = createWorkflow(buildSingleTaskWorkflow(), {
-			phases: { p: { tasks: { t: { metadata: { owner: 'ada' } } } } },
+			phases: { p: { tasks: { t: { metadata: { details } } } } },
 		})
-		expect(loneTask(workflow).snapshot().metadata).toEqual({ owner: 'ada' })
+		details.owner = 'grace'
+		const metadata = loneTask(workflow).snapshot().metadata
+		expect(metadata).toEqual({ details: { owner: 'ada' } })
+		expect(Object.isFrozen(metadata)).toBe(true)
+		expect(Object.isFrozen(metadata.details)).toBe(true)
+	})
+
+	it('translates hostile metadata failures to RESTORE', () => {
+		const revoked = Proxy.revocable({}, {})
+		revoked.revoke()
+		const error = captureError(() =>
+			createWorkflow(buildSingleTaskWorkflow(), {
+				phases: { p: { tasks: { t: { metadata: revoked.proxy } } } },
+			}),
+		)
+
+		expect(isWorkflowError(error)).toBe(true)
+		if (!isWorkflowError(error)) throw new Error('expected WorkflowError')
+		expect(error.code).toBe('RESTORE')
+		expect(error.message).toContain('plain record')
+	})
+
+	it('leaves a running task unchanged when result ownership fails', () => {
+		const task = loneTask(createWorkflow(buildSingleTaskWorkflow()))
+		task.start()
+		const revoked = Proxy.revocable({}, {})
+		revoked.revoke()
+		const error = captureError(() => Reflect.apply(task.complete, task, [revoked.proxy]))
+
+		expect(isWorkflowError(error)).toBe(true)
+		if (!isWorkflowError(error)) throw new Error('expected WorkflowError')
+		expect(error.code).toBe('RESTORE')
+		expect(error.message).toContain('could not be inspected')
+		expect(task.status).toBe('running')
+		expect(task.result).toBeUndefined()
 	})
 })
 
@@ -441,7 +745,7 @@ describe('Task — declarative run/retries/timeout PERSIST (AGENTS §12), handle
 				},
 			],
 		})
-		const restored = restoreWorkflow(original.snapshot())
+		const restored = restoreWorkflow(original.snapshot(), { functions: { x: () => null } })
 		const task = loneTask(restored)
 		expect(task.run).toBe('x')
 		expect(task.retries).toBe(2)
@@ -483,7 +787,7 @@ describe('Task — declarative run/retries/timeout PERSIST (AGENTS §12), handle
 		expect(JSON.stringify(task.snapshot())).not.toContain('handler')
 	})
 
-	it('handler is undefined when run is unregistered or omitted (the no-handler rule)', () => {
+	it('handler is undefined when run is unregistered or omitted', () => {
 		const noRegistry = loneTask(createWorkflow(buildSingleTaskWorkflow()))
 		expect(noRegistry.handler).toBeUndefined()
 		const unregistered = loneTask(
@@ -492,12 +796,12 @@ describe('Task — declarative run/retries/timeout PERSIST (AGENTS §12), handle
 		expect(unregistered.handler).toBeUndefined()
 	})
 
-	it('handler does NOT survive a restore (unresolvable from pure JSON without a functions registry)', () => {
+	it('restore keeps unresolved behavior inspectable while a supplied registry re-resolves it', () => {
 		const handler = () => 'value'
 		const original = createWorkflow(buildSingleTaskWorkflow(), { functions: { f: handler } })
-		const restored = restoreWorkflow(original.snapshot())
-		expect(loneTask(restored).handler).toBeUndefined()
-		// Supplying the SAME registry on restore re-resolves the handler identically.
+		const inspected = restoreWorkflow(original.snapshot())
+		expect(loneTask(inspected).run).toBe('f')
+		expect(loneTask(inspected).handler).toBeUndefined()
 		const reResolved = restoreWorkflow(original.snapshot(), { functions: { f: handler } })
 		expect(loneTask(reResolved).handler).toBe(handler)
 	})
@@ -535,7 +839,7 @@ describe('Task — patch (pending-only, AGENTS §12)', () => {
 			},
 			(task: TaskInterface) => {
 				task.start()
-				task.fail(new Error('e'))
+				task.fail({ origin: 'handler', message: 'e' })
 			},
 			(task: TaskInterface) => task.skip(),
 			(task: TaskInterface) => task.stop(),

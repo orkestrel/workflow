@@ -6,6 +6,7 @@ import {
 	optionalShape,
 	stringShape,
 } from '@orkestrel/contract'
+import { MAX_TIMER_MS } from './constants.js'
 
 // Workflow contract shapes — the shape VALUES the contract (factories.ts) compiles
 // into the four lockstep outputs (JSON Schema + guard + parser + generator). These
@@ -53,6 +54,7 @@ export const taskShape = objectShape({
 	timeout: optionalShape(
 		integerShape({
 			min: 0,
+			max: MAX_TIMER_MS,
 			description:
 				'Per-attempt deadline in milliseconds; overrides the phase default. Omitted means no deadline.',
 		}),

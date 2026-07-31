@@ -1,64 +1,121 @@
-import type { TaskContext, TaskResult } from '@src/core'
-import { TaskController } from '@src/core'
+import type { TaskResult } from '@src/core'
+import { createWorkflow } from '@src/core'
 import { describe, expect, it } from 'vitest'
-
-// The lean per-task handle the WorkflowRunner hands a WorkflowFunction — its folded `signal`
-// / `aborted`, its `input` bag, its lineage `task`, and the read-UP `results()` closure. A
-// thin wrapper, so the unit tests pin its surface directly; its INTEGRATION (the runner
-// driving real tasks around it) is covered in WorkflowRunner.test.ts. Real values, no mocks.
-
-/** A minimal {@link TaskContext} for a leaf at `task` under `phase` / `workflow`. */
-function taskContext(id: string): TaskContext {
-	const workflow = { id: 'wf', name: 'WF' }
-	return { id, name: id, phase: { id: 'p', name: 'P', workflow } }
-}
+import {
+	buildWorkflowDefinition,
+	createTaskControllerFixture,
+	requireTask,
+} from '../../../setup.js'
 
 describe('TaskController — surface', () => {
-	it('exposes the folded signal, input, lineage, and aborted = signal.aborted', () => {
-		const controller = new AbortController()
-		const input = { retries: 3 }
-		const context = taskContext('t0')
-		const handle = new TaskController(controller.signal, input, context, () => [])
-		expect(handle.signal).toBe(controller.signal)
-		expect(handle.input).toBe(input)
-		expect(handle.task).toBe(context)
-		expect(handle.task.phase.workflow.id).toBe('wf')
-		expect(handle.aborted).toBe(false)
-	})
-
-	it('aborted flips to true once the signal fires', () => {
-		const controller = new AbortController()
-		const handle = new TaskController(controller.signal, {}, taskContext('t0'), () => [])
-		expect(handle.aborted).toBe(false)
-		controller.abort()
-		expect(handle.aborted).toBe(true)
-	})
-
-	it('results() delegates to the injected closure (the live result tree, read on demand)', () => {
-		const tree: TaskResult[] = []
-		const handle = new TaskController(
-			new AbortController().signal,
-			{},
-			taskContext('t0'),
-			() => tree,
+	it('exposes folded cancellation, input, lineage, and live results', () => {
+		const abort = new AbortController()
+		const task = requireTask(
+			createWorkflow(buildWorkflowDefinition()),
+			'phase-build',
+			'task-compile',
 		)
+		const tree: TaskResult[] = []
+		const handle = createTaskControllerFixture(task, abort.signal, () => tree)
+		expect(handle.signal).toBe(abort.signal)
+		expect(handle.task).toBe(task.context)
+		expect(handle.aborted).toBe(false)
 		expect(handle.results()).toEqual([])
-		// The closure reads the live array — a result appended later is visible on the next read.
-		const result: TaskResult = {
-			task: taskContext('done'),
-			phase: taskContext('done').phase,
-			workflow: taskContext('done').phase.workflow,
-			status: 'completed',
-			result: { success: true, value: 1 },
-			timestamp: 0,
-		}
-		tree.push(result)
-		expect(handle.results()).toHaveLength(1)
-		expect(handle.results()[0]?.task.id).toBe('done')
+		task.start()
+		task.complete('done')
+		if (task.result === undefined) throw new Error('expected settled result')
+		tree.push(task.result)
+		expect(handle.results()).toEqual([task.result])
+		abort.abort()
+		expect(handle.aborted).toBe(true)
 	})
 
-	it('a born-aborted signal makes the handle report aborted immediately', () => {
-		const handle = new TaskController(AbortSignal.abort(), {}, taskContext('t0'), () => [])
-		expect(handle.aborted).toBe(true)
+	it('folds workflow, phase, and task cooperative gates and cancellation', async () => {
+		const task = requireTask(
+			createWorkflow(buildWorkflowDefinition()),
+			'phase-build',
+			'task-compile',
+		)
+		const abort = new AbortController()
+		const handle = createTaskControllerFixture(task, abort.signal, () => [])
+		task.workflow.pause()
+		task.phase.pause()
+		task.pause()
+		expect(handle.paused).toBe(true)
+		const waiting = handle.wait()
+		task.workflow.resume()
+		task.phase.resume()
+		task.resume()
+		await waiting
+		expect(handle.paused).toBe(false)
+
+		task.pause()
+		const cancelled = handle.wait()
+		abort.abort()
+		await cancelled
+		expect(handle.paused).toBe(true)
+	})
+
+	it('leaves a descendant gate when an ancestor stops without aborting the attempt', async () => {
+		const task = requireTask(
+			createWorkflow(buildWorkflowDefinition()),
+			'phase-build',
+			'task-compile',
+		)
+		const abort = new AbortController()
+		const handle = createTaskControllerFixture(task, abort.signal, () => [])
+		task.start()
+		task.pause()
+		expect(handle.paused).toBe(true)
+		const waiting = handle.wait()
+		task.workflow.stop()
+		await waiting
+		expect(handle.paused).toBe(false)
+		expect(handle.aborted).toBe(false)
+		expect(task.status).toBe('running')
+	})
+
+	it('delegates report and pulse through the attempt-scoped closures', () => {
+		const task = requireTask(
+			createWorkflow(buildWorkflowDefinition()),
+			'phase-build',
+			'task-compile',
+		)
+		const handle = createTaskControllerFixture(task, new AbortController().signal, () => [])
+		expect(handle.report({}).success).toBe(false)
+		expect(handle.pulse()).toBe(false)
+		task.start()
+		expect(handle.report({ note: 'working' }).success).toBe(true)
+		expect(handle.pulse()).toBe(true)
+	})
+
+	it('retains the explicit claimed attempt after the live task advances', () => {
+		const task = requireTask(
+			createWorkflow({
+				...buildWorkflowDefinition(),
+				phases: [
+					{
+						id: 'phase-build',
+						name: 'Build',
+						tasks: [
+							{
+								id: 'task-compile',
+								name: 'Compile',
+								run: 'compile',
+								retries: 1,
+							},
+						],
+					},
+				],
+			}),
+			'phase-build',
+			'task-compile',
+		)
+		task.start()
+		const handle = createTaskControllerFixture(task, new AbortController().signal, () => [])
+		expect(handle.attempt).toBe(1)
+		task.start()
+		expect(task.attempts).toBe(2)
+		expect(handle.attempt).toBe(1)
 	})
 })

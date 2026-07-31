@@ -118,15 +118,13 @@ describe('WorkflowManager — functions flow (RUNNABLE workflows)', () => {
 		expect(workflow.phase('ship')?.task('publish')?.status).toBe('completed')
 	})
 
-	it('a manager with NO `functions` mints workflows whose tasks auto-complete (no-handler rule)', async () => {
+	it('a manager with no functions mints an inert tree that execution rejects', () => {
 		const manager = createWorkflowManager()
 
 		const workflow = manager.add(buildReleaseDefinition())
 		expect(workflow.phase('build')?.task('compile')?.handler).toBeUndefined()
 
-		const result = await createWorkflowRunner().execute(workflow)
-		expect(result.status).toBe('completed')
-		expect(workflow.phase('build')?.task('compile')?.status).toBe('completed')
+		expect(() => createWorkflowRunner().execute(workflow)).toThrowError(/not drivable/)
 	})
 })
 
@@ -200,7 +198,7 @@ for (const [label, makeStore] of stores) {
 
 			expect(await manager.save('doc')).toBe(true)
 
-			const reopened = createWorkflowManager({ store })
+			const reopened = createWorkflowManager({ store, functions: RELEASE_FUNCTIONS })
 			const opened = await reopened.open('doc')
 
 			expect(opened?.snapshot()).toEqual(workflow.snapshot())
@@ -216,7 +214,7 @@ for (const [label, makeStore] of stores) {
 			workflow.phase('build')?.task('compile')?.complete('done')
 			await manager.save('evolving')
 
-			const reopened = createWorkflowManager({ store })
+			const reopened = createWorkflowManager({ store, functions: RELEASE_FUNCTIONS })
 			const opened = await reopened.open('evolving')
 			expect(opened?.phase('build')?.task('compile')?.status).toBe('completed')
 		})

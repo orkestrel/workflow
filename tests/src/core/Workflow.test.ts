@@ -7,6 +7,7 @@ import {
 	createErrorRecorder,
 	createRecorder,
 	recordEmitterEvents,
+	waitForDelay,
 } from '../../setup.js'
 
 // The DERIVED workflow state machine (W-b) — the cascade's top tier under BOTH bail
@@ -36,6 +37,8 @@ function buildTwoPhaseWorkflow(bail: boolean): WorkflowDefinition {
 		],
 	}
 }
+
+const RESTORE_FUNCTIONS = { f: () => null }
 
 /** Drive a leaf to `completed` through its legal transitions. */
 function completeTask(workflow: WorkflowInterface, phase: string, task: string): void {
@@ -174,7 +177,7 @@ describe('Workflow — the cascade under bail: false (graceful)', () => {
 		completeTask(workflow, 'a', 't0')
 		const t1 = workflow.phase('a')?.task('t1')
 		t1?.start()
-		t1?.fail(new Error('boom'))
+		t1?.fail({ origin: 'handler', message: 'boom' })
 		// …but under graceful mode the phase failure is DATA — finish phase b…
 		completeTask(workflow, 'b', 't2')
 		// …and the whole workflow COMPLETES (never failed under bail: false).
@@ -191,7 +194,7 @@ describe('Workflow — the cascade under bail: true (halt)', () => {
 		completeTask(workflow, 'a', 't0')
 		const t1 = workflow.phase('a')?.task('t1')
 		t1?.start()
-		t1?.fail(new Error('halt'))
+		t1?.fail({ origin: 'handler', message: 'halt' })
 		// Under halt mode the failed phase propagates — the workflow is failed.
 		expect(workflow.status).toBe('failed')
 		expect(events.fail.count).toBe(1)
@@ -205,7 +208,7 @@ describe('Workflow — the cascade under bail: true (halt)', () => {
 			completeTask(workflow, 'a', 't0')
 			const t1 = workflow.phase('a')?.task('t1')
 			t1?.start()
-			t1?.fail(new Error('x'))
+			t1?.fail({ origin: 'handler', message: 'x' })
 			completeTask(workflow, 'b', 't2')
 			expect(workflow.status).toBe(bail ? 'failed' : 'completed')
 		}
@@ -213,12 +216,28 @@ describe('Workflow — the cascade under bail: true (halt)', () => {
 })
 
 describe('Workflow — the #override (skip / stop the whole workflow)', () => {
+	it('never regresses a future restored updated stamp during recompute', () => {
+		const source = createWorkflow(buildTwoPhaseWorkflow(false))
+		const snapshot = source.snapshot()
+		const future = Date.now() + 60_000
+		const workflow = restoreWorkflow(
+			{ ...snapshot, updated: future },
+			{ functions: RESTORE_FUNCTIONS },
+		)
+
+		workflow.phase('a')?.task('t0')?.start()
+		expect(workflow.snapshot().updated).toBe(future)
+	})
+
 	it('skip forces skipped, overriding the derived value', () => {
 		const workflow = createWorkflow(buildTwoPhaseWorkflow(false))
+		const events = recordEmitterEvents(workflow.emitter, ['skip'])
 		completeTask(workflow, 'a', 't0') // mid-flight derived status would be running
 		expect(workflow.status).toBe('running')
 		workflow.skip()
+		workflow.skip()
 		expect(workflow.status).toBe('skipped')
+		expect(events.skip.calls).toEqual([[]])
 	})
 
 	it('stop forces stopped and emits', () => {
@@ -229,17 +248,14 @@ describe('Workflow — the #override (skip / stop the whole workflow)', () => {
 		expect(events.stop.count).toBe(1)
 	})
 
-	it('complete forces completed, overriding the derived value, and emits complete', () => {
-		// `complete()` reuses the same #force override machinery as skip / stop: it pins `completed`
-		// even when the derived status would be pending (no task ran), and `completed` IS a
-		// WorkflowEventMap event so the emit fires. This is the runner's no-op-settle seam.
+	it('complete refuses a fresh pending tree that still contains work', () => {
 		const workflow = createWorkflow(buildTwoPhaseWorkflow(false))
 		const events = recordEmitterEvents(workflow.emitter, ['start', 'complete', 'fail', 'stop'])
-		expect(workflow.status).toBe('pending') // nothing ran ⇒ derived pending
+		const before = workflow.snapshot()
 		workflow.complete()
-		expect(workflow.status).toBe('completed')
-		expect(events.complete.count).toBe(1)
-		// Only the complete event fired — no spurious start / fail / stop.
+		expect(workflow.status).toBe('pending')
+		expect(workflow.snapshot()).toEqual(before)
+		expect(events.complete.count).toBe(0)
 		expect(events.start.count).toBe(0)
 		expect(events.fail.count).toBe(0)
 		expect(events.stop.count).toBe(0)
@@ -263,15 +279,17 @@ describe('Workflow — terminal no-op guards on skip / stop / complete (F1)', ()
 		const workflow = createWorkflow(buildTwoPhaseWorkflow(false))
 		workflow.stop()
 		expect(workflow.status).toBe('stopped')
+		const events = recordEmitterEvents(workflow.emitter, ['skip'])
 		workflow.skip()
 		expect(workflow.status).toBe('stopped')
+		expect(events.skip.count).toBe(0)
 	})
 
 	it('complete() is a no-op on a failed workflow — never masks a real failure', () => {
 		const workflow = createWorkflow(buildTwoPhaseWorkflow(true))
 		const t0 = workflow.phase('a')?.task('t0')
 		t0?.start()
-		t0?.fail(new Error('boom'))
+		t0?.fail({ origin: 'handler', message: 'boom' })
 		const t1 = workflow.phase('a')?.task('t1')
 		t1?.skip()
 		completeTask(workflow, 'b', 't2')
@@ -288,11 +306,21 @@ describe('Workflow — terminal no-op guards on skip / stop / complete (F1)', ()
 		expect(workflow.status).toBe('running')
 	})
 
-	it('complete() still forces completed on a genuinely pending (vacuous) workflow', () => {
-		const workflow = createWorkflow(buildTwoPhaseWorkflow(false))
+	it('complete() forces completed only on a genuinely vacuous pending workflow', () => {
+		const workflow = createWorkflow({
+			id: 'vacuous',
+			name: 'Vacuous',
+			phases: [
+				{ id: 'first', name: 'First', tasks: [] },
+				{ id: 'second', name: 'Second', tasks: [] },
+			],
+		})
+		const events = recordEmitterEvents(workflow.emitter, ['complete'])
 		expect(workflow.status).toBe('pending')
 		workflow.complete()
 		expect(workflow.status).toBe('completed')
+		expect(workflow.snapshot().override).toBe('completed')
+		expect(events.complete.count).toBe(1)
 	})
 
 	it('double-stop is idempotent — the second call is a guarded no-op', () => {
@@ -304,22 +332,25 @@ describe('Workflow — terminal no-op guards on skip / stop / complete (F1)', ()
 		expect(events.stop.count).toBe(1)
 	})
 
-	it('a parked wait() waiter is still released when stop() no-ops on an already-terminal (derived) workflow', async () => {
+	it('silently releases its gate before observers see a derived terminal workflow', async () => {
 		const workflow = createWorkflow(buildTwoPhaseWorkflow(false))
+		const events = recordEmitterEvents(workflow.emitter, ['complete', 'resume'])
+		const paused: boolean[] = []
+		workflow.emitter.on('complete', () => paused.push(workflow.paused))
 		workflow.pause()
 		expect(workflow.paused).toBe(true)
-		// Drive every task to completion WHILE paused — the derived status reaches `completed` via
-		// the cascade (not the override), so `status` is now terminal even though `#paused` is still
-		// `true` and a `wait()` gate is still parked.
+		const waiting = workflow.wait()
 		completeTask(workflow, 'a', 't0')
 		completeTask(workflow, 'a', 't1')
 		completeTask(workflow, 'b', 't2')
 		expect(workflow.status).toBe('completed')
-		// stop() is now a guarded NO-OP (status already terminal) — but it must still release the
-		// parked wait() gate unconditionally, so this promise settles rather than hanging.
-		workflow.stop()
-		await workflow.wait()
-		expect(workflow.status).toBe('completed')
+		await waiting
+		expect(workflow.paused).toBe(false)
+		expect(paused).toEqual([false])
+		expect(events.complete.count).toBe(1)
+		expect(events.resume.count).toBe(0)
+		workflow.resume()
+		expect(events.resume.count).toBe(0)
 	})
 })
 
@@ -329,7 +360,7 @@ describe('Workflow — the result tree (workflow tier, both directions)', () => 
 		completeTask(workflow, 'a', 't0')
 		const t1 = workflow.phase('a')?.task('t1')
 		t1?.start()
-		t1?.fail(new Error('mid'))
+		t1?.fail({ origin: 'handler', message: 'mid' })
 		completeTask(workflow, 'b', 't2')
 		// Phases in order (a then b), each phase’s task results in order.
 		expect(workflow.results().map((result) => result.task.id)).toEqual(['t0', 't1', 't2'])
@@ -347,7 +378,7 @@ describe('Workflow — the result tree (workflow tier, both directions)', () => 
 		workflow.phase('a')?.task('t1')?.skip()
 		const t2 = workflow.phase('b')?.task('t2')
 		t2?.start()
-		t2?.fail(new Error('late'))
+		t2?.fail({ origin: 'handler', message: 'late' })
 		const results = workflow.results()
 		expect(results.map((result) => result.task.id)).toEqual(['t0', 't2'])
 		expect(results.map((result) => result.status)).toEqual(['completed', 'failed'])
@@ -355,18 +386,18 @@ describe('Workflow — the result tree (workflow tier, both directions)', () => 
 
 	it('a deeply-nested failed task carries its REAL Failure and full UP-lineage', () => {
 		// Reach the failing leaf in the LATER phase, then navigate UP from its recorded result: the
-		// boxed outcome is the genuine Failure (the real Error), and the lineage chain is intact
+		// boxed outcome is the normalized Failure, and the lineage chain is intact
 		// task → phase → workflow (so a result is self-describing wherever it travels).
 		const workflow = createWorkflow(buildTwoPhaseWorkflow(false))
 		const boom = new Error('deep failure')
 		const t2 = workflow.phase('b')?.task('t2')
 		t2?.start()
-		t2?.fail(boom)
+		t2?.fail({ origin: 'handler', message: boom.message })
 		const failed = workflow.results().find((result) => result.status === 'failed')
 		if (failed?.result === undefined || failed.result.success !== false) {
 			throw new Error('expected the failed leaf to box a Failure')
 		}
-		expect(failed.result.error).toBe(boom)
+		expect(failed.result.error).toEqual({ origin: 'handler', message: boom.message })
 		// Up the lineage from the result itself.
 		expect(failed.task.id).toBe('t2')
 		expect(failed.phase.id).toBe('b')
@@ -396,8 +427,11 @@ describe('Workflow — snapshot → restore round-trip', () => {
 		completeTask(workflow, 'a', 't0')
 		const t1 = workflow.phase('a')?.task('t1')
 		t1?.start()
-		t1?.fail(new Error('halt'))
-		const restored = restoreWorkflow(workflow.snapshot(), { bail: workflow.bail })
+		t1?.fail({ origin: 'handler', message: 'halt' })
+		const restored = restoreWorkflow(workflow.snapshot(), {
+			bail: workflow.bail,
+			functions: RESTORE_FUNCTIONS,
+		})
 		// Whole-tree status equality.
 		expect(restored.status).toBe(workflow.status)
 		expect(restored.status).toBe('failed')
@@ -419,7 +453,10 @@ describe('Workflow — snapshot → restore round-trip', () => {
 		workflow.phase('a')?.task('t0')?.skip()
 		completeTask(workflow, 'a', 't1')
 		completeTask(workflow, 'b', 't2')
-		const restored = restoreWorkflow(workflow.snapshot(), { bail: false })
+		const restored = restoreWorkflow(workflow.snapshot(), {
+			bail: false,
+			functions: RESTORE_FUNCTIONS,
+		})
 		expect(
 			restored
 				.phase('a')
@@ -436,7 +473,10 @@ describe('Workflow — snapshot → restore round-trip', () => {
 		workflow.phase('a')?.task('t0')?.start()
 		workflow.phase('a')?.skip()
 		expect(workflow.phase('a')?.status).toBe('skipped')
-		const restored = restoreWorkflow(workflow.snapshot(), { bail: false })
+		const restored = restoreWorkflow(workflow.snapshot(), {
+			bail: false,
+			functions: RESTORE_FUNCTIONS,
+		})
 		// The override is reconstructed: phase a stays skipped even though a child is mid-flight.
 		expect(restored.phase('a')?.status).toBe('skipped')
 		expect(restored.phase('a')?.task('t0')?.status).toBe('running')
@@ -447,7 +487,10 @@ describe('Workflow — snapshot → restore round-trip', () => {
 		const workflow = createWorkflow(buildTwoPhaseWorkflow(false))
 		workflow.phase('a')?.task('t0')?.start() // derived would be running
 		workflow.stop()
-		const restored = restoreWorkflow(workflow.snapshot(), { bail: false })
+		const restored = restoreWorkflow(workflow.snapshot(), {
+			bail: false,
+			functions: RESTORE_FUNCTIONS,
+		})
 		expect(restored.status).toBe('stopped')
 		expect(restored.snapshot()).toEqual(workflow.snapshot())
 	})
@@ -461,10 +504,10 @@ describe('Workflow — snapshot → restore round-trip', () => {
 		completeTask(workflow, 'a', 't0')
 		const t1 = workflow.phase('a')?.task('t1')
 		t1?.start()
-		t1?.fail(new Error('mixed'))
+		t1?.fail({ origin: 'handler', message: 'mixed' })
 		workflow.phase('b')?.task('t2')?.skip()
 		const snapshot = workflow.snapshot()
-		const restored = restoreWorkflow(snapshot)
+		const restored = restoreWorkflow(snapshot, { functions: RESTORE_FUNCTIONS })
 		// Whole-snapshot deep equality is the strongest fidelity claim (structure + status + results
 		// + order + bail + overrides all at once).
 		expect(restored.snapshot()).toEqual(snapshot)
@@ -484,7 +527,7 @@ describe('Workflow — snapshot → restore round-trip', () => {
 
 	it('restores an empty tree (zero phases) identically', () => {
 		const workflow = createWorkflow({ id: 'wf', name: 'WF', bail: false, phases: [] })
-		const restored = restoreWorkflow(workflow.snapshot())
+		const restored = restoreWorkflow(workflow.snapshot(), { functions: RESTORE_FUNCTIONS })
 		expect(restored.status).toBe('pending')
 		expect(restored.phases.count).toBe(0)
 		expect(restored.snapshot()).toEqual(workflow.snapshot())
@@ -493,7 +536,10 @@ describe('Workflow — snapshot → restore round-trip', () => {
 	it('a restored tree keeps transitioning + cascading from where it left off', () => {
 		const workflow = createWorkflow(buildTwoPhaseWorkflow(false))
 		completeTask(workflow, 'a', 't0') // t1, t2 still pending
-		const restored = restoreWorkflow(workflow.snapshot(), { bail: false })
+		const restored = restoreWorkflow(workflow.snapshot(), {
+			bail: false,
+			functions: RESTORE_FUNCTIONS,
+		})
 		expect(restored.status).toBe('running')
 		// The live machine still works after restore — finish everything ⇒ completed.
 		restored.phase('a')?.task('t1')?.start()
@@ -510,7 +556,7 @@ describe('Workflow — the snapshot is self-contained (bail + override persist)'
 		const snapshot = workflow.snapshot()
 		expect(snapshot.bail).toBe(true)
 		// Restore WITHOUT an options.bail — the policy must come from the snapshot, not default false.
-		const restored = restoreWorkflow(snapshot)
+		const restored = restoreWorkflow(snapshot, { functions: RESTORE_FUNCTIONS })
 		expect(restored.bail).toBe(true)
 	})
 
@@ -541,7 +587,7 @@ describe('Workflow — the snapshot is self-contained (bail + override persist)'
 		const workflow = createWorkflow(definition)
 		const t0 = workflow.phase('a')?.task('t0')
 		t0?.start()
-		t0?.fail(new Error('boom'))
+		t0?.fail({ origin: 'handler', message: 'boom' })
 		// The strict phase a halts the whole workflow even though the workflow default is graceful.
 		expect(workflow.status).toBe('failed')
 		expect(workflow.phase('a')?.bail).toBe(true)
@@ -552,7 +598,7 @@ describe('Workflow — the snapshot is self-contained (bail + override persist)'
 		expect(snapshot.phases.find((phase) => phase.id === 'a')?.bail).toBe(true) // the override persisted
 		// Restore taking bail FROM THE SNAPSHOT (no options): the per-phase override survives, so the
 		// restored workflow re-derives the SAME `failed`, and the phase bail round-trips.
-		const restored = restoreWorkflow(snapshot)
+		const restored = restoreWorkflow(snapshot, { functions: RESTORE_FUNCTIONS })
 		expect(restored.status).toBe(workflow.status)
 		expect(restored.status).toBe('failed')
 		expect(restored.phase('a')?.bail).toBe(true)
@@ -576,7 +622,7 @@ describe('Workflow — the snapshot is self-contained (bail + override persist)'
 		completeTask(workflow, 'a', 't0')
 		const t1 = workflow.phase('a')?.task('t1')
 		t1?.start()
-		t1?.fail(new Error('halt'))
+		t1?.fail({ origin: 'handler', message: 'halt' })
 		expect(workflow.status).toBe('failed')
 		expect(workflow.phase('b')?.status).toBe('pending') // b never ran
 		const snapshot = workflow.snapshot()
@@ -587,7 +633,7 @@ describe('Workflow — the snapshot is self-contained (bail + override persist)'
 		// Restore taking the policy FROM THE SNAPSHOT (no options) — under the deleted divergence
 		// heuristic + silent bail:false this re-derived `running`, DIVERGED from the stored `failed`,
 		// and FALSELY pinned `failed` as a permanent override, freezing the tree forever.
-		const restored = restoreWorkflow(snapshot)
+		const restored = restoreWorkflow(snapshot, { functions: RESTORE_FUNCTIONS })
 		expect(restored.bail).toBe(true)
 		expect(restored.status).toBe('failed')
 		// No false override pin: the restored tree carries no forced override at any tier — the
@@ -607,8 +653,11 @@ describe('Workflow — the snapshot is self-contained (bail + override persist)'
 		completeTask(workflow, 'a', 't0')
 		const t1 = workflow.phase('a')?.task('t1')
 		t1?.start()
-		t1?.fail(new Error('halt'))
-		const restored = restoreWorkflow(workflow.snapshot(), { bail: false })
+		t1?.fail({ origin: 'handler', message: 'halt' })
+		const restored = restoreWorkflow(workflow.snapshot(), {
+			bail: false,
+			functions: RESTORE_FUNCTIONS,
+		})
 		expect(restored.bail).toBe(false)
 		// Under graceful mode the failed phase folds in as terminal; phase b is pending ⇒ running.
 		expect(restored.status).toBe('running')
@@ -623,7 +672,7 @@ describe('Workflow — the snapshot is self-contained (bail + override persist)'
 		const snapshot = workflow.snapshot()
 		// The override is persisted in its OWN field (present because one is in force).
 		expect(snapshot.override).toBe('stopped')
-		const restored = restoreWorkflow(snapshot)
+		const restored = restoreWorkflow(snapshot, { functions: RESTORE_FUNCTIONS })
 		// Restored DIRECTLY from the field — the forced status survives and the snapshot round-trips.
 		expect(restored.status).toBe('stopped')
 		expect(restored.snapshot().override).toBe('stopped')
@@ -641,7 +690,7 @@ describe('Workflow — the snapshot is self-contained (bail + override persist)'
 		const snapshot = workflow.snapshot()
 		const phaseSnapshot = snapshot.phases.find((phase) => phase.id === 'a')
 		expect(phaseSnapshot?.override).toBe('skipped')
-		const restored = restoreWorkflow(snapshot)
+		const restored = restoreWorkflow(snapshot, { functions: RESTORE_FUNCTIONS })
 		expect(restored.phase('a')?.status).toBe('skipped')
 		// The child is still mid-flight, but the restored override pins the phase to skipped.
 		expect(restored.phase('a')?.task('t0')?.status).toBe('running')
@@ -694,6 +743,10 @@ function buildMultiPhaseWorkflow(count: number): WorkflowDefinition {
 describe('Workflow — pause/resume/paused', () => {
 	it('pause sets paused true; resume clears it — both idempotent', () => {
 		const workflow = createWorkflow(buildMultiPhaseWorkflow(1))
+		const states: boolean[] = []
+		const events = recordEmitterEvents(workflow.emitter, ['pause', 'resume'])
+		workflow.emitter.on('pause', () => states.push(workflow.paused))
+		workflow.emitter.on('resume', () => states.push(workflow.paused))
 		expect(workflow.paused).toBe(false)
 		workflow.pause()
 		expect(workflow.paused).toBe(true)
@@ -703,21 +756,34 @@ describe('Workflow — pause/resume/paused', () => {
 		expect(workflow.paused).toBe(false)
 		workflow.resume() // idempotent no-op
 		expect(workflow.paused).toBe(false)
+		expect(events.pause.calls).toEqual([[]])
+		expect(events.resume.calls).toEqual([[]])
+		expect(states).toEqual([true, false])
+		expect(workflow.snapshot()).not.toHaveProperty('paused')
 	})
 
 	it('pause is a no-op once the workflow is terminal', () => {
 		const workflow = createWorkflow(buildMultiPhaseWorkflow(1))
+		const events = recordEmitterEvents(workflow.emitter, ['pause', 'resume'])
 		workflow.stop()
 		expect(workflow.status).toBe('stopped')
 		workflow.pause()
+		workflow.resume()
 		expect(workflow.paused).toBe(false)
+		expect(events.pause.count).toBe(0)
+		expect(events.resume.count).toBe(0)
 	})
 
 	it('pause is a no-op once the workflow is destroyed', () => {
 		const workflow = createWorkflow(buildMultiPhaseWorkflow(1))
+		const events = recordEmitterEvents(workflow.emitter, ['pause', 'resume'])
+		workflow.pause()
 		workflow.destroy()
 		workflow.pause()
+		workflow.resume()
 		expect(workflow.paused).toBe(false)
+		expect(events.pause.calls).toEqual([[]])
+		expect(events.resume.count).toBe(0)
 	})
 })
 
@@ -797,6 +863,105 @@ describe('Workflow — destroy()', () => {
 		expect(workflow.status).toBe('stopped')
 	})
 
+	it('stops nonterminal tasks, releases every lineage gate, and clears task liveness', async () => {
+		const workflow = createWorkflow(buildMultiPhaseWorkflow(1), { silence: 15 })
+		const phase = workflow.phase('p0')
+		const task = phase?.task('t0')
+		if (phase === undefined || task === undefined) throw new Error('expected workflow fixtures')
+		const events = recordEmitterEvents(task.emitter, ['silence'])
+		task.start()
+		workflow.pause()
+		phase.pause()
+		task.pause()
+		const workflowWait = workflow.wait()
+		const phaseWait = phase.wait()
+		const taskWait = task.wait()
+		workflow.destroy()
+		await Promise.all([workflowWait, phaseWait, taskWait])
+		expect(task.status).toBe('stopped')
+		expect(task.signal.aborted).toBe(true)
+		expect(task.paused).toBe(false)
+		expect(phase.paused).toBe(false)
+		expect(workflow.paused).toBe(false)
+		await waitForDelay(25)
+		expect(events.silence.count).toBe(0)
+	})
+
+	it('pins a graceful running tree to stopped before preserving a failed leaf and stopping its sibling', () => {
+		const workflow = createWorkflow({
+			id: 'wf',
+			name: 'WF',
+			bail: false,
+			phases: [
+				{
+					id: 'p0',
+					name: 'P0',
+					tasks: [
+						{ id: 't0', name: 'T0' },
+						{ id: 't1', name: 'T1' },
+					],
+				},
+			],
+		})
+		const failed = workflow.phase('p0')?.task('t0')
+		const sibling = workflow.phase('p0')?.task('t1')
+		if (failed === undefined || sibling === undefined) throw new Error('expected task fixtures')
+		failed.start()
+		sibling.start()
+		failed.fail({ origin: 'handler', message: 'failed' })
+		expect(workflow.status).toBe('running')
+		workflow.destroy()
+		expect(workflow.status).toBe('stopped')
+		expect(failed.status).toBe('failed')
+		expect(sibling.status).toBe('stopped')
+	})
+
+	it('is irreversible before events, rejects reentrant mutation, and destroys emitters after final events', () => {
+		const workflow = createWorkflow(buildMultiPhaseWorkflow(1))
+		const phase = workflow.phase('p0')
+		const task = phase?.task('t0')
+		if (phase === undefined || task === undefined) throw new Error('expected workflow fixtures')
+		task.start()
+		const order: string[] = []
+		let workflowMutation = true
+		let phaseMutation = true
+		workflow.emitter.on('stop', () => {
+			order.push('workflow')
+			expect(workflow.destroyed).toBe(true)
+			workflowMutation = workflow.add({ id: 'late', name: 'Late', tasks: [] }).success
+			workflow.destroy()
+			expect(workflow.emitter.destroyed).toBe(false)
+		})
+		phase.emitter.on('stop', () => {
+			order.push('phase')
+			phaseMutation = phase.add({ id: 'late', name: 'Late' }).success
+			expect(phase.emitter.destroyed).toBe(false)
+		})
+		task.emitter.on('stop', () => {
+			order.push('task')
+			expect(task.emitter.destroyed).toBe(false)
+		})
+		workflow.signal.addEventListener(
+			'abort',
+			() => {
+				order.push('abort')
+				expect(workflow.emitter.destroyed).toBe(false)
+				expect(phase.emitter.destroyed).toBe(false)
+				expect(task.emitter.destroyed).toBe(false)
+			},
+			{ once: true },
+		)
+		workflow.destroy()
+		expect(workflowMutation).toBe(false)
+		expect(phaseMutation).toBe(false)
+		expect(order).toEqual(['workflow', 'phase', 'task', 'abort'])
+		expect(workflow.emitter.destroyed).toBe(true)
+		expect(phase.emitter.destroyed).toBe(true)
+		expect(task.emitter.destroyed).toBe(true)
+		expect(phase.tasks.tasks().every((entry) => entry.status !== 'pending')).toBe(true)
+		expect(workflow.snapshot().status).toBe('stopped')
+	})
+
 	it('does not override a phase that already reached a genuine terminal status', () => {
 		const workflow = createWorkflow(buildMultiPhaseWorkflow(2))
 		const leaf = workflow.phase('p0')?.task('t0')
@@ -823,6 +988,23 @@ describe('Workflow — destroy()', () => {
 		workflow.destroy()
 		await waiting
 		expect(settled).toBe(true)
+	})
+
+	it('preserves a completed phase whose terminal transition already released its gate', async () => {
+		const workflow = createWorkflow(buildMultiPhaseWorkflow(1))
+		const phase = workflow.phase('p0')
+		const task = phase?.task('t0')
+		if (phase === undefined || task === undefined) throw new Error('expected phase fixtures')
+		phase.pause()
+		const waiting = phase.wait()
+		task.start()
+		task.complete('done')
+		expect(phase.status).toBe('completed')
+		expect(phase.paused).toBe(false)
+		workflow.destroy()
+		await waiting
+		expect(phase.status).toBe('completed')
+		expect(phase.paused).toBe(false)
 	})
 
 	it('is idempotent — a second destroy is a no-op', () => {

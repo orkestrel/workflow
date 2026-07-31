@@ -1,12 +1,14 @@
-import type { WorkflowDefinition, WorkflowFunction } from '@src/core'
+import type { WorkflowDefinition, WorkflowFunction, WorkflowSnapshot } from '@src/core'
 import {
 	assertSnapshot,
+	createMemoryWorkflowStore,
 	createScheduler,
 	createWorkflow,
 	createWorkflowContract,
 	createWorkflowRunner,
 	definitionToSnapshot,
 	isWorkflowError,
+	MAX_TIMER_MS,
 	restoreWorkflow,
 } from '@src/core'
 import { describe, expect, it } from 'vitest'
@@ -14,6 +16,8 @@ import {
 	captureError,
 	createRecorder,
 	createRecordingScheduler,
+	omitTaskActivity,
+	recordEmitterEvents,
 	waitForDelay,
 } from '../../setup.js'
 import { createRunner } from '@src/core'
@@ -28,9 +32,8 @@ function runner(): ReturnType<typeof createWorkflowRunner> {
 const ROUND_TRIP_TIMEOUT_MS = 30_000
 
 // A fuller definition (two phases, three tasks, a concurrency throttle, an explicit bail) used by
-// the createWorkflow / restoreWorkflow / snapshot-trio tests — the local replacement for
-// setup.ts's `buildWorkflowDefinition` (still on the OLD `{ via, name }` task-form shape; see the
-// reported shared-file patch). Every `run` is a plain registry-name string per the redesign.
+// the createWorkflow / restoreWorkflow / snapshot-trio tests. Every `run` is a plain registry-name
+// string resolved through the construction-time registry.
 function localDefinition(overrides: Partial<WorkflowDefinition> = {}): WorkflowDefinition {
 	return {
 		id: 'wf-1',
@@ -55,6 +58,12 @@ function localDefinition(overrides: Partial<WorkflowDefinition> = {}): WorkflowD
 		],
 		...overrides,
 	}
+}
+
+const RESTORE_FUNCTIONS = {
+	compile: () => null,
+	scan: () => null,
+	audit: () => null,
 }
 
 // ── createWorkflowContract — the anti-drift spine (four-way parity) ──
@@ -139,6 +148,20 @@ describe('createWorkflowContract — rejects malformed input', () => {
 		[
 			'concurrency not an integer',
 			{ id: 'w', name: 'X', phases: [{ id: 'p', name: 'P', tasks: [], concurrency: 1.5 }] },
+		],
+		[
+			'task timeout exceeds the host timer bound',
+			{
+				id: 'w',
+				name: 'X',
+				phases: [
+					{
+						id: 'p',
+						name: 'P',
+						tasks: [{ id: 't', name: 'T', timeout: MAX_TIMER_MS + 1 }],
+					},
+				],
+			},
 		],
 	]
 
@@ -226,7 +249,7 @@ describe('createWorkflow — builds the live tree (the W-b factory)', () => {
 		ROUND_TRIP_TIMEOUT_MS,
 	)
 
-	it('a `run` name absent from `functions` (or omitted) resolves to `handler: undefined` (the no-handler rule)', () => {
+	it('an absent or unresolved `run` has no handler, with execution distinguishing the two', () => {
 		const workflow = createWorkflow(localDefinition(), { functions: {} })
 		expect(workflow.phase('phase-build')?.task('task-compile')?.handler).toBeUndefined()
 	})
@@ -240,7 +263,10 @@ describe('restoreWorkflow / assertSnapshot — the round-trip inverse', () => {
 		const compile = workflow.phase('phase-build')?.task('task-compile')
 		compile?.start()
 		compile?.complete('built')
-		const restored = restoreWorkflow(workflow.snapshot(), { bail: true })
+		const restored = restoreWorkflow(workflow.snapshot(), {
+			bail: true,
+			functions: RESTORE_FUNCTIONS,
+		})
 		expect(restored.snapshot()).toEqual(workflow.snapshot())
 		expect(restored.phase('phase-build')?.task('task-compile')?.status).toBe('completed')
 	})
@@ -272,23 +298,13 @@ describe('restoreWorkflow / assertSnapshot — the round-trip inverse', () => {
 		ROUND_TRIP_TIMEOUT_MS,
 	)
 
-	it(
-		'restoreWorkflow WITHOUT `functions` auto-completes every task (documented declarative replay)',
-		async () => {
-			const workflow = createWorkflow(localDefinition())
-			const snapshot = workflow.snapshot()
-			const restored = restoreWorkflow(snapshot)
-			expect(restored.phase('phase-build')?.task('task-compile')?.handler).toBeUndefined()
-			const result = await runner().execute(restored)
-			expect(result.status).toBe('completed')
-			expect(restored.phase('phase-build')?.task('task-compile')?.status).toBe('completed')
-			expect(restored.phase('phase-build')?.task('task-compile')?.result?.result).toEqual({
-				success: true,
-				value: undefined,
-			})
-		},
-		ROUND_TRIP_TIMEOUT_MS,
-	)
+	it('restoreWorkflow preserves an unresolved behavior reference for inspection', () => {
+		const snapshot = createWorkflow(localDefinition()).snapshot()
+		const restored = restoreWorkflow(snapshot)
+		expect(restored.phase('phase-build')?.task('task-compile')?.run).toBe('compile')
+		expect(restored.phase('phase-build')?.task('task-compile')?.handler).toBeUndefined()
+		expect(() => runner().execute(restored)).toThrowError(/not drivable/)
+	})
 
 	it("SNAPSHOT TRIO round-trip: a definition's run/retries/timeout survive definitionToSnapshot → live tree → snapshot() → restore", () => {
 		const definition = localDefinition()
@@ -305,7 +321,7 @@ describe('restoreWorkflow / assertSnapshot — the round-trip inverse', () => {
 		expect(liveCompile?.retries).toBe(2)
 		expect(liveCompile?.timeout).toBe(500)
 
-		const restored = restoreWorkflow(liveSnapshot)
+		const restored = restoreWorkflow(liveSnapshot, { functions: RESTORE_FUNCTIONS })
 		const restoredCompile = restored.phase('phase-build')?.task('task-compile')
 		expect(restoredCompile?.run).toBe('compile')
 		expect(restoredCompile?.retries).toBe(2)
@@ -318,6 +334,199 @@ describe('restoreWorkflow / assertSnapshot — the round-trip inverse', () => {
 		const broken = { ...snapshot, status: 'bogus' }
 		const error = captureError(() => assertSnapshot(JSON.parse(JSON.stringify(broken))))
 		expect(isWorkflowError(error) ? error.code : undefined).toBe('RESTORE')
+	})
+
+	it('accepts concurrent task completion order and forced gaps in the phase frontier', () => {
+		const concurrent = createWorkflow({
+			id: 'concurrent',
+			name: 'Concurrent',
+			phases: [
+				{
+					id: 'phase',
+					name: 'Phase',
+					tasks: [
+						{ id: 'pending', name: 'Pending' },
+						{ id: 'completed', name: 'Completed' },
+					],
+				},
+			],
+		})
+		const completed = concurrent.phase('phase')?.task('completed')
+		if (completed === undefined) throw new Error('expected completed task')
+		completed.start()
+		completed.complete(null)
+		expect(captureError(() => assertSnapshot(concurrent.snapshot()))).toBeUndefined()
+
+		const phases = createWorkflow({
+			id: 'frontier',
+			name: 'Frontier',
+			phases: [
+				{ id: 'first', name: 'First', tasks: [{ id: 'a', name: 'A' }] },
+				{ id: 'forced', name: 'Forced', tasks: [{ id: 'b', name: 'B' }] },
+				{ id: 'later', name: 'Later', tasks: [{ id: 'c', name: 'C' }] },
+			],
+		})
+		phases.phase('forced')?.skip()
+		expect(captureError(() => assertSnapshot(phases.snapshot()))).toBeUndefined()
+		phases.phase('first')?.task('a')?.start()
+		expect(captureError(() => assertSnapshot(phases.snapshot()))).toBeUndefined()
+	})
+
+	it('rejects a genuinely started later phase beyond the sequential frontier', () => {
+		const workflow = createWorkflow({
+			id: 'invalid-frontier',
+			name: 'Invalid frontier',
+			phases: [
+				{ id: 'pending', name: 'Pending', tasks: [{ id: 'a', name: 'A' }] },
+				{ id: 'later', name: 'Later', tasks: [{ id: 'b', name: 'B' }] },
+			],
+		})
+		workflow.phase('later')?.task('b')?.start()
+		expect(isWorkflowError(captureError(() => workflow.snapshot()))).toBe(true)
+	})
+
+	it('round-trips the completed override used by an executed no-op workflow', async () => {
+		const store = createMemoryWorkflowStore()
+		const result = await runner().execute(
+			{
+				id: 'empty',
+				name: 'Empty',
+				phases: [{ id: 'phase', name: 'Phase', tasks: [] }],
+			},
+			{ store },
+		)
+		expect(result.status).toBe('completed')
+		expect(result.durable).toBe(true)
+		const snapshot = result.workflow.snapshot()
+		expect(snapshot.override).toBe('completed')
+		const persisted = await store.get('empty')
+		expect(persisted).toEqual(snapshot)
+		expect(restoreWorkflow(persisted).status).toBe('completed')
+	})
+
+	it('rejects a hostile completed override on work or a non-pending derived tree', () => {
+		const pending = createWorkflow(localDefinition()).snapshot()
+		expect(
+			isWorkflowError(
+				captureError(() =>
+					assertSnapshot({ ...pending, status: 'completed', override: 'completed' }),
+				),
+			),
+		).toBe(true)
+
+		const skipped = createWorkflow({
+			id: 'skipped-empty',
+			name: 'Skipped empty',
+			phases: [{ id: 'phase', name: 'Phase', tasks: [] }],
+		})
+		skipped.phase('phase')?.skip()
+		const skippedSnapshot = skipped.snapshot()
+		expect(
+			isWorkflowError(
+				captureError(() =>
+					assertSnapshot({
+						...skippedSnapshot,
+						status: 'completed',
+						override: 'completed',
+					}),
+				),
+			),
+		).toBe(true)
+	})
+
+	it('enforces pending/running/terminal activity consistency and restores without an armed silence timer', async () => {
+		const workflow = createWorkflow(localDefinition())
+		const pending = workflow.snapshot()
+		const pendingPhase = pending.phases[0]
+		if (pendingPhase === undefined) throw new Error('expected pending phase snapshot')
+		const pendingTask = pendingPhase.tasks[0]
+		if (pendingTask === undefined) throw new Error('expected pending task snapshot')
+		const invalidPending: WorkflowSnapshot = {
+			...pending,
+			phases: [
+				{
+					...pendingPhase,
+					tasks: [
+						{
+							...pendingTask,
+							activity: { operations: [], constraints: [], updated: 0 },
+						},
+					],
+				},
+			],
+		}
+		expect(isWorkflowError(captureError(() => assertSnapshot(invalidPending)))).toBe(true)
+
+		const liveTask = workflow.phase('phase-build')?.task('task-compile')
+		if (liveTask === undefined) throw new Error('expected live task')
+		liveTask.start()
+		const running = workflow.snapshot()
+		expect(captureError(() => assertSnapshot(running))).toBeUndefined()
+		const runningPhase = running.phases[0]
+		if (runningPhase === undefined) throw new Error('expected running phase snapshot')
+		const runningTask = runningPhase.tasks[0]
+		if (runningTask === undefined) throw new Error('expected running task snapshot')
+		const invalidRunning: WorkflowSnapshot = {
+			...running,
+			phases: [
+				{
+					...runningPhase,
+					tasks: [omitTaskActivity(runningTask)],
+				},
+			],
+		}
+		expect(isWorkflowError(captureError(() => assertSnapshot(invalidRunning)))).toBe(true)
+
+		const restored = restoreWorkflow(running, {
+			silence: 10,
+			functions: RESTORE_FUNCTIONS,
+		})
+		const restoredTask = restored.phase('phase-build')?.task('task-compile')
+		if (restoredTask === undefined) throw new Error('expected restored task')
+		const events = recordEmitterEvents(restoredTask.emitter, ['silence'])
+		await waitForDelay(20)
+		expect(events.silence.count).toBe(0)
+
+		liveTask.complete('done')
+		const terminal = workflow.snapshot()
+		expect(captureError(() => assertSnapshot(terminal))).toBeUndefined()
+		const terminalPhase = terminal.phases[0]
+		if (terminalPhase === undefined) throw new Error('expected terminal phase snapshot')
+		const terminalTask = terminalPhase.tasks[0]
+		if (terminalTask === undefined) throw new Error('expected terminal task snapshot')
+		const terminalWithoutActivity: WorkflowSnapshot = {
+			...terminal,
+			phases: [
+				{
+					...terminalPhase,
+					tasks: [omitTaskActivity(terminalTask), ...terminalPhase.tasks.slice(1)],
+				},
+				...terminal.phases.slice(1),
+			],
+		}
+		expect(isWorkflowError(captureError(() => assertSnapshot(terminalWithoutActivity)))).toBe(true)
+
+		const failedWorkflow = createWorkflow(localDefinition())
+		const failedTask = failedWorkflow.phase('phase-build')?.task('task-compile')
+		if (failedTask === undefined) throw new Error('expected failed task')
+		failedTask.start()
+		failedTask.fail({ origin: 'handler', message: 'failed' })
+		const failed = failedWorkflow.snapshot()
+		const failedPhase = failed.phases[0]
+		if (failedPhase === undefined) throw new Error('expected failed phase snapshot')
+		const failedSnapshot = failedPhase.tasks[0]
+		if (failedSnapshot === undefined) throw new Error('expected failed snapshot')
+		const failedWithoutActivity: WorkflowSnapshot = {
+			...failed,
+			phases: [
+				{
+					...failedPhase,
+					tasks: [omitTaskActivity(failedSnapshot), ...failedPhase.tasks.slice(1)],
+				},
+				...failed.phases.slice(1),
+			],
+		}
+		expect(isWorkflowError(captureError(() => assertSnapshot(failedWithoutActivity)))).toBe(true)
 	})
 
 	it('assertSnapshot rejects a PhaseSnapshot with a non-boolean bail (naming the phase)', () => {
@@ -335,15 +544,17 @@ describe('restoreWorkflow / assertSnapshot — the round-trip inverse', () => {
 
 	it('assertSnapshot rejects a TaskSnapshot with an empty `run`, a negative `retries`, or a fractional `timeout` (naming the task)', () => {
 		const snapshot = createWorkflow(localDefinition()).snapshot()
-		const firstTask = snapshot.phases[0]?.tasks[0]
+		const firstPhase = snapshot.phases[0]
+		if (firstPhase === undefined) throw new Error('expected at least one phase')
+		const firstTask = firstPhase.tasks[0]
 		if (firstTask === undefined) throw new Error('expected at least one task')
 
 		const badRun = {
 			...snapshot,
 			phases: [
 				{
-					...snapshot.phases[0],
-					tasks: [{ ...firstTask, run: '' }, ...(snapshot.phases[0]?.tasks.slice(1) ?? [])],
+					...firstPhase,
+					tasks: [{ ...firstTask, run: '' }, ...firstPhase.tasks.slice(1)],
 				},
 				...snapshot.phases.slice(1),
 			],
@@ -355,8 +566,8 @@ describe('restoreWorkflow / assertSnapshot — the round-trip inverse', () => {
 			...snapshot,
 			phases: [
 				{
-					...snapshot.phases[0],
-					tasks: [{ ...firstTask, retries: -1 }, ...(snapshot.phases[0]?.tasks.slice(1) ?? [])],
+					...firstPhase,
+					tasks: [{ ...firstTask, retries: -1 }, ...firstPhase.tasks.slice(1)],
 				},
 				...snapshot.phases.slice(1),
 			],
@@ -371,14 +582,29 @@ describe('restoreWorkflow / assertSnapshot — the round-trip inverse', () => {
 			...snapshot,
 			phases: [
 				{
-					...snapshot.phases[0],
-					tasks: [{ ...firstTask, timeout: 1.5 }, ...(snapshot.phases[0]?.tasks.slice(1) ?? [])],
+					...firstPhase,
+					tasks: [{ ...firstTask, timeout: 1.5 }, ...firstPhase.tasks.slice(1)],
 				},
 				...snapshot.phases.slice(1),
 			],
 		}
 		const timeoutError = captureError(() => assertSnapshot(JSON.parse(JSON.stringify(badTimeout))))
 		expect(isWorkflowError(timeoutError) ? timeoutError.code : undefined).toBe('RESTORE')
+
+		const overmaxTimeout = {
+			...snapshot,
+			phases: [
+				{
+					...firstPhase,
+					tasks: [{ ...firstTask, timeout: MAX_TIMER_MS + 1 }, ...firstPhase.tasks.slice(1)],
+				},
+				...snapshot.phases.slice(1),
+			],
+		}
+		const overmaxError = captureError(() =>
+			assertSnapshot(JSON.parse(JSON.stringify(overmaxTimeout))),
+		)
+		expect(isWorkflowError(overmaxError) ? overmaxError.code : undefined).toBe('RESTORE')
 	})
 })
 
@@ -419,7 +645,7 @@ describe('createScheduler', () => {
 // ── createWorkflowRunner — the injected-scheduler pattern ──
 
 describe('createWorkflowRunner', () => {
-	it('uses an INJECTED scheduler when supplied — no wall-clock pacing for a multi-phase run', async () => {
+	it('uses an INJECTED scheduler when supplied and records multi-phase pacing', async () => {
 		const recording = createRecordingScheduler()
 		const built = createWorkflowRunner({ scheduler: recording })
 		const definition: WorkflowDefinition = {
@@ -439,15 +665,13 @@ describe('createWorkflowRunner', () => {
 		expect(recording.yields).toBeGreaterThanOrEqual(1)
 	})
 
-	it('carries NO functions/tools/agents registry of its own — a task with no `execute`-level functions auto-completes', async () => {
+	it('rejects a named task when execute has no functions registry', () => {
 		const definition: WorkflowDefinition = {
 			id: 'wf',
 			name: 'WF',
 			phases: [{ id: 'a', name: 'A', tasks: [{ id: 't', name: 'T', run: 'unregistered' }] }],
 		}
-		const result = await createWorkflowRunner().execute(definition)
-		expect(result.status).toBe('completed')
-		expect(result.workflow.phase('a')?.task('t')?.status).toBe('completed')
+		expect(() => createWorkflowRunner().execute(definition)).toThrowError(/not drivable/)
 	})
 })
 

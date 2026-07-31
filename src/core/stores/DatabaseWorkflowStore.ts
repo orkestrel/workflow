@@ -1,6 +1,6 @@
 import type { TableInterface } from '@orkestrel/database'
 import type { WorkflowSnapshot, WorkflowSnapshotRow, WorkflowStoreInterface } from '../types.js'
-import { isWorkflowSnapshot } from '../helpers.js'
+import { cloneWorkflowSnapshot } from '../cloners.js'
 
 /**
  * A {@link WorkflowStoreInterface} backed by one table of the `databases` layer — a
@@ -67,15 +67,15 @@ export class DatabaseWorkflowStore implements WorkflowStoreInterface {
 	async get(id: string): Promise<WorkflowSnapshot | undefined> {
 		const row = await this.#table.get(id)
 		if (row === undefined) return undefined
-		// The snapshot crosses back as an untrusted storage read (a structured clone / a JSON
-		// row), so narrow the opaque JSON column with the boundary guard rather than a cast
-		// (AGENTS §14); a malformed blob resolves `undefined`, never a broken tree.
-		return isWorkflowSnapshot(row.snapshot) ? row.snapshot : undefined
+		// The snapshot crosses back as an untrusted storage read. A present malformed row is
+		// corruption, not absence, so preserve cloneWorkflowSnapshot's normalized RESTORE failure.
+		return cloneWorkflowSnapshot(row.snapshot)
 	}
 
 	/** Insert or replace under the snapshot's OWN `id` (no separate id param) — the row is `{ id, snapshot }`. */
 	async set(snapshot: WorkflowSnapshot): Promise<void> {
-		await this.#table.set({ id: snapshot.id, snapshot })
+		const owned = cloneWorkflowSnapshot(snapshot)
+		await this.#table.set({ id: owned.id, snapshot: owned })
 	}
 
 	/** Drop a snapshot by id; an absent id is a no-op (no throw). */

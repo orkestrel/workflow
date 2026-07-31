@@ -1,8 +1,15 @@
+import type { AbortInterface } from '@orkestrel/abort'
+import type { JSONRecord, JSONValue, Result } from '@orkestrel/contract'
 import type { EmitterInterface } from '@orkestrel/emitter'
+import type { TimeoutInterface } from '@orkestrel/timeout'
 import type {
+	DeferredInterface,
 	PhaseInterface,
+	TaskActivity,
+	TaskActivityInput,
 	TaskContext,
 	TaskEventMap,
+	TaskFailure,
 	TaskInterface,
 	TaskOptions,
 	TaskResult,
@@ -12,9 +19,20 @@ import type {
 	WorkflowFunction,
 	WorkflowInterface,
 } from '../types.js'
+import { createAbort } from '@orkestrel/abort'
+import { cloneJSONRecord, cloneJSONValue, isContractError } from '@orkestrel/contract'
 import { Emitter } from '@orkestrel/emitter'
+import { createTimeout } from '@orkestrel/timeout'
+import { cloneTaskActivity } from '../cloners.js'
 import { WorkflowError } from '../errors.js'
-import { canTransitionTask } from '../helpers.js'
+import {
+	buildTaskContext,
+	canTransitionTask,
+	createDeferred,
+	failure,
+	resolveTaskSilence,
+	success,
+} from '../helpers.js'
 
 /**
  * The live leaf state machine (W-b) for one task — an observable (AGENTS §13), guarded
@@ -29,9 +47,8 @@ import { canTransitionTask } from '../helpers.js'
  *   `TRANSITION` {@link WorkflowError} on an illegal move (e.g. completing a non-`running`
  *   task) — the legal graph is the single source of truth, so the leaf can never reach an
  *   impossible state.
- * - **Override (snapshot fidelity).** `skip` / `stop` set `#override` to the forced terminal
- *   status, so a RESTORE can tell a forced leaf (`skipped` / `stopped`) from a run-produced
- *   one and reinstate it AS an override — preserving the round-trip.
+ * - **Snapshot fidelity.** A leaf needs no override: `skipped` / `stopped` are explicit terminal
+ *   statuses, and restore reinstates the leaf directly from {@link TaskSnapshot.status}.
  * - **The cascade.** Every status change records its boxed result (when any), fires the leaf's
  *   OWN event, THEN calls the parent phase's `#recompute` (injected at construction) so the
  *   transition propagates UP (Task → Phase → Workflow re-derive). The own-event-before-cascade
@@ -46,7 +63,8 @@ import { canTransitionTask } from '../helpers.js'
  *   matching {@link import('../types.js').TaskDefinition} / {@link TaskSnapshot} field. `handler`
  *   is the RUNTIME-ONLY counterpart — `run` resolved ONCE at construction against the
  *   workflow-level {@link import('../types.js').WorkflowOptions.functions} registry — and is
- *   NEVER persisted; `undefined` when `run` is omitted or unregistered (the no-handler rule).
+ *   NEVER persisted; `undefined` when `run` is omitted or unregistered. Only omission is a
+ *   deliberate no-op; unresolved named work is rejected before dispatch.
  */
 export class Task implements TaskInterface {
 	declare readonly description?: string
@@ -56,7 +74,7 @@ export class Task implements TaskInterface {
 	// Propagate a status change UP to the parent phase (which re-derives, then escalates to the
 	// workflow) — injected by the parent so the leaf needs no back-reference plumbing of its own.
 	readonly #recompute: () => void
-	readonly #metadata: Readonly<Record<string, unknown>>
+	readonly #metadata: JSONRecord
 	// The PUSH observation surface (§13) — owned, never inherited. The emitter isolates a
 	// listener throw (routing it to the `error` handler), so it can never escape into a
 	// transition or the cascade.
@@ -72,9 +90,18 @@ export class Task implements TaskInterface {
 	readonly #run: string | undefined
 	readonly #retries: number | undefined
 	readonly #timeout: number | undefined
+	#attempts: number
 	// RUNTIME-ONLY (never persisted): `run` resolved ONCE at construction against the
 	// workflow-level functions registry; `undefined` when `run` is omitted or unregistered.
 	readonly #handler: WorkflowFunction | undefined
+	readonly #abort: AbortInterface
+	readonly #silence: number | undefined
+	readonly #onSilence: () => void
+	readonly #liveness: TimeoutInterface | undefined
+	#activity: TaskActivity | undefined
+	#paused: boolean
+	#gate: DeferredInterface<void> | undefined
+	#timerSignal: AbortSignal | undefined
 
 	constructor(
 		context: TaskContext,
@@ -87,13 +114,30 @@ export class Task implements TaskInterface {
 		run?: string,
 		retries?: number,
 		timeout?: number,
+		metadata: JSONRecord = {},
+		attempts = 0,
+		activity?: TaskActivity,
 		handler?: WorkflowFunction,
+		silence?: number,
 	) {
-		this.#context = context
+		this.#context = buildTaskContext(context.phase, context)
 		this.#phase = phase
 		this.#workflow = workflow
 		this.#recompute = recompute
-		this.#metadata = options?.metadata ?? {}
+		try {
+			this.#metadata = cloneJSONRecord(options?.metadata ?? metadata)
+		} catch (error) {
+			if (isContractError(error)) {
+				throw new WorkflowError(
+					'RESTORE',
+					`task '${context.id}' metadata could not be read safely: ${error.message}`,
+					{ task: context.id },
+				)
+			}
+			throw new WorkflowError('RESTORE', `task '${context.id}' metadata could not be read safely`, {
+				task: context.id,
+			})
+		}
 		this.#emitter = new Emitter<TaskEventMap>({
 			...(options?.on === undefined ? {} : { on: options.on }),
 			...(options?.error === undefined ? {} : { error: options.error }),
@@ -115,8 +159,20 @@ export class Task implements TaskInterface {
 		this.#run = run
 		this.#retries = retries
 		this.#timeout = timeout
+		this.#attempts = attempts
 		// Resolved ONCE by the caller (Phase) against the functions registry; stored as-is.
 		this.#handler = handler
+		this.#abort = createAbort()
+		this.#silence = resolveTaskSilence(options?.silence, silence)
+		this.#onSilence = this.#expire.bind(this)
+		this.#liveness =
+			this.#silence === undefined
+				? undefined
+				: createTimeout({ ms: this.#silence, signal: this.#abort.signal })
+		this.#activity = activity === undefined ? undefined : cloneTaskActivity(activity)
+		this.#paused = false
+		this.#gate = undefined
+		this.#timerSignal = undefined
 	}
 
 	get emitter(): EmitterInterface<TaskEventMap> {
@@ -151,6 +207,10 @@ export class Task implements TaskInterface {
 		return this.#result
 	}
 
+	get attempts(): number {
+		return this.#attempts
+	}
+
 	get run(): string | undefined {
 		return this.#run
 	}
@@ -167,35 +227,93 @@ export class Task implements TaskInterface {
 		return this.#timeout
 	}
 
+	get activity(): TaskActivity | undefined {
+		return this.#activity
+	}
+
+	get silence(): number | undefined {
+		return this.#silence
+	}
+
+	get silent(): boolean {
+		return this.#status === 'running' && this.#liveness?.expired === true
+	}
+
+	get paused(): boolean {
+		return this.#paused
+	}
+
+	get signal(): AbortSignal {
+		return this.#abort.signal
+	}
+
 	start(): void {
-		this.#transition('running')
+		const budget = Math.max(0, this.#retries ?? 0) + 1
+		if ((this.#status !== 'pending' && this.#status !== 'running') || this.#attempts >= budget) {
+			throw new WorkflowError('TRANSITION', `task '${this.id}' cannot start another attempt`, {
+				task: this.id,
+				status: this.#status,
+				attempts: this.#attempts,
+				budget,
+			})
+		}
+		if (this.#status === 'pending') this.#transition('running')
+		this.#attempts += 1
+		this.#activity = cloneTaskActivity({}, this.#stamp())
+		this.#arm()
 		// Own event FIRST, THEN the cascade — an observer sees the cause (this task started) before
 		// the effect (the phase / workflow re-derive), mirroring `Runner.#settle` (AGENTS §13).
 		this.#emitter.emit('start', this.id)
 		this.#escalate()
 	}
 
-	complete(value: unknown): void {
+	complete(value: JSONValue): void {
+		let owned: JSONValue
+		try {
+			owned = cloneJSONValue(value)
+		} catch (error) {
+			if (isContractError(error)) {
+				throw new WorkflowError(
+					'RESTORE',
+					`task '${this.id}' result could not be read safely: ${error.message}`,
+					{ task: this.id },
+				)
+			}
+			throw new WorkflowError('RESTORE', `task '${this.id}' result could not be read safely`, {
+				task: this.id,
+			})
+		}
 		this.#transition('completed')
+		this.#finish()
 		// Box the produced value as a Success (an inline `Result` branch, the codebase idiom) and
 		// RECORD it BEFORE escalating, so the parents' `results()` already see it when the cascade
 		// re-derives. Then observe the leaf's own `complete` FIRST, and escalate the cascade LAST —
 		// so the leaf's own event fires before any parent's cascade event (cause before effect).
-		const result = this.#record('completed', { success: true, value })
+		const result = this.#record('completed', Object.freeze({ success: true, value: owned }))
 		this.#emitter.emit('complete', result)
 		this.#escalate()
 	}
 
-	fail(error: unknown): void {
+	fail(error: TaskFailure): void {
+		// Normalize into the persisted JSON contract before transitioning. Record before escalating
+		// so parent result reads already see the terminal outcome.
+		const origin =
+			error.origin === 'handler' || error.origin === 'timeout' || error.origin === 'recovery'
+				? error.origin
+				: 'handler'
+		const message =
+			typeof error.message === 'string' && error.message.length > 0
+				? error.message
+				: 'unknown failure'
 		this.#transition('failed')
-		// Box the reason as a Failure — normalise a non-`Error` to an `Error` (preserving the
-		// original as `cause`), matching the Queue's `#attempt` and the `TaskResult.result`
-		// `Result<unknown>` (= `Result<unknown, Error>`) shape. Record BEFORE escalating (so a
-		// parent's `results()` / `#failure()` sees it), observe the leaf's own `fail` FIRST, then
-		// escalate the cascade LAST (a failed leaf may flip the phase / workflow to `failed` under
-		// `bail` — the listener still sees cause before effect).
-		const reason = error instanceof Error ? error : new Error(String(error), { cause: error })
-		const result = this.#record('failed', { success: false, error: reason })
+		this.#finish()
+		const result = this.#record(
+			'failed',
+			Object.freeze({
+				success: false,
+				error: Object.freeze({ origin, message }),
+			}),
+		)
 		this.#emitter.emit('fail', result)
 		this.#escalate()
 	}
@@ -205,6 +323,8 @@ export class Task implements TaskInterface {
 		// the status itself records the forced terminal (no boxed outcome: a skip produced none).
 		// Own event FIRST, THEN the cascade (cause before effect).
 		this.#transition('skipped')
+		this.#finish()
+		this.#abort.abort()
 		this.#emitter.emit('skip')
 		this.#escalate()
 	}
@@ -214,8 +334,63 @@ export class Task implements TaskInterface {
 		// same discipline as `skip`; a stop likewise produced no boxed outcome. Own event FIRST,
 		// THEN the cascade.
 		this.#transition('stopped')
+		this.#finish()
+		this.#abort.abort()
 		this.#emitter.emit('stop')
 		this.#escalate()
+	}
+
+	report(input: TaskActivityInput): Result<TaskActivity, WorkflowError> {
+		if (this.#status !== 'running') {
+			return failure(
+				new WorkflowError('TRANSITION', `task '${this.id}' cannot report while '${this.#status}'`, {
+					task: this.id,
+					status: this.#status,
+				}),
+			)
+		}
+		try {
+			const activity = cloneTaskActivity(input, this.#stamp())
+			this.#activity = activity
+			this.#arm()
+			this.#emitter.emit('report', activity)
+			return success(activity)
+		} catch (error) {
+			return failure(
+				error instanceof WorkflowError
+					? error
+					: new WorkflowError('MUTATION', 'task activity report was refused', {
+							task: this.id,
+						}),
+			)
+		}
+	}
+
+	pulse(): boolean {
+		if (this.#status !== 'running' || this.#activity === undefined) return false
+		this.#touch()
+		this.#arm()
+		const activity = this.#activity
+		this.#emitter.emit('pulse', activity)
+		return true
+	}
+
+	pause(): void {
+		if (this.#paused || (this.#status !== 'pending' && this.#status !== 'running')) return
+		this.#paused = true
+		this.#gate = createDeferred<void>()
+		this.#emitter.emit('pause')
+	}
+
+	resume(): void {
+		if (!this.#paused) return
+		this.#paused = false
+		this.#release()
+		this.#emitter.emit('resume')
+	}
+
+	wait(): Promise<void> {
+		return this.#paused && this.#gate !== undefined ? this.#gate.promise : Promise.resolve()
 	}
 
 	/**
@@ -262,9 +437,11 @@ export class Task implements TaskInterface {
 			status: this.#status,
 			...(this.#result === undefined ? {} : { result: this.#result }),
 			metadata: this.#metadata,
+			attempts: this.#attempts,
 			...(this.#run === undefined ? {} : { run: this.#run }),
 			...(this.#retries === undefined ? {} : { retries: this.#retries }),
 			...(this.#timeout === undefined ? {} : { timeout: this.#timeout }),
+			...(this.#activity === undefined ? {} : { activity: this.#activity }),
 		}
 	}
 
@@ -295,13 +472,61 @@ export class Task implements TaskInterface {
 			...(result === undefined ? {} : { result }),
 			timestamp: Date.now(),
 		}
-		this.#result = record
-		return record
+		const frozen = Object.freeze(record)
+		this.#result = frozen
+		return frozen
 	}
 
 	// Notify the parent phase that this leaf changed, so it re-derives and escalates to the
 	// workflow — the single upward step of the cascade.
 	#escalate(): void {
 		this.#recompute()
+	}
+
+	#touch(): void {
+		if (this.#activity === undefined) return
+		this.#activity = Object.freeze({
+			...this.#activity,
+			updated: this.#stamp(),
+		})
+	}
+
+	#stamp(): number {
+		return Math.max(Date.now(), this.#activity?.updated ?? 0)
+	}
+
+	#finish(): void {
+		this.#clear()
+		this.#paused = false
+		this.#release()
+	}
+
+	#arm(): void {
+		this.#clear()
+		const liveness = this.#liveness
+		if (liveness === undefined || this.#status !== 'running') return
+		liveness.start()
+		const signal = liveness.signal
+		this.#timerSignal = signal
+		signal.addEventListener('abort', this.#onSilence, { once: true })
+	}
+
+	#clear(): void {
+		const signal = this.#timerSignal
+		if (signal !== undefined) signal.removeEventListener('abort', this.#onSilence)
+		this.#timerSignal = undefined
+		this.#liveness?.clear()
+	}
+
+	#expire(): void {
+		this.#timerSignal = undefined
+		if (this.#status !== 'running' || this.#liveness?.expired !== true) return
+		this.#emitter.emit('silence')
+	}
+
+	#release(): void {
+		if (this.#gate === undefined) return
+		this.#gate.resolve()
+		this.#gate = undefined
 	}
 }

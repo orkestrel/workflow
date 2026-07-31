@@ -2,11 +2,51 @@ import type { EmitterInterface, EventMap } from '@orkestrel/emitter'
 import type {
 	SchedulerInterface,
 	SchedulerOptions,
+	TaskInterface,
+	TaskResult,
+	TaskSnapshot,
 	WorkflowDefinition,
 	WorkflowFunction,
+	WorkflowInterface,
 	WorkflowSnapshot,
 } from '@src/core'
-import { createWorkflowRunner } from '@src/core'
+import { createScheduler, createWorkflowRunner, TaskController } from '@src/core'
+
+/** Shared invalid task activity frames used by cloner and guard boundary tests. */
+export const INVALID_TASK_ACTIVITIES: readonly (readonly [input: unknown])[] = Object.freeze([
+	[{ note: '' }],
+	[{ progress: { current: Number.NaN } }],
+	[{ progress: { current: -1 } }],
+	[{ progress: { current: 2, total: 1 } }],
+	[{ progress: { current: 1, unit: '' } }],
+	[{ operations: [{ id: '', name: 'Operation', started: 0 }] }],
+	[{ operations: [{ id: 'operation', name: '', started: 0 }] }],
+	[{ operations: [{ id: 'operation', name: 'Operation', started: Number.POSITIVE_INFINITY }] }],
+	[
+		{
+			constraints: [
+				{ id: 'same', name: 'One', started: 0 },
+				{ id: 'same', name: 'Two', started: 1 },
+			],
+		},
+	],
+])
+
+/** Copy a task snapshot while omitting its exact-optional activity field. */
+export function omitTaskActivity(snapshot: TaskSnapshot): TaskSnapshot {
+	return {
+		id: snapshot.id,
+		name: snapshot.name,
+		...(snapshot.description === undefined ? {} : { description: snapshot.description }),
+		status: snapshot.status,
+		...(snapshot.result === undefined ? {} : { result: snapshot.result }),
+		metadata: snapshot.metadata,
+		attempts: snapshot.attempts,
+		...(snapshot.run === undefined ? {} : { run: snapshot.run }),
+		...(snapshot.retries === undefined ? {} : { retries: snapshot.retries }),
+		...(snapshot.timeout === undefined ? {} : { timeout: snapshot.timeout }),
+	}
+}
 
 // ── Environment-agnostic base setup (AGENTS §16.1) ────────────────────────────
 //
@@ -43,6 +83,34 @@ export function captureError(thunk: () => unknown): unknown {
  */
 export function waitForDelay(ms = 0): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/** Resolve a required live task fixture or throw a fixture-construction error. */
+export function requireTask(
+	workflow: WorkflowInterface,
+	phase: string,
+	task: string,
+): TaskInterface {
+	const found = workflow.phase(phase)?.task(task)
+	if (found === undefined) throw new Error(`expected task '${phase}/${task}'`)
+	return found
+}
+
+/** Build a real TaskController over a live task for direct handle tests. */
+export function createTaskControllerFixture(
+	task: TaskInterface,
+	signal: AbortSignal,
+	results: () => readonly TaskResult[],
+): TaskController {
+	return new TaskController(
+		signal,
+		task.snapshot().metadata,
+		task,
+		task.attempts,
+		results,
+		(input) => task.report(input),
+		() => task.pulse(),
+	)
 }
 
 /**
@@ -250,33 +318,44 @@ export function instrumentSignal(signal: AbortSignal): SignalListenerCountsInter
 
 // ── Recording scheduler (a real SchedulerInterface, wrapped) ────────────────────
 
-/** A {@link SchedulerInterface} that records how many turn boundaries its `yield` paced. */
+/** A {@link SchedulerInterface} that records how many real turn boundaries its `yield` paced. */
 export interface RecordingSchedulerInterface extends SchedulerInterface {
 	/** How many times `yield` ran — the turn boundaries the loop paced through this scheduler. */
 	readonly yields: number
 }
 
+/** A recorder over one shipped scheduler instance. */
+export class RecordingScheduler implements RecordingSchedulerInterface {
+	readonly #scheduler: SchedulerInterface
+	#yields = 0
+
+	constructor(scheduler: SchedulerInterface) {
+		this.#scheduler = scheduler
+	}
+
+	get yields(): number {
+		return this.#yields
+	}
+
+	async yield(options?: SchedulerOptions): Promise<void> {
+		this.#yields += 1
+		await this.#scheduler.yield(options)
+	}
+
+	delay(ms: number, options?: SchedulerOptions): Promise<void> {
+		return this.#scheduler.delay(ms, options)
+	}
+}
+
 /**
- * Create a {@link RecordingSchedulerInterface} — a real `SchedulerInterface` whose
- * `yield` counts each call (the turn boundary it paced) and resolves immediately, so a
- * test can prove pacing ran BETWEEN turns (not after the last). It honours its signal
- * exactly like the real scheduler — an already-aborted signal rejects with the reason —
- * and its `delay` is a no-op. Not a mock: a genuine scheduler the agent loop drives.
+ * Create a {@link RecordingSchedulerInterface} that counts `yield` calls before delegating
+ * both methods to one shipped scheduler instance. Timing, cancellation, and cleanup therefore
+ * retain the production scheduler's semantics.
  *
- * @returns A scheduler whose `yields` reports the turn boundaries it paced
+ * @returns A scheduler whose `yields` reports the real turn boundaries it paced
  */
 export function createRecordingScheduler(): RecordingSchedulerInterface {
-	let yields = 0
-	return {
-		get yields() {
-			return yields
-		},
-		async yield(options?: SchedulerOptions) {
-			if (options?.signal?.aborted) throw options.signal.reason
-			yields += 1
-		},
-		async delay() {},
-	}
+	return new RecordingScheduler(createScheduler())
 }
 
 // ── Workflow fixtures (definitions + a deterministic settle, environment-agnostic) ──
@@ -377,9 +456,8 @@ export const RELEASE_FUNCTIONS: Readonly<Record<string, WorkflowFunction>> = {
  * tree is built, executed (phases sequential, tasks concurrent via {@link RELEASE_FUNCTIONS}),
  * and serialized. The genuine durable payload after a run (real `completed` statuses + recorded
  * TaskResults), not a hand-rolled stub. The runner is paced by an injected
- * {@link createRecordingScheduler} (its `yield` resolves immediately, honouring an abort signal
- * exactly like the shipped scheduler) so the run is DETERMINISTIC with no wall-clock `setTimeout`
- * (AGENTS §16) — the unit under test still runs in full (NOT a mock). Shared by the store twins.
+ * {@link createRecordingScheduler}, which delegates to the shipped scheduler while counting
+ * cooperative turns, so the unit under test runs with production timing and cancellation.
  *
  * @param definition - The workflow definition to build, run to completion, and snapshot
  * @returns The settled run's snapshot

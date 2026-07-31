@@ -52,9 +52,11 @@ import { TaskManager } from '../tasks/TaskManager.js'
  *   `results()` collects the settled tasks' {@link TaskResult}s (the phase tier of the result
  *   tree); `workflow` navigates UP to the live parent.
  * - **Observable (AGENTS §13).** The owned {@link emitter} ({@link PhaseEventMap}) fires
- *   `start` / `complete` / `fail` / `stop` on a derived-status CHANGE, strictly AFTER the
- *   recompute + escalate; the emitter isolates a listener throw and routes it to its `error`
- *   handler (the `error` option); `fail` carries the failing task's {@link TaskResult}.
+ *   `start` / `complete` / `fail` / `pause` / `resume` / `skip` / `stop` after the
+ *   corresponding status or runtime-gate change. Status events fire after the phase recomputes
+ *   and before it escalates to the workflow, preserving child/phase cause before parent effect.
+ *   The emitter isolates a listener throw and routes it to its `error` handler (the `error`
+ *   option); `fail` carries the failing task's {@link TaskResult}.
  * - **Structural API (AGENTS §7).** `add` / `remove` / `move` / `update` gate BEFORE
  *   delegating to {@link tasks} (the manager gates the target's own existence/status/id/
  *   bounds), then emit the matching {@link PhaseEventMap} event on success only. NATIVE
@@ -74,7 +76,8 @@ import { TaskManager } from '../tasks/TaskManager.js'
  *   {@link import('../types.js').WorkflowFunctions} registry (threaded from
  *   {@link import('../types.js').WorkflowOptions.functions}) resolves each task's `run` name into
  *   its runtime {@link import('../types.js').TaskInterface.handler} ONCE; a `run` that is omitted
- *   or unregistered resolves to no handler (the no-handler rule).
+ *   or unregistered resolves to no handler; only an omitted `run` is a no-op, while an
+ *   unresolved present name makes the containing tree non-drivable.
  * - **Runtime lifecycle (AGENTS §10).** `pause` / `resume` / `wait` mirror the workflow's own
  *   quartet, scoped to this phase — a driving
  *   {@link import('../types.js').WorkflowRunnerInterface.execute} gates a task's own
@@ -99,6 +102,7 @@ export class Phase implements PhaseInterface {
 	// after this phase (or an earlier task) has resolved changes only later mints, never
 	// already-resolved tasks — do not mutate it.
 	readonly #functions: WorkflowFunctions | undefined
+	readonly #silence: number | undefined
 	// The EFFECTIVE failure policy this phase runs under (`phase.bail ?? workflow.bail`, resolved
 	// at seed time and carried on the snapshot) — read by the runner to decide fail-fast vs
 	// settle-all for THIS phase, and by the workflow's per-phase-bail-aware status derivation.
@@ -127,6 +131,7 @@ export class Phase implements PhaseInterface {
 		options?: PhaseOptions,
 		bail?: boolean,
 		functions?: WorkflowFunctions,
+		silence?: number,
 	) {
 		this.#id = snapshot.id
 		this.#name = snapshot.name
@@ -139,6 +144,7 @@ export class Phase implements PhaseInterface {
 		this.#workflow = workflow
 		this.#escalateUp = escalate
 		this.#functions = functions
+		this.#silence = silence
 		// The effective per-phase policy: the explicit workflow `bail` OVERRIDE when supplied (a
 		// deliberate "re-run the whole tree under THIS uniform policy" knob — `createWorkflow` /
 		// `restoreWorkflow` thread `options.bail` here), else the snapshot's persisted per-phase `bail`
@@ -227,7 +233,7 @@ export class Phase implements PhaseInterface {
 
 	skip(): void {
 		// `skip` (AGENTS §10) FORCES the phase to `skipped`, overriding the derived value — then
-		// recompute so the change is detected + escalated (no PhaseEventMap event for a skip).
+		// recompute so the change is detected, emitted, and escalated.
 		// IDEMPOTENT / NO-OP once `status` is already terminal (a settled phase cannot be
 		// re-forced) — but a parked `wait()` waiter is ALWAYS released regardless (a terminal
 		// phase must never hold one; kept unconditional for safety).
@@ -253,6 +259,7 @@ export class Phase implements PhaseInterface {
 		if (this.#paused || isTerminalStatus(this.status)) return
 		this.#paused = true
 		this.#gate = createDeferred<void>()
+		this.#emitter.emit('pause')
 	}
 
 	resume(): void {
@@ -260,6 +267,7 @@ export class Phase implements PhaseInterface {
 		if (!this.#paused) return
 		this.#paused = false
 		this.#release()
+		this.#emitter.emit('resume')
 	}
 
 	wait(): Promise<void> {
@@ -380,7 +388,7 @@ export class Phase implements PhaseInterface {
 	// Recompute the derived status after a child transition (the callback wired into each Task):
 	// diff the new effective status against the baseline; on a CHANGE, advance the baseline, emit
 	// the matching event, and escalate to the workflow. An override pins the status, so a forced
-	// phase ignores further child churn. Placed so the parents settle before observers see it.
+	// phase ignores further child churn. The phase event precedes the parent effect.
 	#recompute(): void {
 		const next = this.status
 		if (next === this.#status) {
@@ -390,6 +398,10 @@ export class Phase implements PhaseInterface {
 			return
 		}
 		this.#status = next
+		if (isTerminalStatus(next)) {
+			this.#paused = false
+			this.#release()
+		}
 		this.#emitFor(next)
 		this.#escalateUp()
 	}
@@ -403,12 +415,12 @@ export class Phase implements PhaseInterface {
 
 	// Emit the PhaseEventMap event matching a newly-entered status. `running` ⇒ `start`,
 	// `completed` ⇒ `complete`, `failed` ⇒ `fail` (with the failing task's result), `stopped`
-	// ⇒ `stop`. `pending` / `skipped` have no event (a phase never re-enters `pending`, and a
-	// skip is a task-tier concept) — they emit nothing.
+	// ⇒ `stop`, `skipped` ⇒ `skip`. `pending` has no event.
 	#emitFor(status: PhaseStatus): void {
 		if (status === 'running') this.#emitter.emit('start', this.id)
 		else if (status === 'completed') this.#emitter.emit('complete')
 		else if (status === 'failed') this.#emitter.emit('fail', this.#failure())
+		else if (status === 'skipped') this.#emitter.emit('skip')
 		else if (status === 'stopped') this.#emitter.emit('stop')
 	}
 
@@ -473,7 +485,11 @@ export class Phase implements PhaseInterface {
 			snapshot.run,
 			snapshot.retries,
 			snapshot.timeout,
+			snapshot.metadata,
+			snapshot.attempts,
+			snapshot.activity,
 			handler,
+			this.#silence,
 		)
 	}
 

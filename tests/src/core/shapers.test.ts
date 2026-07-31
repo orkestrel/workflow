@@ -1,6 +1,12 @@
 import type { WorkflowDefinition } from '@src/core'
 import { literalShape } from '@orkestrel/contract'
-import { createWorkflowContract, phaseShape, taskShape, workflowShape } from '@src/core'
+import {
+	createWorkflowContract,
+	MAX_TIMER_MS,
+	phaseShape,
+	taskShape,
+	workflowShape,
+} from '@src/core'
 import { describe, expect, it } from 'vitest'
 
 // The workflow contract shape VALUES are well-formed `ContractShape` descriptors
@@ -18,8 +24,9 @@ describe('taskShape', () => {
 		expect(run.type === 'optional' && run.inner).toMatchObject({ type: 'string', min: 1 })
 	})
 
-	it('carries optional non-negative-integer retries / timeout (the per-task reliability overrides)', () => {
-		for (const key of ['retries', 'timeout'] as const) {
+	it('carries optional non-negative-integer retries / timeout reliability settings', () => {
+		const keys: readonly ('retries' | 'timeout')[] = ['retries', 'timeout']
+		for (const key of keys) {
 			const field = taskShape.properties[key]
 			expect(field.type).toBe('optional')
 			expect(field.type === 'optional' && field.inner).toMatchObject({
@@ -28,6 +35,8 @@ describe('taskShape', () => {
 				min: 0,
 			})
 		}
+		const timeout = taskShape.properties.timeout
+		expect(timeout.type === 'optional' && timeout.inner).toMatchObject({ max: MAX_TIMER_MS })
 	})
 })
 

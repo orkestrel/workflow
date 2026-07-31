@@ -1,3 +1,4 @@
+import type { SchedulerPriority } from '@src/core'
 import { IdleScheduler } from '@src/browser'
 import { describe, expect, it } from 'vitest'
 import { instrumentSignal, waitForDelay } from '../../setup.js'
@@ -31,8 +32,9 @@ describe('IdleScheduler', () => {
 
 		it('accepts every priority (a no-op) and resolves the same', async () => {
 			const scheduler = new IdleScheduler()
+			const priorities: readonly SchedulerPriority[] = ['user', 'normal', 'background']
 
-			for (const priority of ['user', 'normal', 'background'] as const) {
+			for (const priority of priorities) {
 				await expect(scheduler.yield({ priority })).resolves.toBeUndefined()
 			}
 		})
@@ -99,7 +101,7 @@ describe('IdleScheduler', () => {
 			const reason = new Error('aborted before deadline')
 			let resolved = false
 
-			const pending = scheduler.delay(100, { signal: controller.signal })
+			const pending = scheduler.delay(40, { signal: controller.signal })
 			pending.then(
 				() => (resolved = true),
 				() => {},
@@ -107,7 +109,7 @@ describe('IdleScheduler', () => {
 			controller.abort(reason)
 			await expect(pending).rejects.toBe(reason)
 
-			await waitForDelay(120)
+			await waitForDelay(50)
 			expect(resolved).toBe(false)
 		})
 

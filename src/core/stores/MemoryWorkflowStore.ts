@@ -1,4 +1,5 @@
 import type { WorkflowSnapshot, WorkflowStoreInterface } from '../types.js'
+import { cloneWorkflowSnapshot } from '../cloners.js'
 
 /**
  * The in-memory {@link WorkflowStoreInterface} — a process-lifetime `Map` of
@@ -42,12 +43,14 @@ export class MemoryWorkflowStore implements WorkflowStoreInterface {
 	readonly #snapshots = new Map<string, WorkflowSnapshot>()
 
 	get(id: string): Promise<WorkflowSnapshot | undefined> {
-		return Promise.resolve(this.#snapshots.get(id))
+		const snapshot = this.#snapshots.get(id)
+		return Promise.resolve(snapshot === undefined ? undefined : cloneWorkflowSnapshot(snapshot))
 	}
 
 	set(snapshot: WorkflowSnapshot): Promise<void> {
 		// Insert / replace under the snapshot's OWN id (no separate id param).
-		this.#snapshots.set(snapshot.id, snapshot)
+		const owned = cloneWorkflowSnapshot(snapshot)
+		this.#snapshots.set(owned.id, owned)
 		return Promise.resolve()
 	}
 

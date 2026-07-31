@@ -10,15 +10,16 @@ import type {
 	WorkflowOptions,
 	WorkflowRunnerInterface,
 	WorkflowRunnerOptions,
-	WorkflowSnapshot,
 	WorkflowSnapshotRow,
 	WorkflowStoreInterface,
 } from './types.js'
 import { createContract, rawShape, stringShape } from '@orkestrel/contract'
 import { createDatabase, createMemoryDriver } from '@orkestrel/database'
-import { DEFAULT_BAIL, PHASE_STATUSES, TASK_STATUSES, WORKFLOW_STATUSES } from './constants.js'
+import { DEFAULT_BAIL } from './constants.js'
+import { cloneWorkflowSnapshot } from './cloners.js'
 import { WorkflowError } from './errors.js'
-import { definitionToSnapshot } from './helpers.js'
+import { definitionToSnapshot, recoverWorkflowSnapshot } from './helpers.js'
+import { hasWorkflowHandlers } from './validators.js'
 import { workflowShape } from './shapers.js'
 import { DatabaseWorkflowStore } from './stores/DatabaseWorkflowStore.js'
 import { MemoryWorkflowStore } from './stores/MemoryWorkflowStore.js'
@@ -97,8 +98,8 @@ export function createWorkflowContract(): ContractInterface<WorkflowDefinition> 
  *
  * `options.functions` is the {@link import('./types.js').WorkflowFunctions} registry each live
  * task's `run` name resolves against ONCE at construction into its runtime
- * {@link import('./types.js').TaskInterface.handler} — a name omitted or absent from the
- * registry resolves to no handler (the no-handler rule).
+ * {@link import('./types.js').TaskInterface.handler}. An omitted name is the deliberate no-op;
+ * an unresolved present name remains inspectable but is rejected if execution is attempted.
  *
  * @param definition - The workflow definition to bring to life
  * @param options - Runtime options (initial listeners, `bail` override, per-node options)
@@ -147,6 +148,9 @@ export function createWorkflow(
  * still wins when supplied (to deliberately re-run under a different policy). A structurally
  * invalid snapshot (a status — or override — outside the lifecycle vocabulary, or a
  * non-boolean `bail`) throws a `RESTORE` {@link WorkflowError}.
+ * Runtime handlers are optional: without a matching `functions` entry, a persisted `run`
+ * remains visible with an undefined `handler` so the exact state is inspectable. The runner
+ * rejects that unresolved tree if execution is attempted.
  *
  * @param snapshot - The snapshot to restore (carries its own `bail` + `override`)
  * @param options - Runtime options (initial listeners, an optional `bail` override, per-node options)
@@ -160,12 +164,32 @@ export function createWorkflow(
  * restored.status === workflow.status // true
  * ```
  */
-export function restoreWorkflow(
-	snapshot: WorkflowSnapshot,
-	options?: WorkflowOptions,
-): WorkflowInterface {
-	assertSnapshot(snapshot)
-	return new Workflow(snapshot, options)
+export function restoreWorkflow(snapshot: unknown, options?: WorkflowOptions): WorkflowInterface {
+	const owned = cloneWorkflowSnapshot(snapshot)
+	return new Workflow(owned, options)
+}
+
+/**
+ * Rebuild an interrupted workflow at its remaining retry budget.
+ *
+ * @param snapshot - The hostile persisted snapshot
+ * @param options - Runtime handlers and entity options
+ * @returns A recoverable live workflow
+ */
+export function recoverWorkflow(snapshot: unknown, options?: WorkflowOptions): WorkflowInterface {
+	const owned = cloneWorkflowSnapshot(snapshot)
+	if (owned.override !== undefined || owned.phases.some((phase) => phase.override !== undefined)) {
+		throw new WorkflowError('RESTORE', `workflow '${owned.id}' has a terminal override`, {
+			workflow: owned.id,
+		})
+	}
+	if (!hasWorkflowHandlers(owned, options?.functions)) {
+		throw new WorkflowError('RESTORE', `workflow '${owned.id}' has an unresolved run`, {
+			workflow: owned.id,
+		})
+	}
+	const recovered = cloneWorkflowSnapshot(recoverWorkflowSnapshot(owned))
+	return new Workflow(recovered, options)
 }
 
 /**
@@ -188,80 +212,8 @@ export function restoreWorkflow(
  *
  * @param snapshot - The snapshot to validate
  */
-export function assertSnapshot(snapshot: WorkflowSnapshot): void {
-	if (typeof snapshot.bail !== 'boolean') {
-		throw new WorkflowError('RESTORE', `workflow '${snapshot.id}' has a non-boolean bail`, {
-			workflow: snapshot.id,
-			bail: snapshot.bail,
-		})
-	}
-	if (!WORKFLOW_STATUSES.includes(snapshot.status)) {
-		throw new WorkflowError('RESTORE', `workflow '${snapshot.id}' has an invalid status`, {
-			workflow: snapshot.id,
-			status: snapshot.status,
-		})
-	}
-	if (snapshot.override !== undefined && !WORKFLOW_STATUSES.includes(snapshot.override)) {
-		throw new WorkflowError('RESTORE', `workflow '${snapshot.id}' has an invalid override`, {
-			workflow: snapshot.id,
-			override: snapshot.override,
-		})
-	}
-	for (const phase of snapshot.phases) {
-		if (typeof phase.bail !== 'boolean') {
-			throw new WorkflowError('RESTORE', `phase '${phase.id}' has a non-boolean bail`, {
-				phase: phase.id,
-				bail: phase.bail,
-			})
-		}
-		if (!PHASE_STATUSES.includes(phase.status)) {
-			throw new WorkflowError('RESTORE', `phase '${phase.id}' has an invalid status`, {
-				phase: phase.id,
-				status: phase.status,
-			})
-		}
-		if (phase.override !== undefined && !PHASE_STATUSES.includes(phase.override)) {
-			throw new WorkflowError('RESTORE', `phase '${phase.id}' has an invalid override`, {
-				phase: phase.id,
-				override: phase.override,
-			})
-		}
-		if (
-			phase.concurrency !== undefined &&
-			(!Number.isInteger(phase.concurrency) || phase.concurrency < 1)
-		) {
-			throw new WorkflowError('RESTORE', `phase '${phase.id}' has an invalid concurrency`, {
-				phase: phase.id,
-				concurrency: phase.concurrency,
-			})
-		}
-		for (const task of phase.tasks) {
-			if (!TASK_STATUSES.includes(task.status)) {
-				throw new WorkflowError('RESTORE', `task '${task.id}' has an invalid status`, {
-					task: task.id,
-					status: task.status,
-				})
-			}
-			if (task.run !== undefined && task.run.length < 1) {
-				throw new WorkflowError('RESTORE', `task '${task.id}' has an invalid run`, {
-					task: task.id,
-					run: task.run,
-				})
-			}
-			if (task.retries !== undefined && (!Number.isInteger(task.retries) || task.retries < 0)) {
-				throw new WorkflowError('RESTORE', `task '${task.id}' has an invalid retries`, {
-					task: task.id,
-					retries: task.retries,
-				})
-			}
-			if (task.timeout !== undefined && (!Number.isInteger(task.timeout) || task.timeout < 0)) {
-				throw new WorkflowError('RESTORE', `task '${task.id}' has an invalid timeout`, {
-					task: task.id,
-					timeout: task.timeout,
-				})
-			}
-		}
-	}
+export function assertSnapshot(snapshot: unknown): void {
+	cloneWorkflowSnapshot(snapshot)
 }
 
 /**
@@ -348,7 +300,7 @@ export function createDatabaseWorkflowStore(
  *
  * @remarks
  * The runner is a PURE engine — it re-implements no concurrency / retry / abort logic, AND it
- * carries no `functions` / `tools` / `agents` registry of its own: each live task already
+ * carries no behavior or provider registry of its own: each live task already
  * resolved its own {@link import('./types.js').WorkflowFunction} into
  * {@link import('./types.js').TaskInterface.handler} ONCE at construction, from the
  * {@link WorkflowOptions.functions} registry supplied to `execute` / {@link createWorkflow}.
@@ -362,11 +314,10 @@ export function createDatabaseWorkflowStore(
  * the live entity (`start` → `complete` / `fail`), and resolves a
  * {@link import('./types.js').WorkflowResult}.
  *
- * Static tool / agent calling is OPT-IN: a caller wires a plain
- * {@link import('./types.js').WorkflowFunction} into its OWN {@link WorkflowOptions.functions}
- * registry, same as any other behavior — the `@orkestrel/tool` package ships the
- * tool/agent adapter factories for that. A task with no resolved handler AUTO-COMPLETES
- * (the ROADMAP no-handler rule).
+ * External integrations remain application-owned: a caller wires an ordinary
+ * {@link import('./types.js').WorkflowFunction} into its own {@link WorkflowOptions.functions}
+ * registry. Only a task that omits `run` auto-completes; unresolved named work is rejected
+ * before dispatch.
  *
  * @param options - An optional pacing `scheduler` (default the shipped cross-environment one).
  *   See {@link WorkflowRunnerOptions}.

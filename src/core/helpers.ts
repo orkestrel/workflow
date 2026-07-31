@@ -15,8 +15,7 @@ import type {
 	WorkflowStatus,
 } from './types.js'
 import type { Failure, Success } from '@orkestrel/contract'
-import { isArray, isBoolean, isNumber, isRecord, isString } from '@orkestrel/contract'
-import { DEFAULT_BAIL, TASK_TRANSITIONS } from './constants.js'
+import { DEFAULT_BAIL, MAX_TIMER_MS, TASK_TRANSITIONS } from './constants.js'
 
 // Workflow derivation helpers — pure, side-effect-free functions (AGENTS §4.3,
 // §14). Every function is exported and unit-tested. The status derivations encode
@@ -180,6 +179,28 @@ export function canTransitionTask(from: TaskStatus, to: TaskStatus): boolean {
 	return TASK_TRANSITIONS[from].includes(to)
 }
 
+/**
+ * Resolve a task's runtime silence window against its workflow default.
+ *
+ * @param value - The task-level override; any present non-positive or non-finite value disables
+ * @param fallback - The workflow-level default
+ * @returns A host-safe effective window (`1..MAX_TIMER_MS`), or `undefined`
+ */
+export function resolveTaskSilence(
+	value: number | undefined,
+	fallback: number | undefined,
+): number | undefined {
+	if (value !== undefined) {
+		return Number.isFinite(value) && value > 0 && value <= MAX_TIMER_MS ? value : undefined
+	}
+	return fallback !== undefined &&
+		Number.isFinite(fallback) &&
+		fallback > 0 &&
+		fallback <= MAX_TIMER_MS
+		? fallback
+		: undefined
+}
+
 // === Result construction (AGENTS §12 — `@orkestrel/contract` ships the `Result` /
 // `Success` / `Failure` TYPES but no `success`/`failure` constructors, so this module
 // provides the ones every gated Result-constructing site in this package's W-b entities
@@ -215,6 +236,21 @@ export function success<T>(value: T): Success<T> {
  */
 export function failure<E>(error: E): Failure<E> {
 	return { success: false, error }
+}
+
+/**
+ * Normalize an unknown thrown value to a non-empty persistence-safe message.
+ *
+ * @param error - The caught value
+ * @returns A non-empty message without stack or cause data
+ */
+export function errorToMessage(error: unknown): string {
+	try {
+		const message = error instanceof Error ? error.message : String(error)
+		return typeof message === 'string' && message.length > 0 ? message : 'unknown failure'
+	} catch {
+		return 'unknown failure'
+	}
 }
 
 // === Result-tree collection
@@ -259,11 +295,11 @@ export function findFailure(results: readonly TaskResult[]): TaskResult | undefi
  * @returns The {@link WorkflowContext}
  */
 export function buildWorkflowContext(node: WorkflowContext): WorkflowContext {
-	return {
+	return Object.freeze({
 		id: node.id,
 		name: node.name,
 		...(node.description === undefined ? {} : { description: node.description }),
-	}
+	})
 }
 
 /**
@@ -275,7 +311,7 @@ export function buildWorkflowContext(node: WorkflowContext): WorkflowContext {
  * @returns The {@link PhaseContext}
  */
 export function buildPhaseContext(workflow: WorkflowContext, node: WorkflowContext): PhaseContext {
-	return { ...buildWorkflowContext(node), workflow }
+	return Object.freeze({ ...buildWorkflowContext(node), workflow: buildWorkflowContext(workflow) })
 }
 
 /**
@@ -288,40 +324,10 @@ export function buildPhaseContext(workflow: WorkflowContext, node: WorkflowConte
  * @returns The {@link TaskContext}
  */
 export function buildTaskContext(phase: PhaseContext, node: WorkflowContext): TaskContext {
-	return { ...buildWorkflowContext(node), phase }
-}
-
-// === Snapshot boundary guard (AGENTS §14 — narrow an opaque storage read)
-
-/**
- * Narrow an `unknown` to a {@link WorkflowSnapshot} — the AGENTS §14 boundary guard for an
- * UNTRUSTED snapshot read (a storage row a {@link import('./stores/DatabaseWorkflowStore.js').DatabaseWorkflowStore}
- * reads back from its opaque JSON column, a snapshot loaded from disk).
- *
- * @remarks
- * A total guard (it NEVER throws — adversarial input returns `false`, AGENTS §14). It checks the
- * snapshot's SHAPE — `id` / `name` / `status` strings, a `boolean` `bail`, an array of `phases`,
- * `created` / `updated` numbers — enough to safely impose the {@link WorkflowSnapshot} type at a
- * storage boundary WITHOUT a cast. It is complementary to
- * {@link import('./factories.js').assertSnapshot}, which validates the DEEPER invariant (every
- * node's status / override drawn from the lifecycle vocabulary) and THROWS a `RESTORE`
- * {@link import('./errors.js').WorkflowError} — the deep gate a {@link import('./factories.js').restoreWorkflow}
- * applies. A boundary read narrows shape with this guard; a restore validates vocabulary with `assertSnapshot`.
- *
- * @param value - The value to test (an opaque storage read)
- * @returns `true` when `value` has the structural shape of a {@link WorkflowSnapshot}
- */
-export function isWorkflowSnapshot(value: unknown): value is WorkflowSnapshot {
-	return (
-		isRecord(value) &&
-		isString(value.id) &&
-		isString(value.name) &&
-		isString(value.status) &&
-		isBoolean(value.bail) &&
-		isArray(value.phases) &&
-		isNumber(value.created) &&
-		isNumber(value.updated)
-	)
+	return Object.freeze({
+		...buildWorkflowContext(node),
+		phase: buildPhaseContext(phase.workflow, phase),
+	})
 }
 
 // === Definition → initial snapshot (the unified construction input)
@@ -427,9 +433,76 @@ export function taskDefinitionToSnapshot(
 		...(task.description === undefined ? {} : { description: task.description }),
 		status: 'pending',
 		metadata: {},
+		attempts: 0,
 		...(task.run === undefined ? {} : { run: task.run }),
 		...(task.retries === undefined ? {} : { retries: task.retries }),
 		...(task.timeout === undefined ? {} : { timeout: task.timeout }),
+	}
+}
+
+/**
+ * Convert interrupted running work into a recoverable pending suffix or an
+ * exhausted recovery failure without replenishing attempts.
+ *
+ * @param snapshot - A fully validated owned snapshot with no terminal overrides
+ * @returns The recovery projection
+ */
+export function recoverWorkflowSnapshot(snapshot: WorkflowSnapshot): WorkflowSnapshot {
+	const phases: PhaseSnapshot[] = []
+	let halted = false
+	const now = Math.max(Date.now(), snapshot.updated)
+	const workflow = buildWorkflowContext(snapshot)
+	for (const phase of snapshot.phases) {
+		const exhausted = new Set<string>()
+		for (const task of phase.tasks) {
+			const budget = (task.retries ?? 0) + 1
+			if (task.status === 'running' && task.attempts >= budget) exhausted.add(task.id)
+		}
+		const strict =
+			phase.bail && (exhausted.size > 0 || phase.tasks.some((task) => task.status === 'failed'))
+		const tasks: TaskSnapshot[] = []
+		for (const task of phase.tasks) {
+			const eligible = task.status === 'pending' || task.status === 'running'
+			if ((halted || strict) && eligible && !exhausted.has(task.id)) {
+				tasks.push({ ...task, status: 'skipped' })
+				continue
+			}
+			if (!exhausted.has(task.id)) {
+				if (task.status === 'running') {
+					const { activity: _activity, ...pending } = task
+					tasks.push({ ...pending, status: 'pending' })
+				} else tasks.push(task)
+				continue
+			}
+			const phaseContext = buildPhaseContext(workflow, phase)
+			const taskContext = buildTaskContext(phaseContext, task)
+			const result: TaskResult = {
+				task: taskContext,
+				phase: phaseContext,
+				workflow,
+				status: 'failed',
+				result: {
+					success: false,
+					error: {
+						origin: 'recovery',
+						message: `task '${task.id}' exhausted its retry budget during recovery`,
+					},
+				},
+				timestamp: now,
+			}
+			tasks.push({ ...task, status: 'failed', result })
+		}
+		const status = derivePhaseStatus(tasks.map((task) => task.status))
+		phases.push({ ...phase, status, tasks })
+		if (strict) halted = true
+	}
+	return {
+		...snapshot,
+		status: deriveWorkflowStatus(
+			phases.map((phase) => ({ status: phase.status, bail: phase.bail })),
+		),
+		phases,
+		updated: now,
 	}
 }
 

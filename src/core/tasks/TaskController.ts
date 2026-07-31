@@ -1,18 +1,27 @@
-import type { TaskContext, TaskControllerInterface, TaskResult } from '../types.js'
+import type {
+	TaskActivity,
+	TaskActivityInput,
+	TaskContext,
+	TaskControllerInterface,
+	TaskInterface,
+	TaskResult,
+} from '../types.js'
+import type { JSONRecord, Result } from '@orkestrel/contract'
+import type { WorkflowError } from '../errors.js'
+import { isTerminalStatus } from '../helpers.js'
 
 /**
- * The lean per-task handle a {@link import('./types.js').WorkflowFunction} receives — the
- * running task's folded cancellation, its input, its lineage, and read-UP access to the
- * result tree.
+ * The attempt-scoped handle a {@link import('./types.js').WorkflowFunction} receives.
  *
  * @remarks
  * - **A leaf handle, NOT the runner `Controller`.** A workflow task is a leaf of the
- *   declarative W-b tree, not a fan-out unit, so this carries none of the runner
- *   `Controller`'s `spawn` / `wait` — only what a leaf needs.
- * - **Folded signal.** `signal` is the cancellation the runner folds for THIS run: it fires
- *   on a workflow-level abort / timeout / budget ceiling, or — under `bail: true` — when a
- *   sibling task fails (the runner aborts the in-flight siblings via the substrate's
- *   fail-fast). A handler races its work against it; `aborted` reads it.
+ *   declarative W-b tree, not a fan-out unit, so it has no `spawn`; its `wait` instead
+ *   checkpoints the workflow, phase, and task cooperative gates.
+ * - **Folded signal.** `signal` is the cancellation folded for THIS attempt: its per-attempt
+ *   deadline, task stop/skip, workflow abort/timeout/budget/destroy, or a sibling fail-fast.
+ *   A handler races its work against it; `aborted` reads it.
+ * - **Attempt ownership.** `report` / `pulse` are closures supplied by the runner and refuse
+ *   after this signal aborts or a retry token supersedes this handle.
  * - **Input + lineage.** `input` is the task's open `metadata` bag (its
  *   {@link import('./types.js').TaskInput} payload, `{}` when none); `task` is the full
  *   {@link TaskContext}, so `task.phase` / `task.phase.workflow` navigate UP the lineage.
@@ -26,29 +35,106 @@ import type { TaskContext, TaskControllerInterface, TaskResult } from '../types.
  */
 export class TaskController implements TaskControllerInterface {
 	readonly signal: AbortSignal
-	readonly input: Readonly<Record<string, unknown>>
+	readonly input: JSONRecord
 	readonly task: TaskContext
+	readonly attempt: number
+	readonly #entity: TaskInterface
+	readonly #report: (input: TaskActivityInput) => Result<TaskActivity, WorkflowError>
+	readonly #pulse: () => boolean
 	// Read the live workflow's settled results on demand — a closure injected by the runner,
 	// so the handle reaches UP the tree without holding a back-reference to the workflow entity.
 	readonly #results: () => readonly TaskResult[]
 
 	constructor(
 		signal: AbortSignal,
-		input: Readonly<Record<string, unknown>>,
-		task: TaskContext,
+		input: JSONRecord,
+		task: TaskInterface,
+		attempt: number,
 		results: () => readonly TaskResult[],
+		report: (input: TaskActivityInput) => Result<TaskActivity, WorkflowError>,
+		pulse: () => boolean,
 	) {
 		this.signal = signal
 		this.input = input
-		this.task = task
+		this.task = task.context
+		this.attempt = attempt
+		this.#entity = task
 		this.#results = results
+		this.#report = report
+		this.#pulse = pulse
 	}
 
 	get aborted(): boolean {
 		return this.signal.aborted
 	}
 
+	get paused(): boolean {
+		if (this.#ancestorTerminal()) return false
+		return (
+			this.#entity.workflow.paused ||
+			this.#entity.phase.paused ||
+			(!isTerminalStatus(this.#entity.status) && this.#entity.paused)
+		)
+	}
+
+	report(input: TaskActivityInput): Result<TaskActivity, WorkflowError> {
+		return this.#report(input)
+	}
+
+	pulse(): boolean {
+		return this.#pulse()
+	}
+
+	async wait(): Promise<void> {
+		while (this.paused && !this.signal.aborted) {
+			await this.#race(this.#gates())
+		}
+	}
+
 	results(): readonly TaskResult[] {
 		return this.#results()
+	}
+
+	#gates(): readonly Promise<void>[] {
+		if (this.#ancestorTerminal()) return []
+		const gates: Promise<void>[] = []
+		if (this.#entity.workflow.paused) gates.push(this.#entity.workflow.wait())
+		if (this.#entity.phase.paused) gates.push(this.#entity.phase.wait())
+		if (!isTerminalStatus(this.#entity.status) && this.#entity.paused) {
+			gates.push(this.#entity.wait())
+		}
+		return gates
+	}
+
+	async #race(gates: readonly Promise<void>[]): Promise<void> {
+		if (this.signal.aborted || gates.length === 0) return
+		const deferred = Promise.withResolvers<void>()
+		const onAbort = this.#resolve.bind(this, deferred)
+		const onTerminal = this.#resolve.bind(this, deferred)
+		this.signal.addEventListener('abort', onAbort, { once: true })
+		this.#entity.workflow.emitter.on('skip', onTerminal)
+		this.#entity.workflow.emitter.on('stop', onTerminal)
+		this.#entity.phase.emitter.on('skip', onTerminal)
+		this.#entity.phase.emitter.on('stop', onTerminal)
+		try {
+			if (this.#ancestorTerminal()) deferred.resolve()
+			await Promise.race([Promise.all(gates), deferred.promise])
+		} finally {
+			this.signal.removeEventListener('abort', onAbort)
+			this.#entity.workflow.emitter.off('skip', onTerminal)
+			this.#entity.workflow.emitter.off('stop', onTerminal)
+			this.#entity.phase.emitter.off('skip', onTerminal)
+			this.#entity.phase.emitter.off('stop', onTerminal)
+		}
+	}
+
+	#ancestorTerminal(): boolean {
+		return (
+			isTerminalStatus(this.#entity.workflow.status) || isTerminalStatus(this.#entity.phase.status)
+		)
+	}
+
+	#resolve(deferred: PromiseWithResolvers<void>): void {
+		deferred.resolve()
 	}
 }

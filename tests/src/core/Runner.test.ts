@@ -994,7 +994,15 @@ describe('Runner', () => {
 // The RunnerEventMap event names recorded across the emitter tests — fed to the shared
 // `recordEmitterEvents` (AGENTS §16.1: the per-event wiring is centralized; this file
 // keeps only the names its scenarios observe).
-const RUNNER_EVENTS = ['start', 'unit', 'spawn', 'settle', 'fail', 'finish', 'abort'] as const
+const RUNNER_EVENTS: readonly ['start', 'unit', 'spawn', 'settle', 'fail', 'finish', 'abort'] = [
+	'start',
+	'unit',
+	'spawn',
+	'settle',
+	'fail',
+	'finish',
+	'abort',
+]
 
 describe('Runner — emitter (push observation surface)', () => {
 	it('a simple run fires start → unit (per unit) → settle (per unit) → finish', async () => {

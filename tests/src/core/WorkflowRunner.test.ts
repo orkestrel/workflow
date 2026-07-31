@@ -1,15 +1,31 @@
 import type {
+	SchedulerInterface,
 	TaskControllerInterface,
 	WorkflowDefinition,
 	WorkflowFunction,
 	WorkflowRunnerInterface,
 	WorkflowRunnerOptions,
+	WorkflowSnapshot,
+	WorkflowStoreInterface,
 } from '@src/core'
 import { createTokenBudget } from '@orkestrel/budget'
-import { createScheduler, createWorkflow, createWorkflowRunner, isWorkflowError } from '@src/core'
+import {
+	createScheduler,
+	createWorkflow,
+	createWorkflowRunner,
+	isWorkflowError,
+	MAX_TIMER_MS,
+} from '@src/core'
 import { describe, expect, it, vi } from 'vitest'
 import type { TestGateInterface } from '../../setup.js'
-import { createGate, createRecorder, createRecordingScheduler, waitForDelay } from '../../setup.js'
+import {
+	createGate,
+	createRecorder,
+	createRecordingScheduler,
+	instrumentSignal,
+	recordEmitterEvents,
+	waitForDelay,
+} from '../../setup.js'
 
 // The W-c1 WorkflowRunner — the thin orchestrator that EXECUTES a live W-b tree by COMPOSING the
 // shipped substrate (one Runner/Queue per phase, the bail policy mapped onto fail-fast vs
@@ -19,13 +35,11 @@ import { createGate, createRecorder, createRecordingScheduler, waitForDelay } fr
 //
 // PROGRAMMATIC CORE, DECLARATIVE SHELL (this wave's redesign): `TaskDefinition.run` is a PLAIN
 // STRING resolved ONCE at construction against a `WorkflowOptions.functions` registry into the
-// live task's `handler`. The runner itself is a PURE engine — it carries no `functions` / `tools`
-// / `agents` of its own; every `execute(...)` call below threads `functions` through the RUN
-// options (`WorkflowRunOptions extends WorkflowOptions`), never through `createWorkflowRunner`.
-// The `@orkestrel/tool` package ships the OPT-IN tool/agent adapters a caller composes into its
-// OWN `functions` registry — their own dedicated coverage lives in that package; this file keeps
-// to the ENGINE's own behavior (dispatch, concurrency, bail, retries/timeout, abort/pause/stop/
-// destroy, live mid-run mutation) against plain `WorkflowFunction`s.
+// live task's `handler`. The runner itself is a PURE engine — it carries no behavior or provider
+// registry; every `execute(...)` call below threads `functions` through the RUN options
+// (`WorkflowRunOptions extends WorkflowOptions`), never through `createWorkflowRunner`. This file
+// covers the ENGINE's own behavior against plain `WorkflowFunction`s; integration coverage belongs
+// at the composing boundary.
 
 const ROUND_TRIP_TIMEOUT_MS = 30_000
 vi.setConfig({ testTimeout: ROUND_TRIP_TIMEOUT_MS })
@@ -33,14 +47,35 @@ vi.setConfig({ testTimeout: ROUND_TRIP_TIMEOUT_MS })
 // A workflow runner whose inter-phase pacing is DETERMINISTIC (AGENTS §16: clock seams, not
 // wall-clock) — the shipped `createScheduler` default paces via a real `setTimeout(0)` macrotask,
 // which under full-`src:core`-project parallel load can be event-loop-starved past vitest's
-// default timeout; injecting `createRecordingScheduler` (`yield` resolves immediately, honouring
-// the run signal exactly like the shipped one) removes that lone wall-clock dependency.
+// default timeout; injecting `createRecordingScheduler` retains the shipped scheduler's real
+// asynchronous turn while making the number of cooperative yields observable.
 function pacedRunner(options?: WorkflowRunnerOptions): WorkflowRunnerInterface {
 	return createWorkflowRunner({
 		...options,
 		scheduler: options?.scheduler ?? createRecordingScheduler(),
 	})
 }
+
+describe('recording scheduler — production delegation', () => {
+	it('counts before a real asynchronous yield and preserves delay abort semantics', async () => {
+		const scheduler = createRecordingScheduler()
+		let yielded = false
+		const pending = scheduler.yield().then(() => {
+			yielded = true
+		})
+		expect(scheduler.yields).toBe(1)
+		await Promise.resolve()
+		expect(yielded).toBe(false)
+		await pending
+		expect(yielded).toBe(true)
+
+		const abort = new AbortController()
+		const reason = new Error('cancel recording delay')
+		const delayed = scheduler.delay(50, { signal: abort.signal })
+		abort.abort(reason)
+		await expect(delayed).rejects.toBe(reason)
+	})
+})
 
 // ── Local scenario builders (definitions + scripted handlers) ──
 
@@ -204,16 +239,12 @@ describe('WorkflowRunner — dispatch by function-registry name', () => {
 		expect(recorded?.status).toBe('failed')
 		expect(recorded?.result?.success).toBe(false)
 		const error = recorded?.result?.success === false ? recorded.result.error : undefined
-		expect(error).toBeInstanceOf(Error)
+		expect(error).toEqual({ origin: 'handler', message: 'boom exploded' })
 	})
 
-	it('a no-handler task auto-completes (an unregistered function name)', async () => {
+	it('an unresolved named task is rejected before execution', () => {
 		const definition = buildDefinition([{ id: 'a', tasks: [functionTask('t', 'missing')] }])
-		const result = await pacedRunner().execute(definition)
-		expect(result.status).toBe('completed')
-		const recorded = result.workflow.phase('a')?.task('t')?.result
-		expect(recorded?.status).toBe('completed')
-		expect(recorded?.result).toEqual({ success: true, value: undefined })
+		expect(() => pacedRunner().execute(definition)).toThrowError(/not drivable/)
 	})
 
 	it('a task whose `run` is omitted entirely auto-completes', async () => {
@@ -225,6 +256,10 @@ describe('WorkflowRunner — dispatch by function-registry name', () => {
 		const result = await pacedRunner().execute(definition)
 		expect(result.status).toBe('completed')
 		expect(result.workflow.phase('a')?.task('t')?.status).toBe('completed')
+		expect(result.workflow.phase('a')?.task('t')?.result?.result).toEqual({
+			success: true,
+			value: null,
+		})
 	})
 })
 
@@ -247,7 +282,7 @@ describe('WorkflowRunner — bail:false records a failure yet completes across p
 		expect(failure?.status).toBe('failed')
 		expect(failure?.result?.success).toBe(false)
 		const error = failure?.result?.success === false ? failure.result.error : undefined
-		expect(error).toBeInstanceOf(Error)
+		expect(error).toEqual({ origin: 'handler', message: 'boom' })
 		expect(result.workflow.phase('a')?.task('t1')?.status).toBe('completed')
 		expect(result.workflow.phase('b')?.task('t2')?.status).toBe('completed')
 	})
@@ -510,7 +545,61 @@ describe('WorkflowRunner — bail:true halts on the first failure', () => {
 	})
 })
 
+describe('WorkflowRunner — forced future phases', () => {
+	it.each(['skip', 'stop'])('does not execute a future phase forced by %s', async (command) => {
+		const calls: string[] = []
+		const workflow = createWorkflow(
+			buildDefinition([
+				{ id: 'a', tasks: [functionTask('t0', 'first')] },
+				{ id: 'b', tasks: [functionTask('t1', 'future')] },
+			]),
+			{
+				functions: {
+					first: () => {
+						calls.push('first')
+						return null
+					},
+					future: () => {
+						calls.push('future')
+						return null
+					},
+				},
+			},
+		)
+		const future = workflow.phase('b')
+		if (future === undefined) throw new Error('expected future phase')
+		if (command === 'skip') future.skip()
+		else future.stop()
+
+		const result = await pacedRunner().execute(workflow)
+		expect(calls).toEqual(['first'])
+		expect(result.workflow.phase('b')?.task('t1')?.status).toBe('skipped')
+	})
+})
+
 describe('WorkflowRunner — per-task retries / timeout (Seam A, threaded via the Runner)', () => {
+	it('normalizes a non-JSON handler outcome as a retryable handler failure', async () => {
+		let attempts = 0
+		const valid: WorkflowFunction = () => null
+		const invalid = new Proxy(valid, {
+			apply: () => {
+				attempts += 1
+				return attempts === 1 ? BigInt(1) : 'recovered'
+			},
+		})
+		const result = await pacedRunner().execute(
+			buildDefinition([{ id: 'a', tasks: [reliableTask('t0', 'invalid', { retries: 1 })] }]),
+			{ functions: { invalid } },
+		)
+
+		expect(result.status).toBe('completed')
+		expect(attempts).toBe(2)
+		expect(result.workflow.phase('a')?.task('t0')?.result?.result).toEqual({
+			success: true,
+			value: 'recovered',
+		})
+	})
+
 	it('A1 divergent retries: a retried task recovers (3 runs) while a no-retry sibling fails (1 run)', async () => {
 		const attempts = new Map<string, number>()
 		const flaky: WorkflowFunction = (controller) => {
@@ -540,27 +629,40 @@ describe('WorkflowRunner — per-task retries / timeout (Seam A, threaded via th
 		expect(attempts.get('t1')).toBe(1)
 	})
 
-	it('A2 per-task timeout FAILS the leaf (not skipped): a parked task that exhausts its deadline ends failed while a no-timeout sibling completes (bail:false records the failure)', async () => {
-		const quick: WorkflowFunction = (controller) => controller.task.id
+	it('A2 bail:false waits for a slow sibling and continues to a later phase after timeout failure', async () => {
+		const order = createRecorder<readonly [string]>()
+		const slow: WorkflowFunction = async (controller) => {
+			await waitForDelay(40)
+			order.handler(controller.task.id)
+			return controller.task.id
+		}
+		const quick: WorkflowFunction = (controller) => {
+			order.handler(controller.task.id)
+			return controller.task.id
+		}
 		const definition = buildDefinition(
 			[
 				{
 					id: 'a',
+					concurrency: 2,
 					tasks: [
 						reliableTask('t0', 'parkUntilDeadline', { timeout: 20, retries: 0 }),
-						reliableTask('t1', 'quick', {}),
+						reliableTask('t1', 'slow', {}),
 					],
 				},
+				{ id: 'b', tasks: [reliableTask('t2', 'quick', {})] },
 			],
 			false,
 		)
 		const result = await pacedRunner().execute(definition, {
-			functions: { parkUntilDeadline, quick },
+			functions: { parkUntilDeadline, quick, slow },
 		})
 		const t0 = result.workflow.phase('a')?.task('t0')
 		expect(t0?.status).toBe('failed')
 		expect(t0?.status).not.toBe('skipped')
 		expect(result.workflow.phase('a')?.task('t1')?.status).toBe('completed')
+		expect(result.workflow.phase('b')?.task('t2')?.status).toBe('completed')
+		expect(order.calls.map((call) => call[0])).toEqual(['t1', 't2'])
 		expect(result.status).toBe('completed')
 		const failure = result.results.find((r) => r.task.id === 't0')
 		expect(failure?.status).toBe('failed')
@@ -626,6 +728,42 @@ describe('WorkflowRunner — a per-task timeout is a FAILURE under bail, and the
 		expect(result.status).toBe('failed')
 		expect(result.workflow.phase('a')?.task('t0')?.status).toBe('failed')
 		expect(result.workflow.phase('b')?.task('t1')?.status).toBe('skipped')
+	})
+
+	it('bail:true records one timeout failure when the handler throws on abort', async () => {
+		const events: string[] = []
+		const throwOnAbort: WorkflowFunction = (controller) =>
+			new Promise<null>((_resolve, reject) => {
+				controller.signal.addEventListener(
+					'abort',
+					() => reject(new Error('handler observed abort')),
+					{ once: true },
+				)
+			})
+		const workflow = createWorkflow(
+			buildDefinition(
+				[
+					{
+						id: 'a',
+						tasks: [reliableTask('t0', 'throwOnAbort', { timeout: 15 })],
+					},
+				],
+				true,
+			),
+			{ functions: { throwOnAbort } },
+		)
+		workflow
+			.phase('a')
+			?.task('t0')
+			?.emitter.on('fail', () => events.push('fail'))
+
+		const result = await pacedRunner().execute(workflow)
+		expect(result.status).toBe('failed')
+		expect(events).toEqual(['fail'])
+		expect(result.workflow.phase('a')?.task('t0')?.result?.result).toEqual({
+			success: false,
+			error: { origin: 'timeout', message: "task 't0' timed out" },
+		})
 	})
 
 	it('sibling-fail-fast regression: under bail a thrown failure still SKIPS a parked sibling (the timeout distinguisher did NOT turn a fail-fast abort into a failure)', async () => {
@@ -785,6 +923,39 @@ describe('WorkflowRunner — abort cascade', () => {
 	})
 })
 
+describe('WorkflowRunner — scheduler infrastructure faults', () => {
+	it('stops and sweeps the live tree, persists the final state, then rethrows', async () => {
+		const fault = new Error('scheduler unavailable')
+		const scheduler: SchedulerInterface = {
+			yield: () => Promise.reject(fault),
+			delay: () => Promise.resolve(),
+		}
+		const snapshots: WorkflowSnapshot[] = []
+		const store: WorkflowStoreInterface = {
+			get: () => Promise.resolve(undefined),
+			delete: () => Promise.resolve(),
+			set: (snapshot) => {
+				snapshots.push(snapshot)
+				return Promise.resolve()
+			},
+		}
+		const workflow = createWorkflow(
+			buildDefinition([
+				{ id: 'a', tasks: [functionTask('t0', 'run')] },
+				{ id: 'b', tasks: [functionTask('t1', 'run')] },
+			]),
+			{ functions: { run: () => null } },
+		)
+
+		await expect(createWorkflowRunner({ scheduler }).execute(workflow, { store })).rejects.toBe(
+			fault,
+		)
+		expect(workflow.status).toBe('stopped')
+		expect(workflow.phase('b')?.task('t1')?.status).toBe('skipped')
+		expect(snapshots.at(-1)?.status).toBe('stopped')
+	})
+})
+
 describe('WorkflowRunner — budget / timeout fold', () => {
 	it('a pre-exhausted budget halts the run (no task runs) and stops the workflow', async () => {
 		const ran = createRecorder<readonly [string]>()
@@ -833,6 +1004,22 @@ describe('WorkflowRunner — budget / timeout fold', () => {
 		expect(result.status).toBe('completed')
 		expect(order).toEqual(['t0', 't1'])
 		expect(result.workflow.phase('b')?.task('t1')?.status).toBe('completed')
+	})
+
+	it('an over-max run timeout is disabled instead of overflowing into immediate cancellation', async () => {
+		const completed = createRecorder<readonly [string]>()
+		const delayed: WorkflowFunction = async (controller) => {
+			await waitForDelay(10)
+			completed.handler(controller.task.id)
+			return controller.task.id
+		}
+		const definition = buildDefinition([{ id: 'a', tasks: [functionTask('t0', 'delayed')] }])
+		const result = await pacedRunner().execute(definition, {
+			functions: { delayed },
+			timeout: MAX_TIMER_MS + 1,
+		})
+		expect(result.status).toBe('completed')
+		expect(completed.calls.map((call) => call[0])).toEqual(['t0'])
 	})
 })
 
@@ -919,12 +1106,9 @@ describe('WorkflowRunner — pacing', () => {
 	})
 })
 
-// NOTE on coverage reallocation (deviation-free, reasoned): the workflow↔agent adapter dispatch
-// (`createAgentFunction` / `createToolFunction` / `createWorkflowTool`) was EXTRACTED to the
-// `@orkestrel/tool` package, which now owns its own dedicated coverage (happy path, error paths,
-// the depth/cycle guard, the tool-binding seam, abort-fold). This engine-level suite keeps to the
-// PURE engine's own behavior (dispatch, concurrency, bail, retries/timeout, abort/pause/stop/
-// destroy, live mid-run mutation) against plain `WorkflowFunction`s, never a tool/agent package.
+// This engine-level suite covers WorkflowRunner orchestration (sequencing, concurrency, retries,
+// destruction, and live mid-run mutation) against plain WorkflowFunctions. Provider/protocol
+// composition is outside this package's runtime and test surface.
 
 describe('WorkflowRunner — execute(workflow) parity with execute(definition)', () => {
 	it('drives the caller-owned entity with the same WorkflowResult semantics; status transitions are observable live and snapshot() mid-run shows running states', async () => {
@@ -955,6 +1139,31 @@ describe('WorkflowRunner — execute(workflow) parity with execute(definition)',
 })
 
 describe('WorkflowRunner — execute(workflow) TRANSITION guard (synchronous)', () => {
+	it('claims a pending workflow synchronously across runner instances before dispatch', async () => {
+		const ran = createRecorder<readonly [string]>()
+		const run: WorkflowFunction = (controller) => {
+			ran.handler(controller.task.id)
+			return controller.task.id
+		}
+		const workflow = createWorkflow(
+			buildDefinition([{ id: 'a', tasks: [functionTask('t0', 'run')] }]),
+			{ functions: { run } },
+		)
+		workflow.pause()
+		const first = pacedRunner().execute(workflow)
+		let caught: unknown
+		try {
+			pacedRunner().execute(workflow)
+		} catch (error) {
+			caught = error
+		}
+		expect(workflow.status).toBe('pending')
+		expect(isWorkflowError(caught) ? caught.code : undefined).toBe('TRANSITION')
+		workflow.resume()
+		await first
+		expect(ran.calls.map((call) => call[0])).toEqual(['t0'])
+	})
+
 	it('throws TRANSITION synchronously on a second concurrent call to an already-running workflow', async () => {
 		const gate = createGate()
 		const parked: WorkflowFunction = async (controller) => {
@@ -1046,7 +1255,7 @@ describe('WorkflowRunner — live task append during a running phase (mid-run mu
 		expect(result.results.map((r) => r.task.id).sort()).toEqual(['t0', 't1'])
 	})
 
-	it('an appended task naming an UNREGISTERED function auto-completes (the no-handler rule applies to live-appended tasks too)', async () => {
+	it('an appended task naming an unregistered function records a normalized failure', async () => {
 		const gate = createGate()
 		const t0: WorkflowFunction = async (controller) => {
 			await gate.promise
@@ -1063,8 +1272,14 @@ describe('WorkflowRunner — live task append during a running phase (mid-run mu
 		const result = await running
 		expect(result.status).toBe('completed')
 		const recorded = workflow.phase('a')?.task('t1')?.result
-		expect(recorded?.status).toBe('completed')
-		expect(recorded?.result).toEqual({ success: true, value: undefined })
+		expect(recorded?.status).toBe('failed')
+		expect(recorded?.result).toEqual({
+			success: false,
+			error: {
+				origin: 'handler',
+				message: "task 't1' has an unresolved run 'missing-handler'",
+			},
+		})
 	})
 
 	it('GRACEFUL REJECTION: appending to an already-COMPLETED phase fails MUTATION; the run continues to completion unaffected', async () => {
@@ -1357,6 +1572,90 @@ describe('WorkflowRunner — graceful stop mid-run', () => {
 		expect(workflow.phase('a')?.task('t0')?.status).toBe('completed')
 		expect(workflow.phase('a')?.task('t1')?.status).toBe('skipped')
 	})
+
+	it('workflow stop releases a task parked behind a paused phase before dispatch', async () => {
+		const started = createRecorder<readonly [string]>()
+		const fn: WorkflowFunction = (controller) => {
+			started.handler(controller.task.id)
+			return controller.task.id
+		}
+		const workflow = createWorkflow(
+			buildDefinition([{ id: 'a', tasks: [functionTask('t0', 'fn')] }]),
+			{ functions: { fn } },
+		)
+		workflow.phase('a')?.pause()
+		const running = pacedRunner().execute(workflow)
+		await waitForDelay(20)
+		workflow.stop()
+		const result = await running
+		expect(result.status).toBe('stopped')
+		expect(started.count).toBe(0)
+		expect(workflow.phase('a')?.task('t0')?.status).toBe('skipped')
+	})
+
+	it('workflow stop releases a task parked behind its own gate before dispatch', async () => {
+		const started = createRecorder<readonly [string]>()
+		const fn: WorkflowFunction = (controller) => {
+			started.handler(controller.task.id)
+			return controller.task.id
+		}
+		const workflow = createWorkflow(
+			buildDefinition([{ id: 'a', tasks: [functionTask('t0', 'fn')] }]),
+			{ functions: { fn } },
+		)
+		workflow.phase('a')?.task('t0')?.pause()
+		const running = pacedRunner().execute(workflow)
+		await waitForDelay(20)
+		workflow.stop()
+		const result = await running
+		expect(result.status).toBe('stopped')
+		expect(started.count).toBe(0)
+		expect(workflow.phase('a')?.task('t0')?.status).toBe('skipped')
+	})
+
+	it('phase stop releases a task parked behind its own gate before dispatch', async () => {
+		const started = createRecorder<readonly [string]>()
+		const fn: WorkflowFunction = (controller) => {
+			started.handler(controller.task.id)
+			return controller.task.id
+		}
+		const workflow = createWorkflow(
+			buildDefinition([{ id: 'a', tasks: [functionTask('t0', 'fn')] }]),
+			{ functions: { fn } },
+		)
+		workflow.phase('a')?.task('t0')?.pause()
+		const running = pacedRunner().execute(workflow)
+		await waitForDelay(20)
+		workflow.phase('a')?.stop()
+		const result = await running
+		expect(started.count).toBe(0)
+		expect(result.workflow.phase('a')?.status).toBe('stopped')
+		expect(result.workflow.phase('a')?.task('t0')?.status).toBe('skipped')
+	})
+
+	it('lets an already-dispatched handler leave controller wait after graceful workflow stop', async () => {
+		const entered = createGate()
+		const fn: WorkflowFunction = async (controller) => {
+			workflow.phase('a')?.task('t0')?.pause()
+			entered.resolve()
+			await controller.wait()
+			return 'finished'
+		}
+		const workflow = createWorkflow(
+			buildDefinition([{ id: 'a', tasks: [functionTask('t0', 'fn')] }]),
+			{ functions: { fn } },
+		)
+		const running = pacedRunner().execute(workflow)
+		await entered.promise
+		workflow.stop()
+		const result = await running
+		expect(result.status).toBe('stopped')
+		expect(workflow.phase('a')?.task('t0')?.status).toBe('completed')
+		expect(workflow.phase('a')?.task('t0')?.result?.result).toEqual({
+			success: true,
+			value: 'finished',
+		})
+	})
 })
 
 describe('WorkflowRunner — hard destroy mid-run', () => {
@@ -1382,7 +1681,7 @@ describe('WorkflowRunner — hard destroy mid-run', () => {
 		expect([...aborted.calls].map((c) => c[0])).toEqual(['t0'])
 		expect(result.status).toBe('stopped')
 		expect(workflow.destroyed).toBe(true)
-		expect(workflow.phase('a')?.task('t0')?.status).toBe('skipped')
+		expect(workflow.phase('a')?.task('t0')?.status).toBe('stopped')
 		expect(() => workflow.destroy()).not.toThrow()
 		expect(workflow.destroyed).toBe(true)
 	})
@@ -1550,5 +1849,296 @@ describe('WorkflowRunner — event-order sample: cause-before-effect cascades an
 		expect(order.indexOf('task:t0:complete')).toBeLessThan(order.indexOf('phase:complete'))
 		expect(order.indexOf('task:t1:complete')).toBeLessThan(order.indexOf('phase:complete'))
 		expect(order.indexOf('phase:complete')).toBeLessThan(order.indexOf('workflow:complete'))
+	})
+})
+
+describe('WorkflowRunner — activity ownership across attempts', () => {
+	it('does not claim an attempt superseded by a reentrant start listener', async () => {
+		let calls = 0
+		const definition = buildDefinition([
+			{ id: 'a', tasks: [reliableTask('t0', 'run', { retries: 1 })] },
+		])
+		const workflow = createWorkflow(definition, {
+			functions: {
+				run: () => {
+					calls += 1
+					return 'late'
+				},
+			},
+		})
+		const task = workflow.phase('a')?.task('t0')
+		if (task === undefined) throw new Error('expected task')
+		task.emitter.on('start', () => {
+			if (task.attempts === 1) task.start()
+		})
+
+		const result = await pacedRunner().execute(workflow)
+		expect(calls).toBe(0)
+		expect(task.attempts).toBe(2)
+		expect(task.status).toBe('skipped')
+		expect(task.result).toBeUndefined()
+		expect(result.status).toBe('skipped')
+	})
+
+	it('invalidates a live controller when a public start supersedes its attempt', async () => {
+		let report: ReturnType<TaskControllerInterface['report']> | undefined
+		let pulse: boolean | undefined
+		const definition = buildDefinition([
+			{ id: 'a', tasks: [reliableTask('t0', 'run', { retries: 1 })] },
+		])
+		let task = createWorkflow(definition).phase('a')?.task('t0')
+		if (task === undefined) throw new Error('expected seed task')
+		const workflow = createWorkflow(definition, {
+			functions: {
+				run: (controller) => {
+					const current = task
+					if (current === undefined) throw new Error('expected task')
+					current.start()
+					report = controller.report({ note: 'stale' })
+					pulse = controller.pulse()
+					return 'late'
+				},
+			},
+		})
+		task = workflow.phase('a')?.task('t0')
+		if (task === undefined) throw new Error('expected task')
+
+		const result = await pacedRunner().execute(workflow)
+		expect(report?.success).toBe(false)
+		expect(pulse).toBe(false)
+		expect(task.attempts).toBe(2)
+		expect(task.activity?.note).toBeUndefined()
+		expect(task.status).toBe('skipped')
+		expect(task.result).toBeUndefined()
+		expect(result.status).toBe('skipped')
+	})
+
+	it('refuses report and pulse synchronously from the attempt abort callback', async () => {
+		let report: ReturnType<TaskControllerInterface['report']> | undefined
+		let pulse: boolean | undefined
+		const parked = createGate()
+		const run: WorkflowFunction = async (controller) => {
+			controller.signal.addEventListener(
+				'abort',
+				() => {
+					report = controller.report({ note: 'after abort' })
+					pulse = controller.pulse()
+				},
+				{ once: true },
+			)
+			await parked.promise
+			return null
+		}
+		const definition = buildDefinition([
+			{ id: 'a', tasks: [reliableTask('t0', 'run', { timeout: 15 })] },
+		])
+		const workflow = createWorkflow(definition, { functions: { run } })
+		const task = workflow.phase('a')?.task('t0')
+		if (task === undefined) throw new Error('expected task')
+		const events = recordEmitterEvents(task.emitter, ['report', 'pulse'])
+		const result = await pacedRunner().execute(workflow)
+		expect(result.workflow.phase('a')?.task('t0')?.status).toBe('failed')
+		expect(report?.success).toBe(false)
+		if (report === undefined || report.success) throw new Error('expected transition refusal')
+		expect(report.error.code).toBe('TRANSITION')
+		expect(pulse).toBe(false)
+		expect(events.report.count).toBe(0)
+		expect(events.pulse.count).toBe(0)
+		expect(task.activity?.note).toBeUndefined()
+		parked.resolve()
+	})
+
+	it('resets activity at retry entry and rejects a timed-out orphan controller after ownership moves', async () => {
+		const attempts = createRecorder<readonly [TaskControllerInterface]>()
+		const orphan = createGate()
+		const run: WorkflowFunction = async (controller) => {
+			attempts.handler(controller)
+			if (attempts.count === 1) {
+				controller.report({ note: 'old attempt' })
+				await orphan.promise
+				return 'late'
+			}
+			controller.report({ note: 'current attempt' })
+			return 'recovered'
+		}
+		const definition = buildDefinition([
+			{ id: 'a', tasks: [reliableTask('t0', 'run', { timeout: 15, retries: 1 })] },
+		])
+		const workflow = createWorkflow(definition, { functions: { run } })
+		const task = workflow.phase('a')?.task('t0')
+		if (task === undefined) throw new Error('expected task')
+		const events = recordEmitterEvents(task.emitter, ['report'])
+		const result = await pacedRunner().execute(workflow)
+		expect(result.status).toBe('completed')
+		expect(attempts.count).toBe(2)
+		expect(events.report.calls.map((call) => call[0].note)).toEqual([
+			'old attempt',
+			'current attempt',
+		])
+		const old = attempts.calls[0]?.[0]
+		if (old === undefined) throw new Error('expected orphan controller')
+		const late = old.report({ note: 'late overwrite' })
+		expect(late.success).toBe(false)
+		if (late.success) throw new Error('expected stale attempt refusal')
+		expect(late.error.code).toBe('TRANSITION')
+		expect(old.pulse()).toBe(false)
+		expect(task.activity?.note).toBe('current attempt')
+		orphan.resolve()
+	})
+})
+
+describe('WorkflowRunner — task stop and cooperative task gates', () => {
+	it('settles a stopped uncooperative handler without failing or cancelling a running sibling', async () => {
+		const ignored = createGate()
+		const sibling = createGate()
+		const t0: WorkflowFunction = async () => {
+			await ignored.promise
+			return 'ignored'
+		}
+		const t1: WorkflowFunction = async () => {
+			await sibling.promise
+			return 'sibling'
+		}
+		const definition = buildDefinition([
+			{
+				id: 'a',
+				concurrency: 2,
+				tasks: [functionTask('t0', 't0'), functionTask('t1', 't1')],
+			},
+		])
+		const workflow = createWorkflow(definition, { functions: { t0, t1 } })
+		const running = pacedRunner().execute(workflow)
+		await waitForDelay(20)
+		workflow.phase('a')?.task('t0')?.stop()
+		sibling.resolve()
+		const result = await running
+		expect(result.workflow.phase('a')?.task('t0')?.status).toBe('stopped')
+		expect(result.workflow.phase('a')?.task('t1')?.status).toBe('completed')
+		expect(result.workflow.phase('a')?.task('t1')?.result?.result).toEqual({
+			success: true,
+			value: 'sibling',
+		})
+		ignored.resolve()
+	})
+
+	it('balances removable attempt listeners on success, failure, stop, and timeout', async () => {
+		let successCounts: ReturnType<typeof instrumentSignal> | undefined
+		const success: WorkflowFunction = async (controller) => {
+			successCounts = instrumentSignal(controller.signal)
+			await Promise.resolve()
+			return 'ok'
+		}
+		await pacedRunner().execute(
+			buildDefinition([{ id: 'a', tasks: [functionTask('t0', 'success')] }]),
+			{ functions: { success } },
+		)
+		if (successCounts === undefined) throw new Error('expected success signal counts')
+		expect(successCounts.added.count).toBeGreaterThan(0)
+		expect(successCounts.added.count).toBe(successCounts.removed.count)
+
+		let failureCounts: ReturnType<typeof instrumentSignal> | undefined
+		const failure: WorkflowFunction = async (controller) => {
+			failureCounts = instrumentSignal(controller.signal)
+			await Promise.resolve()
+			throw new Error('failed')
+		}
+		await pacedRunner().execute(
+			buildDefinition([{ id: 'a', tasks: [functionTask('t0', 'failure')] }]),
+			{ functions: { failure } },
+		)
+		if (failureCounts === undefined) throw new Error('expected failure signal counts')
+		expect(failureCounts.added.count).toBeGreaterThan(0)
+		expect(failureCounts.added.count).toBe(failureCounts.removed.count)
+
+		const stoppedGate = createGate()
+		let stoppedCounts: ReturnType<typeof instrumentSignal> | undefined
+		const stopped: WorkflowFunction = async (controller) => {
+			stoppedCounts = instrumentSignal(controller.signal)
+			await stoppedGate.promise
+			return null
+		}
+		const stoppedWorkflow = createWorkflow(
+			buildDefinition([{ id: 'a', tasks: [functionTask('t0', 'stopped')] }]),
+			{ functions: { stopped } },
+		)
+		const stoppedRun = pacedRunner().execute(stoppedWorkflow)
+		await waitForDelay(5)
+		stoppedWorkflow.phase('a')?.task('t0')?.stop()
+		await stoppedRun
+		if (stoppedCounts === undefined) throw new Error('expected stop signal counts')
+		expect(stoppedCounts.added.count).toBeGreaterThan(0)
+		expect(stoppedCounts.added.count).toBe(stoppedCounts.removed.count)
+		stoppedGate.resolve()
+
+		const timeoutGate = createGate()
+		let timeoutCounts: ReturnType<typeof instrumentSignal> | undefined
+		const timeout: WorkflowFunction = async (controller) => {
+			timeoutCounts = instrumentSignal(controller.signal)
+			await timeoutGate.promise
+			return null
+		}
+		await pacedRunner().execute(
+			buildDefinition([{ id: 'a', tasks: [reliableTask('t0', 'timeout', { timeout: 15 })] }]),
+			{ functions: { timeout } },
+		)
+		await Promise.resolve()
+		if (timeoutCounts === undefined) throw new Error('expected timeout signal counts')
+		expect(timeoutCounts.added.count).toBeGreaterThan(0)
+		expect(timeoutCounts.added.count).toBe(timeoutCounts.removed.count)
+		timeoutGate.resolve()
+	})
+
+	it('a paused task occupies its acquired concurrency slot until resume', async () => {
+		const started = createRecorder<readonly [string]>()
+		const run: WorkflowFunction = (controller) => {
+			started.handler(controller.task.id)
+			return controller.task.id
+		}
+		const definition = buildDefinition([
+			{
+				id: 'a',
+				concurrency: 1,
+				tasks: [functionTask('t0', 'run'), functionTask('t1', 'run')],
+			},
+		])
+		const workflow = createWorkflow(definition, { functions: { run } })
+		const paused = workflow.phase('a')?.task('t0')
+		if (paused === undefined) throw new Error('expected paused task')
+		paused.pause()
+		const running = pacedRunner().execute(workflow)
+		await waitForDelay(20)
+		expect(started.count).toBe(0)
+		expect(workflow.phase('a')?.task('t1')?.status).toBe('pending')
+		paused.resume()
+		const result = await running
+		expect(result.status).toBe('completed')
+		expect(started.calls.map((call) => call[0])).toEqual(['t0', 't1'])
+	})
+
+	it('paused attempts exhaust retries without dispatch and an old gate cannot dispatch after resume', async () => {
+		const started = createRecorder<readonly [string]>()
+		const run: WorkflowFunction = (controller) => {
+			started.handler(controller.task.id)
+			return controller.task.id
+		}
+		const definition = buildDefinition([
+			{
+				id: 'a',
+				concurrency: 1,
+				tasks: [reliableTask('t0', 'run', { timeout: 15, retries: 1 })],
+			},
+		])
+		const workflow = createWorkflow(definition, { functions: { run } })
+		const paused = workflow.phase('a')?.task('t0')
+		if (paused === undefined) throw new Error('expected paused task')
+		const reports = recordEmitterEvents(paused.emitter, ['report'])
+		paused.pause()
+		const result = await pacedRunner().execute(workflow)
+		expect(started.count).toBe(0)
+		expect(reports.report.count).toBe(0)
+		expect(result.workflow.phase('a')?.task('t0')?.status).toBe('failed')
+		paused.resume()
+		await waitForDelay(5)
+		expect(started.count).toBe(0)
 	})
 })

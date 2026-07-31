@@ -1,3 +1,4 @@
+import type { SchedulerPriority } from '@src/core'
 import { BrowserScheduler } from '@src/browser'
 import { describe, expect, it } from 'vitest'
 import { instrumentSignal, waitForDelay } from '../../setup.js'
@@ -38,8 +39,9 @@ describe('BrowserScheduler', () => {
 
 		it('accepts every priority and resolves the same (the postTask priority mapping)', async () => {
 			const scheduler = new BrowserScheduler()
+			const priorities: readonly SchedulerPriority[] = ['user', 'normal', 'background']
 
-			for (const priority of ['user', 'normal', 'background'] as const) {
+			for (const priority of priorities) {
 				await expect(scheduler.yield({ priority })).resolves.toBeUndefined()
 			}
 		})
@@ -126,7 +128,7 @@ describe('BrowserScheduler', () => {
 			const reason = new Error('aborted before deadline')
 			let resolved = false
 
-			const pending = scheduler.delay(100, { signal: controller.signal })
+			const pending = scheduler.delay(40, { signal: controller.signal })
 			pending.then(
 				() => (resolved = true),
 				() => {},
@@ -135,7 +137,7 @@ describe('BrowserScheduler', () => {
 			await expect(pending).rejects.toBe(reason)
 
 			// Past the original deadline, the cleared timer never resolves it.
-			await waitForDelay(120)
+			await waitForDelay(50)
 			expect(resolved).toBe(false)
 		})
 

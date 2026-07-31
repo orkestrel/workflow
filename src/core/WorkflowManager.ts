@@ -46,7 +46,7 @@ export class WorkflowManager implements WorkflowManagerInterface {
 	readonly #workflows = new Map<string, WorkflowInterface>()
 	// The functions registry flowed into every workflow this manager mints or hydrates, so
 	// each live task's `run` resolves to a real `handler` (RUNNABLE) rather than the
-	// no-handler auto-complete path.
+	// inspectable unresolved state; the runner rejects it until matching functions are supplied.
 	readonly #functions: WorkflowFunctions | undefined
 	// The optional durable store backing `open` / `save`; `undefined` ⇒ registry-only (both lenient).
 	readonly #store: WorkflowStoreInterface | undefined

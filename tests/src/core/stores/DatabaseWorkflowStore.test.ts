@@ -1,8 +1,20 @@
-import type { WorkflowSnapshot } from '@src/core'
-import { createMemoryDriver } from '@orkestrel/database'
-import { createDatabaseWorkflowStore, createWorkflow, restoreWorkflow } from '@src/core'
+import type { TableInterface } from '@orkestrel/database'
+import type { WorkflowSnapshot, WorkflowSnapshotRow } from '@src/core'
+import { rawShape, stringShape } from '@orkestrel/contract'
+import { createDatabase, createMemoryDriver } from '@orkestrel/database'
+import {
+	createDatabaseWorkflowStore,
+	createWorkflow,
+	DatabaseWorkflowStore,
+	restoreWorkflow,
+} from '@src/core'
 import { describe, expect, it } from 'vitest'
-import { buildReleaseDefinition, buildWorkflowDefinition, settleSnapshot } from '../../../setup.js'
+import {
+	buildReleaseDefinition,
+	buildWorkflowDefinition,
+	RELEASE_FUNCTIONS,
+	settleSnapshot,
+} from '../../../setup.js'
 
 // A higher per-test timeout for the `runner.execute`-driven round-trips below. The run is a
 // GENUINELY real-async integration round-trip — a live W-b tree built + driven through the
@@ -18,6 +30,13 @@ import { buildReleaseDefinition, buildWorkflowDefinition, settleSnapshot } from 
 // settles, so 30s still catches it). Scoped to the real-async tests only (§16.3 — a measured
 // setting with a current reason); the synchronous store tests keep the fast default.
 const ROUND_TRIP_TIMEOUT_MS = 30_000
+
+const RESTORE_FUNCTIONS = {
+	...RELEASE_FUNCTIONS,
+	scanner: () => null,
+	auditor: () => null,
+	f: () => null,
+}
 
 // src/core/workflows/stores/DatabaseWorkflowStore.ts — the durable, driver-pluggable twin of the
 // plain-Map MemoryWorkflowStore behind the WorkflowStoreInterface seam (get / set / delete, async,
@@ -64,7 +83,7 @@ describe('DatabaseWorkflowStore — set → get round-trip (one opaque JSON colu
 				// Restoring from the RETRIEVED snapshot yields an IDENTICAL live tree — its own
 				// re-serialization deep-equals the original (structure + every node's status + recorded
 				// results + positional order + bail/override survived the column round-trip).
-				expect(restoreWorkflow(got).snapshot()).toEqual(snapshot)
+				expect(restoreWorkflow(got, { functions: RESTORE_FUNCTIONS }).snapshot()).toEqual(snapshot)
 			},
 			ROUND_TRIP_TIMEOUT_MS,
 		)
@@ -103,7 +122,7 @@ describe('DatabaseWorkflowStore — mid-manual-drive + paused round-trips (pause
 			expect(got).toEqual(snapshot)
 			expect(got).toBeDefined()
 			if (got === undefined) return
-			const restored = restoreWorkflow(got)
+			const restored = restoreWorkflow(got, { functions: RESTORE_FUNCTIONS })
 			expect(restored.phase('build')?.task('compile')?.status).toBe('completed')
 			expect(restored.phase('build')?.task('lint')?.status).toBe('pending')
 			expect(restored.status).toBe('running')
@@ -141,7 +160,7 @@ describe('DatabaseWorkflowStore — mid-manual-drive + paused round-trips (pause
 			expect(got).toEqual(snapshot)
 			expect(got).toBeDefined()
 			if (got === undefined) return
-			const restored = restoreWorkflow(got)
+			const restored = restoreWorkflow(got, { functions: RESTORE_FUNCTIONS })
 			expect(restored.paused).toBe(false)
 			expect(restored.destroyed).toBe(false)
 			expect(restored.phase('p')?.snapshot().concurrency).toBe(3)
@@ -170,7 +189,7 @@ describe('DatabaseWorkflowStore — the declarative task trio (run/retries/timeo
 			const got = await store.get(snapshot.id)
 			expect(got).toBeDefined()
 			if (got === undefined) return
-			const restored = restoreWorkflow(got)
+			const restored = restoreWorkflow(got, { functions: RESTORE_FUNCTIONS })
 			const task = restored.phase('p')?.task('t')
 			expect(task?.run).toBe('compile')
 			expect(task?.retries).toBe(2)
@@ -200,6 +219,18 @@ describe('DatabaseWorkflowStore — upsert (set replaces under the same id)', ()
 })
 
 describe('DatabaseWorkflowStore — delete & absent', () => {
+	it('rejects a present corrupt row with the normalized RESTORE error', async () => {
+		const database = createDatabase({
+			driver: createMemoryDriver(),
+			tables: { snapshots: { id: stringShape(), snapshot: rawShape({}) } },
+		})
+		const table: TableInterface<WorkflowSnapshotRow> = database.table('snapshots')
+		const store = new DatabaseWorkflowStore(table)
+		await table.set({ id: 'corrupt', snapshot: { id: 'corrupt' } })
+
+		await expect(store.get('corrupt')).rejects.toMatchObject({ code: 'RESTORE' })
+	})
+
 	it('set → delete → get returns undefined', async () => {
 		const store = createDatabaseWorkflowStore(createMemoryDriver())
 		const snapshot = createWorkflow(buildReleaseDefinition()).snapshot()
@@ -239,7 +270,7 @@ describe('DatabaseWorkflowStore — driver-swap smoke (the memory driver default
 			expect(got).toBeDefined()
 			if (got === undefined) return
 			// And it restores identically — the opaque-column persistence is faithful end-to-end.
-			expect(restoreWorkflow(got).snapshot()).toEqual(snapshot)
+			expect(restoreWorkflow(got, { functions: RESTORE_FUNCTIONS }).snapshot()).toEqual(snapshot)
 		},
 		ROUND_TRIP_TIMEOUT_MS,
 	)

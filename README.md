@@ -1,14 +1,8 @@
 # @orkestrel/workflow
 
-A typed workflow engine for the `@orkestrel` line — a serializable
-`Workflow → Phase → Task` tree that a UI or an LLM authors as pure JSON, and
-a PURE `WorkflowRunner` engine executes by COMPOSING the shipped substrate (a
-per-phase `Runner`, `Abort`, `Timeout`, `Budget`, and a cooperative
-cross-environment `Scheduler`) rather than re-implementing its own
-concurrency / retry / abort machinery. Each task's `run` is a plain
-behavior-name string resolved once into a `handler`; wiring a task to a tool
-or an agent is an opt-in adapter shipped by the separate `@orkestrel/tool`
-package, composed into the caller's own `functions` registry.
+A typed, host-independent workflow engine for the `@orkestrel` line. It keeps
+work as a serializable `Workflow → Phase → Task` tree and executes task behavior
+through a caller-supplied function registry on a cooperative scheduler.
 
 ## Install
 
@@ -25,30 +19,29 @@ npm install @orkestrel/workflow
 
 ## Status
 
-Pre-release (`0.0.1`): the definition contract, the live entity tree, the
-pure-engine runner (a `run`-string / `handler` model — the opt-in tool/agent
-adapters and the depth/cycle-bounded agent-native recursion now ship in the
-separate `@orkestrel/tool` package), the durable `WorkflowStore`
-(in-memory + driver-pluggable), and the cooperative `Scheduler` (the
-cross-environment default plus the browser and Node environment backends)
-are all implemented and tested, but the public API is still unstable and
-may change without notice. The live tree also supports runtime-only
-`pause` / `resume` / `wait` (at both the workflow and phase tiers) plus a
-gated `add` / `remove` / `move` / `update` structural-mutation API
-(pending-suffix positions, append-only on a running phase), a hard
-`destroy` teardown alongside the runner's existing graceful `stop`, and a
-`WorkflowRunnerInterface.execute` overload that drives an already-built,
-caller-owned live tree instead of only building one from a definition. See
-[guides/src/workflow.md](./guides/src/workflow.md) for the full documented
-surface.
+Pre-release (`0.0.7`): the definition contract, live entity tree, runner,
+cooperative schedulers, and durable stores are implemented and tested. A task
+can publish its current note, progress, operations, constraints, pulse, and
+signal; observers can derive silence without polling. Workflow, phase, and task
+execution can pause, resume, wait, skip, stop, and destroy according to the
+documented lifecycle.
+
+Snapshots are exact JSON values with owned nested data. Attempts, checkpoints,
+settlements, and final state can be persisted through memory or database-backed
+stores, then explicitly restored or recovered without reusing a consumed
+attempt. Runtime pause gates are intentionally not persisted.
+
+Provider sessions, external processes, MCP projection, journals, leases, and
+distributed fencing remain integration concerns rather than core workflow
+behavior. See [guides/src/workflow.md](./guides/src/workflow.md) for the complete
+shipped contract and [PROPOSAL.md](./PROPOSAL.md) for the proposed integration
+architecture.
 
 ## Package
 
-Published as three environment-scoped entry points per the `exports` field
-in `package.json`: `.` (the shared, environment-agnostic core — the
-definition/entity/runner surface plus the cross-environment `Scheduler`
-default), `./browser` (adds the browser-native scheduler backends), and
-`./server` (adds the Node-native scheduler backend). Core ships dual
+Published as three environment-scoped entry points: `.` provides the shared
+environment-agnostic core and default scheduler, `./browser` adds browser-native
+schedulers, and `./server` adds the Node-native scheduler. Core ships dual
 ESM+CJS builds; `./browser` is ESM-only.
 
 ## License

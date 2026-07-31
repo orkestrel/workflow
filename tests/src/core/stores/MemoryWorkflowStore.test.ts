@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 import {
 	buildReleaseDefinition,
 	buildWorkflowDefinition,
+	RELEASE_FUNCTIONS,
 	roundTripJSON,
 	settleSnapshot,
 } from '../../../setup.js'
@@ -22,6 +23,13 @@ import {
 // settles, so 30s still catches it). Scoped to the real-async tests only (§16.3 — a measured
 // setting with a current reason); the synchronous store tests keep the fast default.
 const ROUND_TRIP_TIMEOUT_MS = 30_000
+
+const RESTORE_FUNCTIONS = {
+	...RELEASE_FUNCTIONS,
+	scanner: () => null,
+	auditor: () => null,
+	f: () => null,
+}
 
 // The W-d MemoryWorkflowStore — the in-memory default behind the WorkflowStoreInterface
 // persistence seam (get / set / delete, async, keyed by a snapshot's own id). It persists the
@@ -71,7 +79,7 @@ describe('MemoryWorkflowStore — round-trip → identical live tree', () => {
 				// Restoring from the RETRIEVED snapshot yields an IDENTICAL live tree — its own
 				// re-serialization deep-equals the original snapshot (proves structure + every node's
 				// status + recorded results + positional order + bail/override round-tripped).
-				expect(restoreWorkflow(got).snapshot()).toEqual(snapshot)
+				expect(restoreWorkflow(got, { functions: RESTORE_FUNCTIONS }).snapshot()).toEqual(snapshot)
 			},
 			ROUND_TRIP_TIMEOUT_MS,
 		)
@@ -111,7 +119,9 @@ describe('MemoryWorkflowStore — driver-swap parity (JSON portability)', () => 
 			const revived = roundTripJSON(got)
 			expect(revived).toEqual(got)
 			// A backend that stored + reloaded it as JSON still restores the same live tree.
-			expect(restoreWorkflow(revived).snapshot()).toEqual(snapshot)
+			expect(restoreWorkflow(revived, { functions: RESTORE_FUNCTIONS }).snapshot()).toEqual(
+				snapshot,
+			)
 		},
 		ROUND_TRIP_TIMEOUT_MS,
 	)
@@ -136,7 +146,7 @@ describe('MemoryWorkflowStore — mid-manual-drive + paused round-trips (paused/
 		expect(got).toBeDefined()
 		if (got === undefined) return
 		// The restored tree reproduces the exact mixed node statuses.
-		const restored = restoreWorkflow(got)
+		const restored = restoreWorkflow(got, { functions: RESTORE_FUNCTIONS })
 		expect(restored.phase('build')?.task('compile')?.status).toBe('completed')
 		expect(restored.phase('build')?.task('lint')?.status).toBe('pending')
 		expect(restored.status).toBe('running')
@@ -172,7 +182,7 @@ describe('MemoryWorkflowStore — mid-manual-drive + paused round-trips (paused/
 		expect(got).toEqual(snapshot)
 		expect(got).toBeDefined()
 		if (got === undefined) return
-		const restored = restoreWorkflow(got)
+		const restored = restoreWorkflow(got, { functions: RESTORE_FUNCTIONS })
 		// A restored workflow always comes back NOT paused / NOT destroyed (runtime-only, so a
 		// restore starts fresh on those axes) while its node statuses + concurrency round-trip.
 		expect(restored.paused).toBe(false)
@@ -203,7 +213,7 @@ describe('MemoryWorkflowStore — the declarative task trio (run/retries/timeout
 		const got = await store.get(snapshot.id)
 		expect(got).toBeDefined()
 		if (got === undefined) return
-		const restored = restoreWorkflow(got)
+		const restored = restoreWorkflow(got, { functions: RESTORE_FUNCTIONS })
 		const task = restored.phase('p')?.task('t')
 		expect(task?.run).toBe('compile')
 		expect(task?.retries).toBe(2)

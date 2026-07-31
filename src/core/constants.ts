@@ -103,3 +103,8 @@ export const TASK_TRANSITIONS: Readonly<Record<TaskStatus, readonly TaskStatus[]
  * phase may still DECLARE a larger explicit `concurrency` and pays that allocation knowingly.
  */
 export const DEFAULT_PHASE_CONCURRENCY = 1024
+
+/**
+ * The largest delay representable by the host timer APIs without overflow or clamping.
+ */
+export const MAX_TIMER_MS = 2_147_483_647

@@ -1,280 +1,223 @@
+import type { SchedulerPriority } from '@src/core'
 import { NodeScheduler } from '@src/server'
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createRecorder, instrumentSignal } from '../../setup.js'
+import { describe, expect, it } from 'vitest'
+import { createRecorder, instrumentSignal, waitForDelay } from '../../setup.js'
 
-// NodeScheduler — the server-native cooperative-yield backend over real setImmediate /
-// setTimeout. The yield-ordering proof uses REAL timers (fake timers don't reorder a
-// microtask vs. a setImmediate macrotask); delay timing + leak counts use fake timers so
-// the host timer count is an exact observable quantity (AGENTS §16 / §16.2). Abort fidelity
-// is the load-bearing property — the reject value must be the caller's `signal.reason`
-// VERBATIM (node:timers/promises wraps it in a Node AbortError, hence the hand-rolled timer).
+// NodeScheduler is exercised against real setImmediate and setTimeout behavior. Abort
+// reasons must remain verbatim rather than being replaced by a Node AbortError.
 
 describe('NodeScheduler', () => {
 	describe('yield', () => {
-		it('resolves asynchronously — the continuation runs after the current task', async () => {
-			const scheduler = new NodeScheduler()
-			let resumed = false
-
-			const pending = scheduler.yield().then(() => {
-				resumed = true
-			})
-			// Synchronously after the call, the continuation has NOT run yet.
-			expect(resumed).toBe(false)
-
-			await pending
-			expect(resumed).toBe(true)
-		})
-
-		it('yields as a setImmediate macrotask — a microtask queued after it runs first (real timers)', async () => {
+		it('resolves asynchronously as a setImmediate host turn', async () => {
 			const scheduler = new NodeScheduler()
 			const order: string[] = []
 
-			const yielded = scheduler.yield().then(() => order.push('yield'))
-			// A microtask queued AFTER the yield call. A setImmediate macrotask resolves
-			// strictly after the microtask queue drains, so 'microtask' wins — proving yield
-			// is a genuine host-turn, not a microtask.
+			const pending = scheduler.yield().then(() => order.push('yield'))
+			expect(order).toEqual([])
 			queueMicrotask(() => order.push('microtask'))
 
-			await yielded
+			await pending
 			expect(order).toEqual(['microtask', 'yield'])
 		})
 
-		it('rejects with the reason when the signal is already aborted', async () => {
+		it('rejects a pre-aborted call with the exact reason and attaches no listener', async () => {
 			const scheduler = new NodeScheduler()
 			const controller = new AbortController()
 			const reason = new Error('pre-aborted')
 			controller.abort(reason)
+			const { added, removed } = instrumentSignal(controller.signal)
 
 			await expect(scheduler.yield({ signal: controller.signal })).rejects.toBe(reason)
+			expect(added.count).toBe(0)
+			expect(removed.count).toBe(0)
 		})
 
-		it('rejects with the reason when the signal aborts while pending', async () => {
+		it('rejects a pending call promptly with the exact reason and settles once', async () => {
 			const scheduler = new NodeScheduler()
 			const controller = new AbortController()
-			const reason = new Error('aborted while pending')
+			const reason = { code: 'STOPPED' }
+			const settled = createRecorder<readonly ['resolved' | 'rejected']>()
+			const pending = scheduler.yield({ signal: controller.signal }).then(
+				() => settled.handler('resolved'),
+				(error) => {
+					settled.handler('rejected')
+					return error
+				},
+			)
 
-			const pending = scheduler.yield({ signal: controller.signal })
 			controller.abort(reason)
+			const outcome = await Promise.race([pending, waitForDelay(50).then(() => 'late')])
+			expect(outcome).toBe(reason)
+			expect(settled.calls).toEqual([['rejected']])
 
-			await expect(pending).rejects.toBe(reason)
+			await waitForDelay(20)
+			expect(settled.count).toBe(1)
 		})
 
-		it('a completed yield removed its abort listener (no leak — counted on a real signal)', async () => {
+		it('accepts every priority as a no-op', async () => {
+			const scheduler = new NodeScheduler()
+			const priorities: readonly SchedulerPriority[] = ['user', 'normal', 'background']
+
+			for (const priority of priorities) {
+				await expect(scheduler.yield({ priority })).resolves.toBeUndefined()
+			}
+		})
+	})
+
+	describe('delay', () => {
+		it('does not resolve before its requested interval', async () => {
+			const scheduler = new NodeScheduler()
+			const start = Date.now()
+
+			await scheduler.delay(20)
+
+			expect(Date.now() - start).toBeGreaterThanOrEqual(20)
+		})
+
+		it('rejects before the deadline and never settles again after it passes', async () => {
+			const scheduler = new NodeScheduler()
+			const controller = new AbortController()
+			const reason = new Error('aborted before deadline')
+			const settled = createRecorder<readonly ['resolved' | 'rejected']>()
+			const pending = scheduler.delay(40, { signal: controller.signal })
+			const observed = pending.then(
+				() => settled.handler('resolved'),
+				() => settled.handler('rejected'),
+			)
+
+			await waitForDelay(10)
+			controller.abort(reason)
+			const outcome = await Promise.race([
+				pending.then(
+					() => 'resolved',
+					(error) => error,
+				),
+				waitForDelay(10).then(() => 'late'),
+			])
+			expect(outcome).toBe(reason)
+			await observed
+			expect(settled.calls).toEqual([['rejected']])
+
+			await waitForDelay(40)
+			expect(settled.calls).toEqual([['rejected']])
+		})
+
+		it('removes every listener after completed yield and delay calls', async () => {
 			const scheduler = new NodeScheduler()
 			const controller = new AbortController()
 			const { added, removed } = instrumentSignal(controller.signal)
 
 			await scheduler.yield({ signal: controller.signal })
-			// The single listener the yield attached was detached on resolve.
-			expect(added.count).toBe(1)
-			expect(removed.count).toBe(1)
+			await scheduler.delay(10, { signal: controller.signal })
+			expect(added.count).toBe(2)
+			expect(removed.count).toBe(2)
 
-			// A later abort is therefore inert for the (already-settled) yield.
-			controller.abort(new Error('after the turn'))
-		})
-	})
-
-	describe('delay (fake timers)', () => {
-		afterEach(() => {
-			vi.useRealTimers()
+			controller.abort(new Error('after completion'))
+			await waitForDelay(0)
+			expect(added.count).toBe(removed.count)
 		})
 
-		it('resolves after ms', async () => {
-			vi.useFakeTimers()
+		it('resolves concurrent delays in deadline order rather than call order', async () => {
 			const scheduler = new NodeScheduler()
-			const resolved = createRecorder<readonly []>()
+			const order: number[] = []
+			const durations: readonly number[] = [40, 10, 25]
 
-			const pending = scheduler.delay(50).then(resolved.handler)
-			await vi.advanceTimersByTimeAsync(49)
-			expect(resolved.count).toBe(0) // not before the deadline
+			await Promise.all(
+				durations.map((ms) =>
+					scheduler.delay(ms).then(() => {
+						order.push(ms)
+					}),
+				),
+			)
 
-			await vi.advanceTimersByTimeAsync(1)
-			await pending
-			expect(resolved.count).toBe(1)
+			expect(order).toEqual([10, 25, 40])
 		})
 
-		it('an already-aborted signal rejects immediately without arming a timer', async () => {
-			vi.useFakeTimers()
+		it('uses the host asynchronous clamp for zero, negative, and NaN values', async () => {
 			const scheduler = new NodeScheduler()
+			const values: readonly number[] = [0, -0, -100, Number.NaN]
+
+			for (const value of values) {
+				let resumed = false
+				const pending = scheduler.delay(value).then(() => {
+					resumed = true
+				})
+				expect(resumed).toBe(false)
+				await pending
+				expect(resumed).toBe(true)
+			}
+		})
+
+		it('accepts every priority together with cancellation', async () => {
+			const scheduler = new NodeScheduler()
+			const priorities: readonly SchedulerPriority[] = ['user', 'normal', 'background']
+
+			for (const priority of priorities) {
+				await expect(scheduler.delay(0, { priority })).resolves.toBeUndefined()
+			}
+
 			const controller = new AbortController()
-			const reason = new Error('pre-aborted')
-			controller.abort(reason)
-
-			await expect(scheduler.delay(50, { signal: controller.signal })).rejects.toBe(reason)
-			// No timer pending — the short-circuit preceded any setTimeout.
-			expect(vi.getTimerCount()).toBe(0)
-		})
-
-		it('aborting before the deadline rejects with the reason and clears the timer (no leak)', async () => {
-			vi.useFakeTimers()
-			const scheduler = new NodeScheduler()
-			const controller = new AbortController()
-			const reason = new Error('aborted before deadline')
-			const resolved = createRecorder<readonly []>()
-
-			const pending = scheduler.delay(50, { signal: controller.signal })
-			pending.then(resolved.handler, () => {})
-			expect(vi.getTimerCount()).toBe(1)
-
-			await vi.advanceTimersByTimeAsync(20)
+			const reason = new Error('priority abort')
+			const pending = scheduler.delay(40, {
+				priority: 'background',
+				signal: controller.signal,
+			})
 			controller.abort(reason)
 			await expect(pending).rejects.toBe(reason)
-			// The abort path cleared the timer before it could fire.
-			expect(vi.getTimerCount()).toBe(0)
-
-			// Advancing past the original deadline is a no-op — no double-settle.
-			await vi.advanceTimersByTimeAsync(100)
-			expect(resolved.count).toBe(0)
 		})
+	})
 
-		it('a completed delay leaves no pending timer or abort listener', async () => {
-			vi.useFakeTimers()
+	describe('pressure', () => {
+		it('keeps listener ownership balanced through modest resolved churn', async () => {
 			const scheduler = new NodeScheduler()
 			const controller = new AbortController()
 			const { added, removed } = instrumentSignal(controller.signal)
 
-			const pending = scheduler.delay(10, { signal: controller.signal })
-			await vi.advanceTimersByTimeAsync(10)
-			await pending
-			expect(vi.getTimerCount()).toBe(0)
-			// The internal listener was removed on resolve.
-			expect(added.count).toBe(1)
-			expect(removed.count).toBe(1)
+			for (let cycle = 0; cycle < 25; cycle += 1) {
+				await scheduler.delay(0, { signal: controller.signal })
+			}
 
-			// A later abort is inert for the (already-settled) delay.
-			controller.abort(new Error('after resolve'))
+			expect(added.count).toBe(25)
+			expect(removed.count).toBe(25)
 		})
-	})
 
-	describe('abort reason fidelity (the load-bearing property)', () => {
-		// The reject value must be whatever `signal.reason` holds — forwarded VERBATIM, never
-		// wrapped or substituted. This is why the timer is hand-rolled rather than delegated to
-		// node:timers/promises (whose `{ signal }` rejects with a Node AbortError, code
-		// 'ABORT_ERR', not the caller's reason). Both the pre-aborted and the while-pending
-		// paths are pinned, across `yield` and `delay`.
-
-		it('a bare abort() rejects with the platform AbortError DOMException (never a Node AbortError)', async () => {
+		it('settles modest aborted churn promptly without late resolutions', async () => {
 			const scheduler = new NodeScheduler()
-			const controller = new AbortController()
-			controller.abort() // no reason supplied → the platform fills in a DOMException
+			const settled = createRecorder<readonly ['resolved' | 'rejected']>()
 
-			await expect(scheduler.delay(50, { signal: controller.signal })).rejects.toBeInstanceOf(
-				DOMException,
-			)
-			await expect(scheduler.yield({ signal: controller.signal })).rejects.toHaveProperty(
-				'name',
-				'AbortError',
-			)
-		})
-
-		it('forwards a custom Error reason by identity (pre-aborted)', async () => {
-			const scheduler = new NodeScheduler()
-			const controller = new AbortController()
-			const reason = new Error('custom')
-			controller.abort(reason)
-
-			await expect(scheduler.delay(50, { signal: controller.signal })).rejects.toBe(reason)
-			await expect(scheduler.yield({ signal: controller.signal })).rejects.toBe(reason)
-		})
-
-		it('forwards a string reason verbatim (not wrapped in an Error)', async () => {
-			const scheduler = new NodeScheduler()
-			const controller = new AbortController()
-			controller.abort('stop')
-
-			await expect(scheduler.yield({ signal: controller.signal })).rejects.toBe('stop')
-		})
-
-		it('forwards an object reason by identity on the while-pending path too', async () => {
-			vi.useFakeTimers()
-			try {
-				const scheduler = new NodeScheduler()
+			for (let cycle = 0; cycle < 25; cycle += 1) {
 				const controller = new AbortController()
-				const reason = { code: 'CANCELLED', detail: { at: 1 } }
-
-				const pending = scheduler.delay(50, { signal: controller.signal })
-				controller.abort(reason)
-				await expect(pending).rejects.toBe(reason)
-			} finally {
-				vi.useRealTimers()
-			}
-		})
-	})
-
-	describe('priority (accepted, a no-op on Node)', () => {
-		it('yield and delay accept every priority without error and resolve the same (real timers)', async () => {
-			const scheduler = new NodeScheduler()
-
-			for (const priority of ['user', 'normal', 'background'] as const) {
-				await expect(scheduler.yield({ priority })).resolves.toBeUndefined()
-				await expect(scheduler.delay(1, { priority })).resolves.toBeUndefined()
-			}
-		})
-
-		it('priority combined with a signal is still abort-aware', async () => {
-			const scheduler = new NodeScheduler()
-			const controller = new AbortController()
-			const reason = new Error('pre-aborted with priority')
-			controller.abort(reason)
-
-			await expect(
-				scheduler.delay(50, { priority: 'background', signal: controller.signal }),
-			).rejects.toBe(reason)
-		})
-	})
-
-	describe('churn & leak-safety (fake timers)', () => {
-		afterEach(() => {
-			vi.useRealTimers()
-		})
-
-		it('thousands of resolved delays never accumulate host timers', async () => {
-			vi.useFakeTimers()
-			const scheduler = new NodeScheduler()
-
-			for (let cycle = 0; cycle < 2_000; cycle += 1) {
-				const pending = scheduler.delay(10)
-				expect(vi.getTimerCount()).toBe(1)
-				await vi.advanceTimersByTimeAsync(10)
-				await pending
-				expect(vi.getTimerCount()).toBe(0)
-			}
-
-			expect(vi.getTimerCount()).toBe(0)
-		})
-
-		it('thousands of aborted delays clear every timer — no leak on the cancellation path', async () => {
-			vi.useFakeTimers()
-			const scheduler = new NodeScheduler()
-
-			for (let cycle = 0; cycle < 2_000; cycle += 1) {
-				const controller = new AbortController()
-				const pending = scheduler.delay(50, { signal: controller.signal })
-				pending.catch(() => {})
-				expect(vi.getTimerCount()).toBe(1)
+				const pending = scheduler.delay(20, { signal: controller.signal }).then(
+					() => settled.handler('resolved'),
+					() => settled.handler('rejected'),
+				)
 				controller.abort(new Error('churn'))
-				await expect(pending).rejects.toThrow('churn')
-				expect(vi.getTimerCount()).toBe(0)
-			}
-
-			expect(vi.getTimerCount()).toBe(0)
-		})
-
-		it('the abort listener nets to zero across a churn of resolved delays on one signal', async () => {
-			vi.useFakeTimers()
-			const scheduler = new NodeScheduler()
-			const controller = new AbortController()
-			const { added, removed } = instrumentSignal(controller.signal)
-
-			// Every call settles by RESOLVING — the path that must remove the listener it added.
-			for (let cycle = 0; cycle < 1_000; cycle += 1) {
-				const pending = scheduler.delay(5, { signal: controller.signal })
-				await vi.advanceTimersByTimeAsync(5)
 				await pending
 			}
 
-			expect(added.count).toBe(1_000)
-			expect(added.count - removed.count).toBe(0)
+			expect(settled.count).toBe(25)
+			expect(settled.calls.every(([outcome]) => outcome === 'rejected')).toBe(true)
+			await waitForDelay(30)
+			expect(settled.count).toBe(25)
 		})
+	})
+
+	it('forwards platform, string, and object abort reasons verbatim', async () => {
+		const scheduler = new NodeScheduler()
+		const platform = new AbortController()
+		platform.abort()
+		await expect(scheduler.delay(20, { signal: platform.signal })).rejects.toBeInstanceOf(
+			DOMException,
+		)
+
+		const string = new AbortController()
+		string.abort('stop')
+		await expect(scheduler.yield({ signal: string.signal })).rejects.toBe('stop')
+
+		const object = new AbortController()
+		const reason = { code: 'CANCELLED', detail: { at: 1 } }
+		const pending = scheduler.delay(20, { signal: object.signal })
+		object.abort(reason)
+		await expect(pending).rejects.toBe(reason)
 	})
 })

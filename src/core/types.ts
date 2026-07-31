@@ -1,6 +1,6 @@
 import type { BudgetInterface, TokenUsage } from '@orkestrel/budget'
+import type { JSONRecord, JSONValue, Result } from '@orkestrel/contract'
 import type { EmitterErrorHandler, EmitterHooks, EmitterInterface } from '@orkestrel/emitter'
-import type { Result } from '@orkestrel/contract'
 import type { WorkflowError } from './errors.js'
 
 // Workflows — a JSON-serializable Workflow → Phase → Task tree (strict three
@@ -29,8 +29,8 @@ import type { WorkflowError } from './errors.js'
  * its phase; `name` is the human label; `description` is optional prose. `run` is a
  * PLAIN NAME — a key resolved ONCE at construction against a workflow-level
  * {@link WorkflowFunctions} registry into a runtime {@link TaskInterface.handler}
- * carried on the live task. A task whose `run` is omitted, or whose name is unregistered,
- * has no handler and AUTO-COMPLETES (the no-handler rule).
+ * carried on the live task. An omitted `run` is the deliberate no-op form and completes
+ * with JSON `null`; an unresolved present name remains inspectable but is not executable.
  */
 export interface TaskDefinition {
 	readonly id: string
@@ -48,11 +48,10 @@ export interface TaskDefinition {
 	readonly retries?: number
 	/**
 	 * @remarks
-	 * The per-attempt deadline in milliseconds (a non-negative integer); the runner threads it to
-	 * this task's substrate unit, OVERRIDING the phase Runner's `timeout` default. Omitted (or a
-	 * non-positive value) ⇒ no deadline. PERSISTED in a {@link TaskSnapshot} (like `bail` and
-	 * `concurrency`), so `restoreWorkflow(snapshot, { functions })` resumes with the same
-	 * reliability config; only the resolved handler itself is runtime-only.
+	 * The workflow-owned per-attempt deadline in milliseconds, an integer from `0` through
+	 * `MAX_TIMER_MS`. Zero or omission means no deadline. PERSISTED in a {@link TaskSnapshot},
+	 * so `restoreWorkflow(snapshot, { functions })` resumes with the same reliability config;
+	 * only the resolved handler itself is runtime-only.
 	 */
 	readonly timeout?: number
 }
@@ -166,7 +165,71 @@ export type PhaseInput = Partial<PhaseContext>
  */
 export interface TaskInput extends Partial<TaskContext> {
 	/** An open consumer bag — stored and snapshotted, never interpreted by the workflow. */
-	readonly metadata?: Readonly<Record<string, unknown>>
+	readonly metadata?: JSONRecord
+}
+
+/**
+ * One operation claimed active when a running task's complete frame was accepted.
+ *
+ * @remarks
+ * `id` is stable within one complete activity report, `name` is the human-readable label,
+ * and `started` is a finite non-negative reporter timestamp.
+ */
+export interface TaskOperation {
+	readonly id: string
+	readonly name: string
+	readonly started: number
+}
+
+/**
+ * The aggregate progress most recently reported by a running task.
+ *
+ * @remarks
+ * `current` and an optional `total` are finite non-negative numbers; when `total` is present
+ * it is at least `current`. `unit` is optional observer-facing text.
+ */
+export interface TaskProgress {
+	readonly current: number
+	readonly total?: number
+	readonly unit?: string
+}
+
+/**
+ * One constraint claimed active when a running task's complete frame was accepted.
+ *
+ * @remarks
+ * Constraints describe active limits or requirements without embedding provider policy in
+ * core. `id` is unique within one complete report and `started` is finite and non-negative.
+ */
+export interface TaskConstraint {
+	readonly id: string
+	readonly name: string
+	readonly started: number
+}
+
+/**
+ * One complete replacement of a running task's observable activity.
+ *
+ * @remarks
+ * Omitted `operations` or `constraints` mean an empty list. Omitted `progress` clears the
+ * previous aggregate progress. Use {@link TaskInterface.report} to commit the replacement.
+ */
+export interface TaskActivityInput {
+	readonly note?: string
+	readonly progress?: TaskProgress
+	readonly operations?: readonly TaskOperation[]
+	readonly constraints?: readonly TaskConstraint[]
+}
+
+/**
+ * The bounded, JSON-serializable activity most recently accepted from a task reporter.
+ */
+export interface TaskActivity {
+	readonly note?: string
+	readonly progress?: TaskProgress
+	readonly operations: readonly TaskOperation[]
+	readonly constraints: readonly TaskConstraint[]
+	readonly updated: number
 }
 
 // === Patches (declarative partial updates — the mutation API's `update` payloads)
@@ -227,21 +290,6 @@ export interface PhaseUpdate {
  *   the offending current status + requested transition in the error `context`.
  * - `RESTORE` — a {@link import('./factories.js').restoreWorkflow} given a structurally
  *   invalid {@link WorkflowSnapshot} (a status outside the lifecycle vocabulary).
- * - `DEPTH` — a nested-workflow dispatch (W-c2) that a depth / cycle guard rejected:
- *   running it would push the nested-workflow chain past a bounded max depth, OR its
- *   target agent (or a workflow it would author) is already an ancestor of the current
- *   run (a re-entry cycle). Public type surface consumed by the `@orkestrel/tool`
- *   package's workflow-tool / agent-function adapters, which construct
- *   {@link import('./errors.js').WorkflowError}s with this code (thrown, then ISOLATED
- *   by that package's `ToolManager` into the tool result's `error`). The error `context`
- *   names the offending agent / workflow id + the depth.
- * - `TOOL` — a workflow-authoring tool handler (in `@orkestrel/tool`) was handed a
- *   MALFORMED / over-constraint authored args blob (e.g. an empty `id`, `concurrency: 0`)
- *   that {@link import('./factories.js').createWorkflowContract} rejected, so no workflow
- *   ran. Public type surface: `@orkestrel/tool` constructs this code and THROWS it
- *   (rather than returning a failure result); its `ToolManager` ISOLATES the throw into
- *   the canonical tool result's top-level `error` (AGENTS §14 — the universal
- *   tool-handler contract); the error `context` names the wrapped workflow id.
  * - `MUTATION` — a GATED structural or patch edit was refused: a duplicate id on
  *   `append`/`add`, a target that does not exist or is not `pending`, an out-of-bounds
  *   `index`, a patch that failed shaper validation, or a live structural edit refused by
@@ -255,7 +303,7 @@ export interface PhaseUpdate {
  *   guard (both genuine programmer-error paths, AGENTS §12). The error `context` names
  *   the offending id / index / status.
  */
-export type WorkflowErrorCode = 'TRANSITION' | 'RESTORE' | 'DEPTH' | 'TOOL' | 'MUTATION'
+export type WorkflowErrorCode = 'TRANSITION' | 'RESTORE' | 'MUTATION'
 
 // === Status unions (AGENTS §10 lifecycle vocabulary)
 
@@ -296,10 +344,10 @@ export type TaskStatus = LifecycleStatus
  * derived from its tasks' statuses.
  *
  * @remarks
- * A semantic tier of the shared {@link LifecycleStatus} vocabulary. A phase is
- * `failed` only when a task failed AND the workflow's `bail` policy is in force (a
- * failure under graceful mode is data, not a phase failure). `stopped` propagates
- * when every task was stopped. See {@link import('./helpers.js').derivePhaseStatus}.
+ * A semantic tier of the shared {@link LifecycleStatus} vocabulary. A failed task makes
+ * its phase `failed` regardless of policy; the phase's effective `bail` determines whether
+ * that failure propagates to the workflow or is retained as graceful result data. `stopped`
+ * propagates when every task was stopped. See {@link import('./helpers.js').derivePhaseStatus}.
  */
 export type PhaseStatus = LifecycleStatus
 
@@ -350,13 +398,21 @@ export interface PhaseDerivation {
  * `value?` / `error?` fields: a success's payload is `result.value`, a failure's reason is `result.error`.
  * `timestamp` is when the result was created (ms since epoch).
  */
+export type TaskFailureOrigin = 'handler' | 'timeout' | 'recovery'
+
+/** A normalized JSON-safe task failure persisted without a stack or cause. */
+export interface TaskFailure {
+	readonly origin: TaskFailureOrigin
+	readonly message: string
+}
+
 export interface TaskResult {
 	readonly task: TaskContext
 	readonly phase: PhaseContext
 	readonly workflow: WorkflowContext
 	readonly status: TaskStatus
 	/** The boxed outcome — present for `completed` (Success) / `failed` (Failure), absent otherwise. */
-	readonly result?: Result<unknown>
+	readonly result?: Result<JSONValue, TaskFailure>
 	readonly timestamp: number
 }
 
@@ -383,13 +439,17 @@ export interface TaskSnapshot {
 	readonly description?: string
 	readonly status: TaskStatus
 	readonly result?: TaskResult
-	readonly metadata: Readonly<Record<string, unknown>>
+	readonly metadata: JSONRecord
+	/** Total launches already consumed; zero while fresh and never reset by recovery. */
+	readonly attempts: number
 	/** The behavior reference — a registry key resolved against {@link WorkflowFunctions} on restore/build. */
 	readonly run?: string
 	/** Extra attempts after the first on failure (a non-negative integer); overrides the phase Runner default. */
 	readonly retries?: number
-	/** The per-attempt deadline in milliseconds (a non-negative integer); overrides the phase Runner default. */
+	/** Workflow-owned per-attempt deadline (`0..MAX_TIMER_MS`); zero or omission means disabled. */
 	readonly timeout?: number
+	/** Pending omits activity; running/completed/failed require it; skipped/stopped may retain it. */
+	readonly activity?: TaskActivity
 }
 
 /**
@@ -438,17 +498,18 @@ export interface PhaseSnapshot {
  * it is self-contained, it carries the policy it ran under: `bail` (AGENTS §4.4) is the
  * failure policy, so {@link import('./factories.js').restoreWorkflow} re-derives status
  * IDENTICALLY without a silent default. `status` is the EFFECTIVE status (override-or-derived)
- * at snapshot time; `override` is the forced status of a whole-workflow `skip` / `stop`,
- * PRESENT only when one is in force (so a restore reinstates it DIRECTLY rather than guessing
- * from a status divergence). `phases` are the workflow's {@link PhaseSnapshot}s in order;
- * `created` / `updated` are ms since epoch.
+ * at snapshot time; `override` is the forced status of a whole-workflow `skip` / `stop` or
+ * vacuous `completed`. The completed override is valid only for an otherwise-derived pending
+ * tree containing no tasks. An override is PRESENT only when one is in force (so a restore
+ * reinstates it DIRECTLY rather than guessing from a status divergence). `phases` are the
+ * workflow's {@link PhaseSnapshot}s in order; `created` / `updated` are ms since epoch.
  */
 export interface WorkflowSnapshot {
 	readonly id: string
 	readonly name: string
 	readonly description?: string
 	readonly status: WorkflowStatus
-	/** The forced status of a whole-workflow `skip` / `stop`; present only when an override is in force. */
+	/** Whole-workflow `skip` / `stop` or valid task-free vacuous `completed`; omitted when derived. */
 	readonly override?: WorkflowStatus
 	/** The failure policy the workflow ran under (AGENTS §4.4) — persisted so a restore re-derives identically. */
 	readonly bail: boolean
@@ -534,8 +595,10 @@ export interface WorkflowSnapshotRow {
  * @remarks
  * Present-tense events with arg tuples. `start` fires when the workflow begins;
  * `complete` when every phase settled successfully; `fail` when a phase failed
- * under `bail` (carrying the failing {@link TaskResult}); `stop` when the workflow
- * was permanently ended. `add` / `remove` / `move` / `update` fire on a successful
+ * under `bail` (carrying the failing {@link TaskResult}); `pause` / `resume` when its
+ * runtime gate closes / opens; `skip` when the workflow was intentionally skipped;
+ * `stop` when it was permanently ended. `add` / `remove`
+ * / `move` / `update` fire on a successful
  * structural or patch edit through {@link WorkflowInterface.add} / `remove` / `move` /
  * `update` (AGENTS §7) — never on a refused/gated one. A throwing listener never
  * reaches the domain surface — the emitter isolates it and routes it to its OWN
@@ -550,6 +613,12 @@ export type WorkflowEventMap = {
 	readonly complete: readonly []
 	/** A phase failed under `bail` — the failing task's result. */
 	readonly fail: readonly [result: TaskResult]
+	/** The workflow's runtime gate closed. */
+	readonly pause: readonly []
+	/** The workflow's runtime gate opened. */
+	readonly resume: readonly []
+	/** The workflow was intentionally skipped. */
+	readonly skip: readonly []
 	/** The workflow was permanently stopped. */
 	readonly stop: readonly []
 	/** A phase was inserted — the inserted phase + its final index. */
@@ -569,8 +638,10 @@ export type WorkflowEventMap = {
  * @remarks
  * `start` fires when the phase begins; `complete` when all its tasks settled
  * successfully; `fail` when a task failed under `bail` (carrying the
- * {@link TaskResult}); `stop` when the phase was ended. `add` / `remove` / `move` /
- * `update` fire on a successful structural or patch edit through
+ * {@link TaskResult}); `pause` / `resume` when its runtime gate closes / opens;
+ * `skip` when the phase was intentionally skipped; `stop` when the phase was ended.
+ * `add` / `remove` / `move` / `update` fire on a successful
+ * structural or patch edit through
  * {@link PhaseInterface.add} / `remove` / `move` / `update` (AGENTS §7) — never on a
  * refused/gated one. A throwing listener is isolated by the emitter and routed to its
  * `error` handler, not the domain surface (AGENTS §13). A `type` alias (AGENTS §4.5)
@@ -583,6 +654,12 @@ export type PhaseEventMap = {
 	readonly complete: readonly []
 	/** A task failed under `bail` — the failing task's result. */
 	readonly fail: readonly [result: TaskResult]
+	/** The phase's runtime gate closed. */
+	readonly pause: readonly []
+	/** The phase's runtime gate opened. */
+	readonly resume: readonly []
+	/** The phase was intentionally skipped. */
+	readonly skip: readonly []
 	/** The phase was permanently stopped. */
 	readonly stop: readonly []
 	/** A task was inserted — the inserted task + its final index. */
@@ -602,7 +679,8 @@ export type PhaseEventMap = {
  * @remarks
  * `start` fires when the task begins; `complete` when it finishes successfully
  * (carrying its {@link TaskResult}); `fail` when it errors (carrying the result);
- * `skip` when it is intentionally not executed; `stop` when it is ended early. A
+ * `pause` / `resume` when its runtime gate closes / opens; `skip` when it is
+ * intentionally not executed; `stop` when it is ended early. A
  * throwing listener is isolated by the emitter and routed to its `error` handler,
  * not the domain surface (AGENTS §13). A `type` alias (AGENTS §4.5) so it satisfies
  * `EventMap`.
@@ -614,10 +692,20 @@ export type TaskEventMap = {
 	readonly complete: readonly [result: TaskResult]
 	/** The task failed — its result. */
 	readonly fail: readonly [result: TaskResult]
+	/** The task's runtime gate closed. */
+	readonly pause: readonly []
+	/** The task's runtime gate opened. */
+	readonly resume: readonly []
 	/** The task was intentionally skipped. */
 	readonly skip: readonly []
 	/** The task was permanently stopped. */
 	readonly stop: readonly []
+	/** A complete activity replacement was committed. */
+	readonly report: readonly [activity: TaskActivity]
+	/** The task confirmed liveness without replacing its current activity. */
+	readonly pulse: readonly [activity: TaskActivity]
+	/** No report or pulse was accepted during the effective silence window. */
+	readonly silence: readonly []
 }
 
 // === Hooks (AGENTS §8 — the reserved `on` option for the W-b entities)
@@ -650,7 +738,9 @@ export interface TaskOptions {
 	/** The emitter's listener-error handler (AGENTS §13) — a listener throw routes here, not to a domain event. */
 	readonly error?: EmitterErrorHandler
 	/** An open consumer bag — stored and snapshotted, never interpreted by the workflow. */
-	readonly metadata?: Readonly<Record<string, unknown>>
+	readonly metadata?: JSONRecord
+	/** Runtime-only silence window; non-positive, non-finite, or over-`MAX_TIMER_MS` disables inheritance. */
+	readonly silence?: number
 }
 
 /**
@@ -704,12 +794,14 @@ export interface WorkflowOptions {
 	 * fresh build ({@link import('./factories.js').createWorkflow}) and a restore
 	 * ({@link import('./factories.js').restoreWorkflow}) both consume, and the same shape a
 	 * live {@link WorkflowInterface.add} / {@link PhaseInterface.add} mint resolves a newly
-	 * minted task against. A `run` name absent from `functions` (or omitted entirely)
-	 * resolves to no handler — that task AUTO-COMPLETES (the no-handler rule): its
-	 * phase/workflow still reaches a terminal status, just with no dispatched behavior.
-	 * Omitted ⇒ an empty registry (every task auto-completes).
+	 * minted task against. An omitted `run` resolves to no handler and is the deliberate
+	 * no-op form. A present name absent from `functions` also has no handler so exact restore
+	 * remains inspectable, but {@link WorkflowRunnerInterface.execute} rejects that tree.
+	 * Omitted ⇒ an empty registry; only tasks that also omit `run` are executable no-ops.
 	 */
 	readonly functions?: WorkflowFunctions
+	/** Runtime-only default silence; non-positive, non-finite, or over-`MAX_TIMER_MS` disables it. */
+	readonly silence?: number
 }
 
 // === Entity interfaces (AGENTS §7/§13 — the live W-b state machines)
@@ -738,13 +830,15 @@ export interface WorkflowOptions {
  *   {@link import('@orkestrel/contract').Failure}), `skip` (AGENTS §10 — intentionally not run),
  *   and `stop` (AGENTS §10 — ended early). Each is GUARDED: an illegal transition (e.g.
  *   completing a non-`running` task) throws a {@link import('./errors.js').WorkflowError}.
- *   `skip` / `stop` set the override so the leaf's terminal state survives a snapshot.
+ *   A leaf needs no override: `skipped` / `stopped` are explicit terminal statuses and
+ *   restore directly from {@link TaskSnapshot.status}.
  * - **Result.** `result` is the recorded {@link TaskResult} once the task settled with an
  *   outcome (`completed` / `failed`), else `undefined` — the lineage-navigable leaf of the
  *   result tree.
  * - **Observable (AGENTS §13).** The owned {@link emitter} ({@link TaskEventMap}) fires
- *   `start` / `complete` / `fail` / `skip` / `stop` strictly AFTER each transition; the
- *   emitter isolates a listener throw and routes it to its `error` handler (the `error` option).
+ *   `start` / `complete` / `fail` / `pause` / `resume` / `skip` / `stop` strictly AFTER
+ *   each state change; the emitter isolates a listener throw and routes it to its `error`
+ *   handler (the `error` option).
  */
 export interface TaskInterface {
 	readonly emitter: EmitterInterface<TaskEventMap>
@@ -755,6 +849,8 @@ export interface TaskInterface {
 	readonly phase: PhaseInterface
 	readonly workflow: WorkflowInterface
 	readonly status: TaskStatus
+	/** Total launches already consumed; zero while fresh and one-based after launch. */
+	readonly attempts: number
 	/** The recorded outcome once the task settled with one (`completed` / `failed`), else `undefined`. */
 	readonly result: TaskResult | undefined
 	/**
@@ -767,9 +863,9 @@ export interface TaskInterface {
 	 * The RESOLVED runtime handler — RUNTIME-ONLY, NEVER persisted in a {@link TaskSnapshot}.
 	 * Resolved ONCE at construction (build, restore, or a live mint) by looking `run` up in the
 	 * workflow-level {@link WorkflowOptions.functions} registry: `functions?.[run]` when `run`
-	 * is defined, else `undefined`. A task with no `handler` (an omitted `run`, or a `run` name
-	 * absent from the registry) AUTO-COMPLETES (the no-handler rule) — its phase/workflow still
-	 * reaches a terminal status, just with no dispatched behavior.
+	 * is defined, else `undefined`. An omitted `run` is the deliberate no-op form. A present,
+	 * unresolved `run` remains visible on exact restore, but the runner rejects it before
+	 * dispatch instead of falsely completing named work.
 	 */
 	readonly handler: WorkflowFunction | undefined
 	/**
@@ -778,15 +874,49 @@ export interface TaskInterface {
 	 */
 	readonly retries: number | undefined
 	/**
-	 * The per-attempt deadline in milliseconds — PERSISTED (mirrors {@link TaskDefinition.timeout}
-	 * / {@link TaskSnapshot.timeout}). `undefined` ⇒ no deadline.
+	 * The workflow-owned per-attempt deadline in milliseconds (`0..MAX_TIMER_MS`) — PERSISTED
+	 * (mirrors {@link TaskDefinition.timeout} / {@link TaskSnapshot.timeout}). Zero or
+	 * `undefined` means no deadline.
 	 */
 	readonly timeout: number | undefined
+	/** The last accepted reporter claim, absent while pending. */
+	readonly activity: TaskActivity | undefined
+	/** The effective host-safe silence window (`1..MAX_TIMER_MS`), or `undefined` when disabled. */
+	readonly silence: number | undefined
+	/** Whether no report or pulse was accepted during the current silence window. */
+	readonly silent: boolean
+	/** Whether this task's cooperative execution gate is paused. */
+	readonly paused: boolean
+	/** This task's own cancellation signal; running/pending {@link stop} or {@link skip} fires it. */
+	readonly signal: AbortSignal
 	start(): void
-	complete(value: unknown): void
-	fail(error: unknown): void
+	complete(value: JSONValue): void
+	fail(error: TaskFailure): void
 	skip(): void
 	stop(): void
+	/**
+	 * Replace the complete observable activity of this running task.
+	 *
+	 * @param input - The complete operations, progress, and constraints replacement
+	 * @returns The accepted immutable frame; `MUTATION` for invalid input or `TRANSITION` when not running
+	 */
+	report(input: TaskActivityInput): Result<TaskActivity, WorkflowError>
+	/**
+	 * Confirm liveness without replacing the current operations, progress, or constraints.
+	 *
+	 * @returns `true` when committed, or `false` when the task is not running
+	 */
+	pulse(): boolean
+	/** Suspend this task's cooperative gate while pending or running; idempotent. */
+	pause(): void
+	/** Continue this task's cooperative gate; idempotent. */
+	resume(): void
+	/**
+	 * Park until this task is not paused.
+	 *
+	 * @returns A promise that resolves once the task gate is released
+	 */
+	wait(): Promise<void>
 	/**
 	 * Apply a validated declarative patch to SELF (`name` / `description`).
 	 *
@@ -823,8 +953,9 @@ export interface TaskInterface {
  * - **Override.** `skip` / `stop` (AGENTS §10) FORCE the phase's status, overriding the
  *   derived value (e.g. skipping a whole phase); the override survives a snapshot.
  * - **Observable (AGENTS §13).** The owned {@link emitter} ({@link PhaseEventMap}) fires
- *   `start` / `complete` / `fail` / `stop` on a derived-status change; the emitter isolates a
- *   listener throw and routes it to its `error` handler (the `error` option).
+ *   `start` / `complete` / `fail` / `pause` / `resume` / `stop` after the corresponding
+ *   status or runtime-gate change; the emitter isolates a listener throw and routes it to
+ *   its `error` handler (the `error` option).
  * - **Runtime lifecycle (AGENTS §10).** `pause` / `resume` / `wait` mirror
  *   {@link WorkflowInterface.pause} / `resume` / `wait`, scoped to this phase — a driving
  *   {@link WorkflowRunnerInterface.execute} gates a task's own pre-dispatch on BOTH the
@@ -1020,14 +1151,15 @@ export interface PhaseInterface {
  * - **Children.** `phases` is the lean {@link PhaseManagerInterface} (AGENTS §9);
  *   `phase(id)` / `phases().phases()` read in positional order. `results` collects ALL
  *   tasks' results across every phase (the workflow tier of the result tree).
- * - **Override.** `skip` / `stop` (AGENTS §10) FORCE the workflow's status; the override
- *   survives a snapshot.
+ * - **Override.** `skip` / `stop` (AGENTS §10) FORCE the workflow's status; `complete`
+ *   may force only a task-free, otherwise-pending tree. The override survives a snapshot.
  * - **Snapshot.** `snapshot()` serializes the whole live tree to a {@link WorkflowSnapshot}
  *   (pure JSON — structure + each node's status + recorded results + positional order);
  *   {@link restoreWorkflow} rebuilds an equivalent live tree.
  * - **Observable (AGENTS §13).** The owned {@link emitter} ({@link WorkflowEventMap}) fires
- *   `start` / `complete` / `fail` / `stop` on a derived-status change; the emitter isolates a
- *   listener throw and routes it to its `error` handler (the `error` option).
+ *   `start` / `complete` / `fail` / `pause` / `resume` / `stop` after the corresponding
+ *   status or runtime-gate change; the emitter isolates a listener throw and routes it to
+ *   its `error` handler (the `error` option).
  */
 export interface WorkflowInterface {
 	readonly emitter: EmitterInterface<WorkflowEventMap>
@@ -1077,9 +1209,9 @@ export interface WorkflowInterface {
 	 * FORCE this workflow to `completed` (AGENTS §10), overriding the derived value.
 	 *
 	 * @remarks
-	 * A NO-OP unless `status` is `pending` — its ONLY legitimate use is settling a vacuously
-	 * DONE tree (no work happened), mirroring the runner's own gate. Never overrides a real
-	 * `completed` / a bail-true `failed` / a `stopped` / a derived `skipped`.
+	 * A NO-OP unless `status` is `pending` and the tree is genuinely vacuous: zero phases or
+	 * every phase contains zero tasks. Its ONLY legitimate use is settling an executed no-op
+	 * tree. It never overrides pending work or any started/terminal state.
 	 */
 	complete(): void
 	/**
@@ -1113,16 +1245,15 @@ export interface WorkflowInterface {
 	 */
 	resume(): void
 	/**
-	 * Tear this workflow down (AGENTS §10) — a TERMINAL teardown: aborts {@link signal},
-	 * `stop`s every non-terminal live phase (so any engine parked on a phase's own gate
-	 * unparks and the tree lands coherent), forces the `stop` override on THIS workflow if
-	 * it is not already terminal, resolves any parked {@link wait} waiter, and marks
-	 * {@link destroyed}; idempotent.
+	 * Tear this workflow down (AGENTS §10) — an atomic TERMINAL teardown: mark
+	 * {@link destroyed}, pin non-terminal workflow/phase overrides to `stopped`, stop every
+	 * non-terminal task, release gates and liveness resources, abort {@link signal}, then
+	 * destroy task, phase, and workflow emitters in ownership order; idempotent.
 	 *
 	 * @remarks
-	 * After `destroy`, every structural mutator (`add` / `remove` / `move` / `update` /
-	 * `patch`) and `pause` / `resume` reject (a `Result` failure) or no-op — never throws
-	 * for calling `destroy` itself twice.
+	 * {@link destroyed} is set before final events, so reentrant mutation is refused and a
+	 * recursive `destroy` is a no-op. Already-terminal genuine completed/failed state is
+	 * preserved, and state/snapshots remain inspectable after emitter resources are destroyed.
 	 *
 	 * @example
 	 * ```ts
@@ -1359,11 +1490,11 @@ export interface PhaseManagerInterface {
 // not re-implement status, concurrency, retries, or abort. Phases run SEQUENTIALLY (a
 // plain await loop); a phase's tasks run CONCURRENTLY through ONE substrate
 // `createRunner`/`Queue` per phase (concurrency = `PhaseDefinition.concurrency`). A task
-// is dispatched BY NAME through the behavior registries; a no-handler task auto-completes.
+// is dispatched through its construction-resolved handler; only an omitted-`run` task
+// auto-completes as a deliberate no-op.
 // The `bail` policy maps onto the substrate Runner's fail-fast (`bail: true`) vs settle-all
 // (`bail: false`). Abort / Timeout / Budget fold per run via `AbortSignal.any`, exactly as
-// the agent runtime folds its bounds. The `agent` task form is W-c2 — until then it routes
-// to the same no-handler auto-complete path, so adding it is a clean third branch.
+// the agent runtime folds its bounds. Tool and agent adaptation remains outside core.
 
 /**
  * A registered workflow function — the behavior a `function`-form
@@ -1379,7 +1510,9 @@ export interface PhaseManagerInterface {
  * should honour `controller.signal` (a workflow-level abort / timeout / budget, or — under
  * `bail: true` — a sibling's failure, fires it) so a cancel stops it promptly.
  */
-export type WorkflowFunction = (controller: TaskControllerInterface) => Promise<unknown> | unknown
+export type WorkflowFunction = (
+	controller: TaskControllerInterface,
+) => Promise<JSONValue> | JSONValue
 
 /**
  * The `function`-task behavior registry — workflow function names mapped to their
@@ -1387,9 +1520,10 @@ export type WorkflowFunction = (controller: TaskControllerInterface) => Promise<
  *
  * @remarks
  * A live {@link TaskInterface} resolves its `run` name against this registry ONCE at
- * construction into its {@link TaskInterface.handler}. A name absent from the registry (or
- * an omitted `run`) is the no-handler case — the task AUTO-COMPLETES (the ROADMAP rule). A
- * plain record (not a manager) — the registry is a lookup, with no lifecycle of its own.
+ * construction into its {@link TaskInterface.handler}. An omitted `run` is the deliberate
+ * no-op case. A present name absent from the registry remains inspectable but makes the tree
+ * non-drivable until restored with a matching handler. A plain record (not a manager) — the
+ * registry is a lookup, with no lifecycle of its own.
  */
 export type WorkflowFunctions = Readonly<Record<string, WorkflowFunction>>
 
@@ -1398,26 +1532,49 @@ export type WorkflowFunctions = Readonly<Record<string, WorkflowFunction>>
  * cancellation, its input, its lineage, and read-UP access to the result tree.
  *
  * @remarks
- * A NEW, lean handle (NOT the runner `Controller` — it carries no `spawn` / `wait`; a
- * workflow task is a leaf of the declarative tree, not a fan-out unit). It exposes:
- * - `signal` — the task's folded cancellation: fires on a workflow-level `abort` /
- *   `timeout` / `budget` ceiling, or — under `bail: true` — when a sibling task fails (the
- *   runner aborts the in-flight siblings). A handler races its work against it.
+ * A NEW, lean handle (NOT the runner `Controller` — it carries no `spawn`; a workflow task
+ * is a leaf of the declarative tree, not a fan-out unit). It exposes:
+ * - `signal` — this attempt's folded cancellation: its per-attempt deadline, task
+ *   stop/skip, workflow abort/timeout/budget/destroy, or a sibling fail-fast.
  * - `aborted` — whether `signal` has fired.
  * - `input` — the task's `metadata` bag (the open consumer payload from its
  *   {@link TaskInput}); `{}` when none.
  * - `task` — the task's full {@link TaskContext} (so `task.phase` / `task.phase.workflow`
  *   navigate UP the lineage).
+ * - `wait()` — a cooperative checkpoint for the workflow, phase, and task pause gates.
  * - `results()` — every settled task's {@link TaskResult} across already-finished phases,
  *   so a `function` task can read an earlier phase's output (the W-b result tree, read-only).
  */
 export interface TaskControllerInterface {
-	/** Fires on a workflow-level abort / timeout / budget, or a sibling failure under `bail: true`. */
+	/** Fires on this attempt's deadline, task stop/skip, run cancellation, or sibling fail-fast. */
 	readonly signal: AbortSignal
 	readonly aborted: boolean
 	/** The task's open `metadata` bag (its {@link TaskInput} payload); `{}` when none. */
-	readonly input: Readonly<Record<string, unknown>>
+	readonly input: JSONRecord
 	readonly task: TaskContext
+	/** The one-based persisted launch represented by this handle. */
+	readonly attempt: number
+	/** Whether the workflow, phase, or task cooperative gate is currently paused. */
+	readonly paused: boolean
+	/**
+	 * Replace this running task's complete observable activity.
+	 *
+	 * @param input - The complete operations, progress, and constraints replacement
+	 * @returns The accepted frame, or a `TRANSITION` failure after ownership is lost or this attempt aborts
+	 */
+	report(input: TaskActivityInput): Result<TaskActivity, WorkflowError>
+	/**
+	 * Confirm liveness without replacing current activity.
+	 *
+	 * @returns `true` when committed, or `false` after ownership is lost or this attempt aborts
+	 */
+	pulse(): boolean
+	/**
+	 * Cooperatively park while any workflow, phase, or task gate is paused, or until cancelled.
+	 *
+	 * @returns A promise that resolves when every applicable gate is open or the signal aborts
+	 */
+	wait(): Promise<void>
 	/** Every settled task's result across already-finished phases — the result tree, read-only. */
 	results(): readonly TaskResult[]
 }
@@ -1436,11 +1593,55 @@ export interface TaskControllerInterface {
  * settled task across all phases, in positional order — the same array `workflow.results()`
  * yields). Returning the live `workflow` (not just a snapshot) keeps the entity tree the
  * source of truth — the runner adds only the convenience `status` / `results` projections.
+ * A scheduler or other engine-infrastructure failure rejects after the runner coherently
+ * stops remaining work and attempts final persistence.
  */
 export interface WorkflowResult {
 	readonly workflow: WorkflowInterface
 	readonly status: WorkflowStatus
 	readonly results: readonly TaskResult[]
+	/** Whether the returned final state is stored; omitted when no store was supplied. */
+	readonly durable?: boolean
+	/** The first required persistence failure; omitted when none occurred. */
+	readonly fault?: WorkflowFault
+}
+
+/** A runner-owned durability boundary. */
+export type WorkflowCheckpoint = 'initial' | 'attempt' | 'settlement' | 'final'
+
+/** A normalized persistence failure surfaced as workflow result data. */
+export interface WorkflowFault {
+	readonly origin: 'persistence'
+	readonly checkpoint: WorkflowCheckpoint
+	readonly message: string
+	readonly task?: string
+	readonly attempt?: number
+}
+
+/**
+ * The advanced run-local durability coordinator normally composed by
+ * {@link WorkflowRunnerInterface.execute} when `store` is supplied.
+ */
+export interface WorkflowPersistenceInterface {
+	/** The first required checkpoint failure, if one occurred. */
+	readonly fault: WorkflowFault | undefined
+	/**
+	 * Make the latest state durable at one required boundary.
+	 *
+	 * @param checkpoint - The required durability boundary
+	 * @param task - The task owning an attempt or settlement
+	 * @param attempt - The persisted one-based attempt number
+	 * @returns Whether the latest live state reached the store
+	 */
+	checkpoint(
+		checkpoint: WorkflowCheckpoint,
+		task?: TaskInterface,
+		attempt?: number,
+	): Promise<boolean>
+	/** Detach observers and make the final live state durable. */
+	finalize(): Promise<boolean>
+	/** Stop observing the live workflow tree; idempotent. */
+	detach(): void
 }
 
 /**
@@ -1464,23 +1665,19 @@ export interface WorkflowResult {
  * {@link TaskControllerInterface.signal} fires) and HALTS the run — the remaining tasks
  * and phases are `skip`ped and the workflow settles `stopped`.
  * - `signal` — an external cancellation (a caller `AbortController`).
- * - `timeout` — a whole-run deadline in milliseconds. A non-positive value (`0` or negative)
- *   ⇒ NO deadline (the runner arms an `@orkestrel/timeout` `TimeoutInterface`
- *   only when `timeout > 0`).
+ * - `timeout` — a whole-run deadline in milliseconds. A non-positive, non-finite, or
+ *   over-`MAX_TIMER_MS` value means no deadline.
  * - `budget` — a whole-run cost ceiling (a {@link BudgetInterface} over {@link TokenUsage}
  *   — its `signal` fires when a task-reported usage crosses `max`); the runner folds its
  *   `signal` and `start`s it. (A `max: 0` budget is exhausted from its first `start`, so it
  *   cancels the run at entry — a DIFFERENT primitive from the `timeout: 0` "no deadline" case.)
  *
- * The engine itself carries NO nesting bookkeeping — the depth / cycle guard for a nested
- * `agent` → workflow-tool → workflow chain lives entirely in the OPT-IN adapter factories
- * shipped by `@orkestrel/tool`, closed over their own `depth` / `ancestry`, never threaded
- * through `execute`'s options.
  */
 export type WorkflowRunOptions = WorkflowOptions & {
 	readonly signal?: AbortSignal
 	readonly timeout?: number
 	readonly budget?: BudgetInterface<TokenUsage>
+	readonly store?: WorkflowStoreInterface
 }
 
 /**
@@ -1490,9 +1687,7 @@ export type WorkflowRunOptions = WorkflowOptions & {
  * @remarks
  * The runner is a PURE engine — it carries no `functions` / `tools` / `agents` registry
  * (each live task already resolved its own handler at construction from
- * {@link WorkflowOptions.functions}); wiring a `function`-form task to a tool or an agent is
- * an OPT-IN concern of the `@orkestrel/tool` package's adapter factories, which a caller
- * composes into its OWN `functions` registry.
+ * {@link WorkflowOptions.functions}).
  * - `scheduler` — the {@link SchedulerInterface} that paces the tree (a cooperative
  *   `yield` between phases). Omitted ⇒ the shipped cross-environment default
  *   ({@link createScheduler}).
@@ -1523,8 +1718,8 @@ export interface WorkflowRunnerOptions {
  * {@link WorkflowOptions.functions}) and each phase's `concurrency` (so there is no
  * separately-supplied workflow to drift from the definition). The freshly-built live tree is
  * returned in {@link WorkflowResult.workflow}. The runner carries NO registry of its own — it
- * simply invokes each task's OWN {@link TaskInterface.handler}; a task with no handler
- * AUTO-COMPLETES. The runner DRIVES the live entity (`start` → `complete` / `fail`), never
+ * simply invokes each task's OWN {@link TaskInterface.handler}; an omitted `run` is the only
+ * auto-completing no-op. The runner DRIVES the live entity (`start` → `complete` / `fail`), never
  * re-implementing status. The `bail` policy maps onto the substrate's fail-fast (`bail: true`
  * — the first failure aborts in-flight siblings and skips the rest) vs settle-all (`bail:
  * false` — failures are recorded and the run finishes). The {@link WorkflowOptions} half of
@@ -1562,9 +1757,9 @@ export interface WorkflowRunnerInterface {
 	 * **Programmer-error exception (AGENTS §12).** A PATHOLOGICAL `definition` (e.g. a
 	 * duplicate phase or task `id`) THROWS SYNCHRONOUSLY at construction — before any phase
 	 * runs, and before the returned `Promise` is even created — rather than resolving a
-	 * failed/partial {@link WorkflowResult}. This is the one exception to the "resolves,
-	 * never rejects" contract above: a malformed definition is a programmer-timing error, not
-	 * a runtime outcome to report through the result tree.
+	 * failed/partial {@link WorkflowResult}. Unexpected scheduler or engine-infrastructure
+	 * failures may reject asynchronously after remaining work is stopped, swept, and final
+	 * persistence is attempted. Neither case is a domain task outcome to disguise as a result.
 	 *
 	 * @param definition - The {@link WorkflowDefinition} to build the live tree from and drive
 	 * @param options - The construction options ({@link WorkflowOptions}: `on` / `bail` /
@@ -1580,10 +1775,11 @@ export interface WorkflowRunnerInterface {
 	 * The entity itself is now the single control surface (no separate run handle):
 	 * `createWorkflow` mints the live tree, this overload drives it, and the caller
 	 * controls the SAME entity mid-run via its own `pause` / `resume` / `add` / `stop` /
-	 * `destroy` (AGENTS §10). Requires `workflow.status === 'pending'` and
-	 * `!workflow.destroyed` — otherwise this is a programmer-timing error and it THROWS a
-	 * `TRANSITION` {@link import('./errors.js').WorkflowError} (AGENTS §12) rather than
-	 * silently no-opping or building a second tree. Once accepted, phases run
+	 * `destroy` (AGENTS §10). Requires `workflow.status === 'pending'`,
+	 * `!workflow.destroyed`, and no prior execution claim. A process-local object-identity claim
+	 * shared by every runner instance is acquired synchronously and never released, so a same-object
+	 * call throws a `TRANSITION` {@link import('./errors.js').WorkflowError} even before an
+	 * asynchronous status change. Once accepted, phases run
 	 * SEQUENTIALLY and, within each phase, tasks CONCURRENTLY — byte-identical observable
 	 * semantics to the `definition`-form `execute` — except the phase loop RE-READS the
 	 * live `workflow.phases` / each phase's live `tasks` every iteration (a cursor over
@@ -1600,12 +1796,10 @@ export interface WorkflowRunnerInterface {
 	 * {@link import('./factories.js').restoreWorkflow} behaves according to whether a
 	 * {@link WorkflowFunctions} registry was supplied at that build: WITH a registry,
 	 * each task's `run` name is re-resolved against it, so a matched task carries a real
-	 * handler and this overload actually DISPATCHES it, resuming real work. WITHOUT a
-	 * registry (or when a task's `run` name has no match in it), the task's
-	 * {@link TaskInterface.run} is `undefined` — the no-handler rule then AUTO-COMPLETES
-	 * that task (no dispatch occurs). A PARTIALLY-run restored tree (any live phase/task
-	 * not `pending`) is rejected outright by the `workflow.status === 'pending'` guard
-	 * above — only a wholly `pending` restored tree is drivable.
+	 * handler and this overload actually DISPATCHES it, resuming real work. Without a registry,
+	 * the persisted {@link TaskInterface.run} remains visible for inspection while `handler` is
+	 * `undefined`, and this overload rejects the tree before dispatch. A quiescent recovered tree may contain
+	 * terminal work plus pending work; a tree with any `running` leaf is not drivable.
 	 *
 	 * @param workflow - The live {@link WorkflowInterface} to drive (its own entity surface —
 	 *   `pause` / `resume` / `add` / `stop` / `destroy` — is the caller's control seam)
@@ -1627,10 +1821,9 @@ export interface WorkflowRunnerInterface {
 // persists). UNLIKE the twins there is no `active` / `switch` pointer — nothing in the
 // workflow domain renders "the current workflow" the way `AgentContext.build()` renders the
 // active conversation/workspace, so carrying it would be a speculative extra (AGENTS §21).
-// The workflow-specific nuance the twins don't have: a restored tree is INERT without
-// handlers, so the manager also carries an optional `functions` registry threaded into every
-// `createWorkflow` / `restoreWorkflow` it performs — including at `open` — so a hydrated
-// workflow is immediately RUNNABLE, not just a dead snapshot mirror.
+// The workflow-specific nuance the twins don't have: the manager may carry a `functions`
+// registry threaded into every create/restore. Without it, hydrated named work remains an
+// inspectable exact state mirror and the runner refuses execution.
 
 /**
  * Options for `createWorkflowManager` — the optional durable {@link WorkflowStoreInterface}
@@ -1646,9 +1839,8 @@ export interface WorkflowRunnerInterface {
  * every {@link import('./factories.js').createWorkflow} ({@link WorkflowManagerInterface.add})
  * and every {@link import('./factories.js').restoreWorkflow}
  * ({@link WorkflowManagerInterface.open}'s hydration path) the manager performs — so a
- * hydrated workflow carries real resolved `handler`s and is RUNNABLE, not merely a restored
- * state mirror. Omitted ⇒ every minted/hydrated task resolves no `handler` (the no-handler
- * rule — it auto-completes if driven).
+ * hydrated workflow carries real resolved `handler`s and is RUNNABLE. Omitted ⇒ named work
+ * remains inspectable but cannot be driven; omitted-`run` tasks remain deliberate no-ops.
  */
 export interface WorkflowManagerOptions {
 	/**
@@ -1664,7 +1856,7 @@ export interface WorkflowManagerOptions {
 	 * (`add`, via {@link import('./factories.js').createWorkflow}) or hydrates (`open`'s
 	 * registry-miss path, via {@link import('./factories.js').restoreWorkflow}) — so a
 	 * hydrated workflow is RUNNABLE, its tasks carrying real resolved `handler`s. Omitted ⇒
-	 * every task resolves no `handler` (the no-handler rule).
+	 * named tasks remain inspectable but execution rejects them.
 	 */
 	readonly functions?: WorkflowFunctions
 }
