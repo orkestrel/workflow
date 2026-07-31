@@ -34,7 +34,7 @@ The MCP server process owns continued execution; the calling client receives a d
 
 ### Why workflow is not amended
 
-`TaskSnapshot.attempts` is documented "never reset by recovery" (`src/core/types.ts:443`), and the runner's required `'attempt'` checkpoint resolves before the handler is constructed. At the instant any irreversible effect becomes possible, `(workflow.id, task.id, attempts)` is already durable, already unique for that launch, and already derivable inside a handler from `controller.task.phase.workflow.id`, `controller.task.id`, and `controller.attempt` — with zero API growth. `WorkflowStoreInterface.set` is a blind whole-snapshot upsert with no revision and no compare-and-set, so nothing inside workflow could fence a claim written there; a claim field would tell a second restorer that a unit is re-attachable while the first restorer still holds it. And one replaceable claim slot is structurally incapable of holding both a timed-out attempt's still-live unit and a later attempt's new one. A per-attempt unit registry can. That registry is `@orkestrel/supervisor`.
+`TaskSnapshot.attempts` is documented "never reset by recovery" (`src/core/types.ts:443`), and the runner's required `'attempt'` checkpoint resolves before the handler is constructed. At the instant any irreversible effect becomes possible, `(workflow.id, phase.id, task.id, attempts)` is already durable, already unique for that launch, and already derivable inside a handler from `controller.task.phase.workflow.id`, `controller.task.phase.id`, `controller.task.id`, and `controller.attempt` — with zero API growth. The phase is not optional in that key: a task id is only "Unique task id within its phase" (`src/core/shapers.ts:37`), and workflow's own suite builds three phases each holding a task with id `'t'` (`tests/src/core/phases/PhaseManager.test.ts:13-15`), so a three-part key would collide two concurrent tasks onto one row. `TaskContext.phase` already carries the lineage (`src/core/types.ts:145-147`), so the fourth component costs nothing. `WorkflowStoreInterface.set` is a blind whole-snapshot upsert with no revision and no compare-and-set, so nothing inside workflow could fence a claim written there; a claim field would tell a second restorer that a unit is re-attachable while the first restorer still holds it. And one replaceable claim slot is structurally incapable of holding both a timed-out attempt's still-live unit and a later attempt's new one. A per-attempt unit registry can. That registry is `@orkestrel/supervisor`.
 
 If a future consumer ever forces executor-written per-attempt identity into workflow, it ships as `readonly handle?: JSONRecord` on `TaskOperation`, written through the existing `report` path — one field family, one mechanism, no new checkpoint member, no boolean that must lie.
 
@@ -62,7 +62,7 @@ Grounded in current local source, types, guide, and real tests — not in planne
 | Sequential phases, concurrent tasks, optional phase concurrency and bail policy           | The server can expose deterministic structure without inventing a DAG.                                                               |
 | Live pause/resume/stop, task activity, events, folded signals, deadlines, retries         | MCP controls can project existing mechanisms rather than duplicating them.                                                           |
 | Owned exact-JSON snapshots, restore, explicit recovery, consumed attempts                 | A reconnect can inspect authoritative durable state; recovery never silently replenishes retries.                                    |
-| `TaskSnapshot.attempts` never reset by recovery                                           | `(workflow.id, task.id, attempts)` is a durable, unique, already-published join key for one launch.                                  |
+| `TaskSnapshot.attempts` never reset by recovery, and a task id is unique within its phase | `(workflow.id, phase.id, task.id, attempts)` is a durable, unique, already-published join key for one launch.                        |
 | Initial, attempt, settlement, and final persistence checkpoints with one coalesced writer | Handler dispatch follows a required durable attempt checkpoint; distributed fencing belongs to the supervisor record.                |
 | `WorkflowStoreInterface.set` is a blind whole-snapshot upsert with no revision            | Workflow cannot fence itself. A lease must live outside it, over a store that has compare-and-set semantics.                         |
 | Same-object execution claim through a process-local `WeakSet`                             | One object cannot be driven twice locally, but distributed duplicate launch is still possible.                                       |
@@ -108,9 +108,14 @@ One published package with a `core` and a `server` environment. The lease lives 
 ### Identity and the fenced record
 
 ```ts
-/** The durable join key for one launch — exactly workflow's own `(workflow.id, task.id, attempts)`. */
+/**
+ * The durable join key for one launch — exactly workflow's own
+ * `(workflow.id, phase.id, task.id, attempts)`. `phase` is required because a task id is
+ * unique only within its phase.
+ */
 export interface UnitContext {
 	readonly workflow: string
+	readonly phase: string
 	readonly task: string
 	readonly attempt: number
 }
@@ -126,27 +131,51 @@ export interface Lease {
 /** How a reconciled unit is to be resumed — the three outcomes, never two. */
 export type RecoveryMode = 'reattach' | 'relaunch' | 'quarantine'
 
-/** A unit's live mode. Intent-without-launch is derived from an absent `identity`, never stored twice. */
-export type UnitStatus = 'running' | 'settled' | 'quarantined'
-
-/** The durable per-attempt row — one row per launch, never one replaceable slot per task. */
-export interface UnitSnapshot {
+/**
+ * What every durable per-attempt row carries whatever its status — one row per launch,
+ * never one replaceable slot per task.
+ */
+export interface UnitRecord {
+	/**
+	 * The correlation token: a pure derivation of `context`, committed in the intent row
+	 * before any effect is possible, and handed to the executor so a provider can echo it.
+	 * It is the only address this unit has inside the indeterminate interval.
+	 */
 	readonly id: string
 	readonly context: UnitContext
 	readonly executor: string
 	readonly epoch: number
 	readonly revision: number
-	readonly status: UnitStatus
 	readonly payload: JSONRecord
 	/** The provider-minted native identity; absent until the identity commit lands. */
 	readonly identity?: string
-	/** The terminal external outcome, reusing workflow's JSON-safe failure shape. */
-	readonly result?: Result<JSONValue, TaskFailure>
-	/** Why this unit was quarantined; present only when `status` is `quarantined`. */
-	readonly reason?: string
 	readonly created: number
 	readonly updated: number
 }
+
+/** Launched, with no terminal external outcome yet. Intent-without-launch is an absent `identity`. */
+export interface RunningUnit extends UnitRecord {
+	readonly status: 'running'
+}
+
+/** The external outcome is durable, so it is always present. */
+export interface SettledUnit extends UnitRecord {
+	readonly status: 'settled'
+	/** The terminal external outcome, reusing workflow's JSON-safe failure shape. */
+	readonly result: Result<JSONValue, TaskFailure>
+}
+
+/** The launch outcome is undeterminable, so a reason is always present. Terminal, never a retry. */
+export interface QuarantinedUnit extends UnitRecord {
+	readonly status: 'quarantined'
+	readonly reason: string
+}
+
+/** The durable per-attempt row, discriminated on the status axis. */
+export type UnitSnapshot = RunningUnit | SettledUnit | QuarantinedUnit
+
+/** A unit's live mode — derived from the row union, never declared twice. */
+export type UnitStatus = UnitSnapshot['status']
 
 /** The whole durable record for one workflow id — the lease plus every attempt it ever authorized. */
 export interface RunSnapshot {
@@ -156,7 +185,9 @@ export interface RunSnapshot {
 }
 ```
 
-Two units of the same `(workflow, task)` that carry the **same** `identity` are a reattachment; two that carry **different** identities are two external effects. Nothing else needs to be stored to say so, and "no duplicate external unit" is therefore a property the record proves rather than a claim a field asserts.
+A `UnitSnapshot` is a union on `status`, not a bag of optional fields, because the three statuses carry genuinely different data: only a settled unit has a `result`, only a quarantined unit has a `reason`, and a running unit has neither. A flat shape would admit `settled` with no outcome and `quarantined` with no reason — states the record must be incapable of expressing.
+
+Two units of the same `(workflow, phase, task)` that carry the **same** `identity` are a reattachment; two that carry **different** identities are two external effects. Nothing else needs to be stored to say so. What the record therefore proves is narrower than "no duplicate external unit": it proves that **no duplicate is unrecorded** — every launch the supervisor authorized is countable, every recorded identity is attributable to exactly one authorized launch, and the count of distinct identities can never exceed the count of authorized launches. It cannot prove that no duplicate external effect exists, because an effect accepted inside the indeterminate interval below may never be recorded at all. Detectable and bounded is the guarantee; exactly-once is not.
 
 ### Observations and the journal
 
@@ -183,12 +214,20 @@ export interface Observation {
 
 /** The bounded redacted record of what executors saw, keyed by unit. */
 export interface JournalInterface {
-	append(context: UnitContext, observation: Observation): Promise<Result<void, SupervisorError>>
+	/**
+	 * Append one observation under the writer's fence; `FENCED` when the lease epoch or the
+	 * unit revision has moved. Writing requires the held `lease` and the current row, so a
+	 * stale epoch cannot publish even though `SupervisorInterface.journal` is public.
+	 */
+	append(lease: Lease, unit: UnitSnapshot, observation: Observation): Promise<Result<void, SupervisorError>>
+	/** Reads are unfenced: any observer may tail any unit's bounded history. */
 	entries(context: UnitContext, limit?: number): Promise<readonly Observation[]>
 	/** Drop entries older than `before`; returns how many were dropped. */
 	prune(before: number): Promise<number>
 }
 ```
+
+`append` takes the lease and the current row rather than a bare `UnitContext` because C1 requires that observations be accepted "only while epoch and revision match", and a method given neither cannot enforce that. Passing the row carries its `context`, `epoch`, and `revision` together, so the journal fences on exactly the values the unit row was written at, with no second copy to drift. Reads stay unfenced on purpose — a browser that can never hold a lease must still be able to tail the record.
 
 There is no `Monitor` class and no journal entry wrapper. `TaskActivity` already **is** the milestone type: `TaskOperation` is "commands run / files changed" and `TaskConstraint` is "awaiting approval / rate limited". The journal stores `Observation`s directly; a wrapper carrying only `{ context, observation }` would add no boundary, invariant, composition, translation, or lifecycle, so it does not exist. The one-subscription-per-epoch invariant belongs to the MCP subscription layer, not here.
 
@@ -212,8 +251,22 @@ export type ExecutionResult = Result<JSONValue, TaskFailure>
 /** What an executor receives. Deliberately NOT the live `TaskControllerInterface`. */
 export interface ExecutionInput {
 	readonly unit: UnitContext
+	/** The correlation token from the committed intent row; pass it to the provider so it can echo it. */
+	readonly token: string
 	readonly payload: JSONRecord
 	readonly signal: AbortSignal
+}
+
+/**
+ * How an executor addresses one external unit. `token` is the supervisor's correlation token
+ * and always exists, because the intent row committed before any effect was possible;
+ * `identity` is the provider-minted native id and exists only after the identity commit.
+ * Inside the indeterminate interval the token is the only address there is — which is why
+ * these operations take the pair and never a bare native identity.
+ */
+export interface ExecutionContext {
+	readonly token: string
+	readonly identity?: string
 }
 
 /**
@@ -225,16 +278,18 @@ export interface ExecutorInterface {
 	readonly name: string
 	launch(input: ExecutionInput): Promise<Result<ExecutionInterface, SupervisorError>>
 	/** Re-attach to an existing native session; absent ⇒ this executor can never reattach. */
-	attach?(identity: string, options?: ExecutionOptions): Promise<Result<ExecutionInterface, SupervisorError>>
+	attach?(context: ExecutionContext, options?: ExecutionOptions): Promise<Result<ExecutionInterface, SupervisorError>>
 	/** Authoritative liveness: `true` alive, `false` PROVEN absent, failure ⇒ undeterminable. */
-	probe?(identity: string): Promise<Result<boolean, SupervisorError>>
-	stop?(identity: string): Promise<Result<void, SupervisorError>>
-	steer?(identity: string, message: string): Promise<Result<void, SupervisorError>>
-	reply?(identity: string, request: string, message: string): Promise<Result<void, SupervisorError>>
+	probe?(context: ExecutionContext): Promise<Result<boolean, SupervisorError>>
+	stop?(context: ExecutionContext): Promise<Result<void, SupervisorError>>
+	steer?(context: ExecutionContext, message: string): Promise<Result<void, SupervisorError>>
+	reply?(context: ExecutionContext, request: string, message: string): Promise<Result<void, SupervisorError>>
 }
 ```
 
-`probe`'s three-valued shape is load-bearing. Success `true` is life, success `false` is **proof** of absence, and a failure is "cannot tell" — which is precisely the distinction C2 demands and precisely what a `boolean` alone would destroy. An executor that omits `probe` can never prove absence, so its interrupted units always quarantine. That is a feature: it makes fail-closed the default for any adapter that has not earned the right to relaunch.
+These operations take `ExecutionContext` rather than a native identity string because the one state the whole design exists to resolve — an intent row whose identity commit never landed — has no native identity to pass. If `probe` demanded a `string`, the crash-and-race matrix's central row would be unreachable and the record could never do better than quarantine there. With the pair, a provider that accepts the supervisor's correlation token as an idempotency key or session tag can be asked *"did the unit I authorized under this token ever start?"*, and the answer is authoritative.
+
+`probe`'s three-valued shape is load-bearing. Success `true` is life, success `false` is **proof** of absence, and a failure is "cannot tell" — which is precisely the distinction C2 demands and precisely what a `boolean` alone would destroy. An executor that omits `probe` can never prove absence, so its interrupted units always quarantine. So does an executor whose `probe` cannot answer from a token alone: asked about a unit with no `identity`, it returns a failure, which is "cannot tell", which is quarantine. That is a feature: it makes fail-closed the default for any adapter that has not earned the right to relaunch, and it keeps token-addressed probing an earned capability rather than an assumption about every provider.
 
 Capability absence is expressed by an absent optional method, not by a `capabilities` bag — a second label that could drift from the methods it describes. The uniform run-facing surface converts absence into a typed failure: `unit.steer(...)` on an executor without `steer` returns `failure(SupervisorError 'UNSUPPORTED')` and never pretends to succeed.
 
@@ -242,6 +297,8 @@ Capability absence is expressed by an absent optional method, not by a `capabili
 
 ```ts
 export interface UnitInterface {
+	/** The correlation token — durable since the intent row, and this unit's address before any identity exists. */
+	readonly id: string
 	readonly context: UnitContext
 	readonly executor: string
 	readonly epoch: number
@@ -299,7 +356,7 @@ export interface RunInterface {
 }
 
 /** The record-reconciled snapshot, produced BEFORE `recoverWorkflow` is applied. */
-export interface Reconciliation {
+export interface ReconcileResult {
 	readonly snapshot: WorkflowSnapshot
 	readonly units: readonly UnitInterface[]
 }
@@ -314,16 +371,29 @@ export interface SupervisorInterface {
 	/** Acquire a fresh fenced epoch for a workflow id; `CONFLICT` when a live epoch holds it. */
 	open(id: string): Promise<Result<RunInterface, SupervisorError>>
 	/** Decide reattach / relaunch / quarantine per live unit and project the snapshot. */
-	reconcile(snapshot: WorkflowSnapshot): Promise<Result<Reconciliation, SupervisorError>>
+	reconcile(snapshot: WorkflowSnapshot): Promise<Result<ReconcileResult, SupervisorError>>
 	destroy(): Promise<void>
 }
 
 export interface SupervisorStoreInterface {
-	/** Atomically acquire or renew the lease; `CONFLICT` when a live epoch holds it. */
-	acquire(id: string, options?: LeaseOptions): Promise<Result<Lease, SupervisorError>>
+	/**
+	 * Mint a fresh epoch for `id` on behalf of `owner`, in one transaction; `CONFLICT` when an
+	 * unexpired lease already holds it. `owner` is the value written into `Lease.owner`.
+	 */
+	acquire(id: string, owner: string, options?: LeaseOptions): Promise<Result<Lease, SupervisorError>>
+	/**
+	 * Extend the held lease's expiry at the SAME epoch, in one transaction; `FENCED` when the
+	 * epoch has moved. Separate from `acquire` because renewal must never mint a new epoch —
+	 * doing so would fence the renewing process's own live units.
+	 */
+	renew(lease: Lease, options?: LeaseOptions): Promise<Result<Lease, SupervisorError>>
 	/** Read the whole durable record for one workflow id. */
 	get(id: string): Promise<RunSnapshot | undefined>
-	/** Commit one unit row inside the lease's transaction; `FENCED` when the epoch moved. */
+	/**
+	 * In ONE transaction: re-read the lease row, confirm `lease.epoch` still holds it, then write
+	 * the unit row — `insert` at `revision` 1, compare-and-set on `revision` above it. `FENCED`
+	 * when the epoch moved, `CONFLICT` when an intent row for that token already exists.
+	 */
 	set(lease: Lease, unit: UnitSnapshot): Promise<Result<UnitSnapshot, SupervisorError>>
 	release(lease: Lease): Promise<void>
 	delete(id: string): Promise<void>
@@ -416,14 +486,16 @@ export interface ExecutionOptions {
 	readonly signal?: AbortSignal
 }
 
-export interface ProviderRequest {
+export interface ProviderInput {
 	readonly unit: UnitContext
+	/** The correlation token, so an adapter may pass it as the provider's idempotency key or session tag. */
+	readonly token: string
 	readonly payload: JSONRecord
 	readonly workspace: string
 }
 ```
 
-`createWorkflowFunction` is the **only** adapter. It derives `UnitContext` from `controller.task.phase.workflow.id`, `controller.task.id`, and `controller.attempt`; calls `run.launch`; drains `execution.events` into `controller.report` and `unit.observe`; awaits `execution.result`; calls `unit.settle`; then returns the `JSONValue` or throws so workflow records the `TaskFailure`. Everything capability-dependent stays behind the executor. There is no second adapter per executor and no executor-specific `WorkflowFunction`.
+`createWorkflowFunction` is the **only** adapter. It derives `UnitContext` from `controller.task.phase.workflow.id`, `controller.task.phase.id`, `controller.task.id`, and `controller.attempt`; calls `run.launch`; drains `execution.events` into `controller.report` and `unit.observe`; awaits `execution.result`; calls `unit.settle`; then returns the `JSONValue` or throws so workflow records the `TaskFailure`. Everything capability-dependent stays behind the executor. There is no second adapter per executor and no executor-specific `WorkflowFunction`.
 
 ## The four executors
 
@@ -446,7 +518,7 @@ The function executor mints its own identity at launch and commits it immediatel
 
 ### Provider — supervisor server
 
-`createProviderExecutor(provider, options)` over a provider-adapter contract, with three shipped implementations. The executor owns every process tree, every stream frame, and every kill. The adapter owns only translation:
+`createProviderExecutor(provider, options)` over a provider-adapter contract, with three proposed implementations. The executor owns every process tree, every stream frame, and every kill. The adapter owns only translation:
 
 ```ts
 export interface ProviderCommand {
@@ -464,11 +536,15 @@ export interface ProviderMessage {
 
 export interface ProviderInterface {
 	readonly name: string
-	launch(request: ProviderRequest): ProviderCommand
+	launch(input: ProviderInput): ProviderCommand
 	/** Re-attach to a native session; absent ⇒ no native reattach exists. */
-	attach?(identity: string): ProviderCommand
-	/** Authoritatively report whether a native session exists; absent ⇒ absence can never be proved. */
-	probe?(identity: string): ProviderCommand
+	attach?(context: ExecutionContext): ProviderCommand
+	/**
+	 * Authoritatively report whether a native session exists; absent ⇒ absence can never be proved.
+	 * An adapter whose provider can only be asked about its own `identity` returns no command when
+	 * `context.identity` is absent, which is "cannot tell", which is quarantine.
+	 */
+	probe?(context: ExecutionContext): ProviderCommand | undefined
 	/** Narrow one decoded frame; `undefined` ignores a forward-compatible unknown frame. */
 	observe(frame: unknown): Observation | undefined
 	/** Encode a steer/reply for the provider's live input channel; absent ⇒ `UNSUPPORTED`. */
@@ -476,7 +552,7 @@ export interface ProviderInterface {
 }
 ```
 
-Shipped: `createClaudeProvider`, `createCodexProvider`, `createCursorProvider`. Because the adapter never spawns, **only a process the provider executor launched may be killed by that executor**. A native supervisor's own processes are addressed through that supervisor's own commands, never by pid.
+Three adapters are proposed and none exists today: `createClaudeProvider`, `createCodexProvider`, `createCursorProvider`. Because the adapter never spawns, **only a process the provider executor launched may be killed by that executor**. A native supervisor's own processes are addressed through that supervisor's own commands, never by pid.
 
 | Provider/version evidence     | Preferred integration                                                                                                                                                                                                                                                                                                                                                                                                                                             | Fallback/limit                                                                                                                                                                 |
 | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -494,7 +570,7 @@ An agent turn holds no durable native session that survives process death, so th
 
 ### Human — the application
 
-A durable input request over `@orkestrel/terminal`'s prompt forms. `launch` calls `PromptInterface.park` and commits the returned `Ticket.id` as the native identity; the parked prompt emits a `request` observation carrying a `TaskConstraint` (which is what MCP projects as `input_required`), and the answer emits a `settlement` observation. `probe` consults `PromptInterface.pending`: present is life, an authoritative empty broker is proven absence, and an unreachable broker is undeterminable.
+A durable input request over `@orkestrel/terminal`'s prompt forms. `launch` calls `PromptInterface.park` and commits the returned `Ticket.id` as the native identity; the parked prompt emits a `request` observation carrying a `TaskConstraint` (which is what MCP projects as `input_required`), and the answer emits a `settlement` observation. `probe` consults `PromptInterface.pending`, and can answer from the correlation token alone because the executor parks the prompt tagged with it: a matching parked prompt is life, an authoritative broker holding none is proven absence, and an unreachable broker is undeterminable. That makes the human executor the one adapter that closes the indeterminate interval outright — the broker is ours, so it can be asked about a unit whose ticket id never committed.
 
 It lives in the application for the same dependency reason as the agent executor, plus one of its own: how long a question stays askable, and to whom, is product policy.
 
@@ -505,19 +581,25 @@ The human executor is the sharpest illustration of why a per-attempt registry wa
 Intent before effect. Nothing crosses the external boundary before the intent row commits.
 
 ```text
-1. W  the required 'attempt' checkpoint resolves true          [workflow, already ships]
-      ⇒ (workflow.id, task.id, attempts) is durable and unique
-2. S  ONE transaction: re-read the lease row, confirm the epoch,
+0. S  supervisor.open(id) — acquire ONE epoch for the whole run     [once, not per attempt]
+1. W  the required 'attempt' checkpoint resolves true               [workflow, already ships]
+      ⇒ (workflow.id, phase.id, task.id, attempts) is durable and unique
+      ⇒ the correlation token is derivable from it
+2. S  ONE transaction: re-read the lease row, confirm THIS epoch still holds it,
       insert the intent unit row (status 'running', no identity, revision 1)
-3. X  executor.launch(input) — the external boundary is crossed HERE and not before
+      ⇒ the token is now durable, and it is durable BEFORE any effect is possible
+3. X  executor.launch(input) — the external boundary is crossed HERE and not before,
+      carrying the token so the provider can echo it
 4. S  unit.identify(id) — the native identity commits under the SAME epoch, revision 2
 5. S  observations, settlement, and control are accepted only while
       the lease epoch and the unit revision both still match
 ```
 
+Steps 0 and 2 are **two commits, not one**, and C1's `S(epoch acquired + intent row) one commit` is satisfied as *epoch confirmation* plus intent insertion in one commit rather than epoch acquisition plus intent insertion. Acquisition cannot join step 2, and should not: one lease covers a whole run of many attempts, so minting an epoch per launch would fence every unit the same process already had in flight — each attempt would invalidate its predecessor. What actually has to be atomic is the property C1 exists to guarantee, and it is: `SupervisorStoreInterface.set` re-reads the lease row and compares the epoch inside the same transaction that inserts the intent row, so **an intent row can never commit under a lease the process no longer holds**. A lease that expired between step 0 and step 2 yields `FENCED` at step 2, before the boundary is crossed.
+
 The whole sequence lives in `RunInterface.launch`, which is the single place any of it may happen. **Absence of a unit row for attempt N proves no effect occurred**, which is what makes relaunch safe in that state and only in that state.
 
-A reattachment takes the same path with step 3 replaced: when the record already holds a reconciled re-attachable unit for the same `(workflow, task)`, `RunInterface.launch` commits the attempt-N+1 intent row **carrying that unit's existing identity** and adopts its `ExecutionInterface` instead of launching. Two rows, one identity, one external effect — visible in the record, derived rather than flagged.
+A reattachment takes the same path with step 3 replaced: when the record already holds a reconciled re-attachable unit for the same `(workflow, phase, task)`, `RunInterface.launch` commits the attempt-N+1 intent row **carrying that unit's existing identity** and adopts its `ExecutionInterface` instead of launching. Two rows, one identity, one external effect — visible in the record, derived rather than flagged.
 
 ## Recovery
 
@@ -545,7 +627,7 @@ await runner.execute(workflow, { signal, timeout })
 
 `StorageInterface` — the capability a driver passes into one transaction scope — already exposes everything a lease needs, inside that scope: `read`, `write`, an atomic `insert` that rejects `CONFLICT` when the key exists, `delete`, `keys`, `scan`, and `clear`, with the driver committing when the callback fulfills and rolling back when it rejects, and `commit` / `rollback` observable on `DatabaseEventMap`. `insert` is exactly a lease-acquire primitive. `DatabaseInterface.transaction(scope, options?)` hands the scope a `DatabaseStorageInterface`, and `SQLiteDriver` implements `transaction?` as a callback-scoped real `BEGIN` / `COMMIT` / `ROLLBACK`.
 
-**No amendment to `@orkestrel/database` is required.** `createDatabaseSupervisorStore` composes `acquire` as one transaction — `insert` the lease row, or `read` it and take over only when its `expiry` has passed — and `set` as one transaction that re-reads the lease, compares the epoch, and writes the unit row at `revision + 1` or fails `FENCED`.
+**No amendment to `@orkestrel/database` is required.** `createDatabaseSupervisorStore` composes `acquire` as one transaction — `insert` the lease row under the caller's `owner`, or `read` it and take over at a fresh epoch only when its `expiry` has passed — `renew` as one transaction that re-reads the lease, compares the epoch, and writes back a later `expiry` at the same epoch, and `set` as one transaction that re-reads the lease, compares the epoch, and then `insert`s the intent row or writes the unit row at `revision + 1`, failing `FENCED` when the epoch moved.
 
 `IndexedDBDriver` deliberately omits `transaction?`, because an `IDBTransaction` can auto-commit when the microtask queue drains and no callback could truthfully remain inside one native transaction. **So a browser can observe and drive a supervised run and can never hold a lease.** That is a design fact of the storage substrate, not an omission to be worked around, and the browser build of supervisor exposes `inspect` and the read side of the journal without `acquire`.
 
@@ -555,7 +637,7 @@ There is no exactly-once. Fencing prevents stale publication; it cannot undo an 
 
 > from the earliest instant `executor.launch` may have been accepted by the provider, to the instant the native identity commit for that unit is durable.
 
-Inside that interval a crash leaves an intent row with no identity, and the record honestly cannot say whether an effect occurred. Production policy chooses one of three answers and states which: provider idempotency keys, native recovery through a `probe` that can prove absence, or fail-closed quarantine. The supervisor's contribution is that the interval is *named, bounded, and observable* — not that it is closed.
+Inside that interval a crash leaves an intent row with no identity. The row is addressable — the correlation token committed before the boundary was crossed — so the interval can be *interrogated*, which is what `ExecutionContext` exists for. But it can only be *answered* by a provider that accepts that token; one that can be asked only about its own native id has nothing to be asked with, and the record honestly cannot say whether an effect occurred. Production policy chooses one of three answers and states which: provider idempotency keyed on the token, native recovery through a `probe` that can prove absence, or fail-closed quarantine. The supervisor's contribution is that the interval is *named, bounded, addressable, and observable* — not that it is closed.
 
 `RunInterface.launch` also cannot make a never-settling store Promise settle. A blocked required checkpoint blocks the run, and operators need a backend-specific health and shutdown policy outside both workflow core and supervisor core.
 
@@ -616,7 +698,7 @@ The projection never reconstructs truth by replaying notifications alone. Only t
 | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Crash before initial checkpoint                                | No accepted handle and no launch.                                                                                                                                        |
 | Crash after attempt checkpoint, before the intent commit        | No unit row exists for attempt N, which **proves** no effect occurred. Relaunch is safe within the remaining retry budget under a fresh epoch. **(C1)**                  |
-| Crash after the intent commit, before the identity commit       | The irreducible interval. `probe` proves life ⇒ reattach; proves absence ⇒ relaunch; cannot tell, or is absent ⇒ quarantine. **(C1, C2, C5)**                            |
+| Crash after the intent commit, before the identity commit       | The irreducible interval. The intent row carries the correlation token, so `probe` is called with `{ token }` and no `identity`: proves life ⇒ reattach; proves absence ⇒ relaunch; cannot answer from the token alone, fails, or is absent ⇒ quarantine. **(C1, C2, C5)** |
 | Restore applies `recoverWorkflow` before reconciliation         | Forbidden. Reconcile the supervisor record first, then recover; otherwise a re-attachable attempt's retry budget is spent. **(C3)**                                      |
 | A timed-out attempt leaves a live external unit                 | Attempt N's unit row stays `running` while attempt N+1 commits its own row. Both are addressable; the fence decides which may publish. **(C1)**                          |
 | External side effect occurs before the settlement checkpoint    | Recovery uses the recorded native identity and the application's idempotency key; neither workflow nor supervisor can prove exactly-once effects. **(C5)**               |
@@ -650,12 +732,12 @@ Serial where a unit depends on another's contract; parallel otherwise. One write
 | ---- | --------------------------------------------------------------------------------------------------------------------------------------- | -------------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | U0   | Close current Workflow parity: snapshot ownership, recovery, pause/activity, persistence faulting, real-clock scheduler coverage.        | `verifier` / Sonnet  | —          | All five workflow gates green; the shipped guide describes no future behavior.                                                                                       |
 | U1   | Scaffold `@orkestrel/supervisor` (core + server, configs, test projects, barrels) from `@orkestrel/scaffold` 0.0.13.                     | `builder` / Sonnet   | —          | `npm run check` and an empty `npm test` pass; no published behavior yet.                                                                                             |
-| U2   | `src/core/types.ts`: the whole contract above, plus TSDoc and naming conformance.                                                        | `implementer` / Opus | U1         | Every member is one word; no `kind`/`type` discriminant; no sentinel; `check` green on an implementation-free contract.                                               |
-| U3   | `errors.ts`, `validators.ts`, `helpers.ts`: `SupervisorError`, `isSupervisorError`, wire guards for `UnitSnapshot` / `RunSnapshot` / `Observation`, the unit-id derivation. | `codex` route `implementer` / Sol | U2 | Every guard is total and returns `false` off-shape for cycles, depth, and hostile prototypes; each is unit-tested.                                                    |
-| U4   | The lease module: `SupervisorStoreInterface`, a memory store, and `createDatabaseSupervisorStore` over `StorageInterface.insert` inside one `transaction`. | `codex` route `implementer` / Sol | U3 | `acquire` grants one epoch under real concurrency; `set` fails `FENCED` after the epoch moves; both proved over a real temporary SQLite file.                        |
+| U2   | `src/core/types.ts`: the whole contract above, plus TSDoc and naming conformance.                                                        | `implementer` / Opus | U1         | Every member is one word; no `kind`/`type` discriminant; no sentinel; no status-dependent field is optional on `UnitSnapshot`; `check` green on an implementation-free contract. |
+| U3   | `errors.ts`, `validators.ts`, `helpers.ts`: `SupervisorError`, `isSupervisorError`, wire guards for `UnitSnapshot` / `RunSnapshot` / `Observation`, the correlation-token derivation from `UnitContext`. | `codex` route `implementer` / Sol | U2 | Every guard is total and returns `false` off-shape for cycles, depth, and hostile prototypes, and narrows each `UnitSnapshot` variant by `status`; the token derivation is injective over all four key components; each is unit-tested. |
+| U4   | The lease module: `SupervisorStoreInterface`, a memory store, and `createDatabaseSupervisorStore` over `StorageInterface.insert` inside one `transaction`. | `codex` route `implementer` / Sol | U3 | `acquire` grants one epoch under real concurrency; `renew` extends without minting an epoch; `set` fails `FENCED` after the epoch moves and `CONFLICT` on a second intent row for one token; all proved over a real temporary SQLite file. |
 | U5   | `Supervisor`, `Run`, `Unit` classes and `RunInterface.launch` — the whole C1 transaction, in one place.                                  | `codex` route `implementer` / Sol | U4 | No code path reaches an executor before the intent row commits; a test asserts the record contains no unit row when launch is interrupted before commit.             |
-| U6   | `reconcile`: probe dispatch, the three outcomes, the snapshot projection, and the C3 ordering.                                           | `codex` route `implementer` / Sol | U5 | A missing `probe` yields `quarantine`, never `relaunch`; a transient probe failure yields `quarantine`, never `relaunch`; the projected snapshot spends no budget for a re-attachable attempt. |
-| U7   | `JournalInterface` with a memory implementation, byte/entry/age caps, and redaction.                                                     | `codex` route `implementer` / Sol | U3 | Caps are enforced at write; a secret-bearing frame is redacted before persistence; `prune` reports what it dropped.                                                   |
+| U6   | `reconcile`: probe dispatch over `ExecutionContext`, the three outcomes, the snapshot projection, and the C3 ordering.                   | `codex` route `implementer` / Sol | U5 | A missing `probe` yields `quarantine`, never `relaunch`; a transient probe failure yields `quarantine`, never `relaunch`; a unit with no `identity` is still probed by its token and quarantines when the executor cannot answer; the projected snapshot spends no budget for a re-attachable attempt. |
+| U7   | `JournalInterface` with a memory implementation, byte/entry/age caps, and redaction.                                                     | `codex` route `implementer` / Sol | U3 | Caps are enforced at write; a secret-bearing frame is redacted before persistence; `prune` reports what it dropped; `append` under a stale epoch or revision returns `FENCED` while `entries` stays readable. |
 | U8   | `createWorkflowFunction` and `createFunctionExecutor`.                                                                                   | `implementer` / Opus | U5, U7     | One adapter serves every executor; a supervised function task completes, fails, and cancels identically to an unsupervised one at the workflow lifecycle/result seam. |
 | U9   | Server: `createProviderExecutor`, `ProviderInterface`, and the Claude/Codex/Cursor adapters.                                             | `codex` route `implementer` / Sol | U8         | Only launched process trees are killed; unknown frames are ignored forward-compatibly; malformed required frames fail `PROTOCOL`; each adapter is proved against a protocol-faithful fixture. |
 | U10  | The two falsification tests (below).                                                                                                     | `codex` route `implementer` / Sol | U9         | Both fail first against a deliberately mis-ordered launch, then pass.                                                                                                |
@@ -669,7 +751,7 @@ Serial where a unit depends on another's contract; parallel otherwise. One write
 Both engines named these independently. Neither uses a mock, a fake clock, or module replacement.
 
 1. **`crash after provider commit, before identity commit — two restorers over one real temporary SQLite file`.** Drive a supervised task to the point where the intent row is committed and the executor has accepted, then terminate before `identify`. Start two restorers against the same file. Assert: exactly one `acquire` succeeds and the other returns `CONFLICT`; the winner's `reconcile` returns `quarantine` when the executor omits `probe` or the probe fails transiently, and `reattach` only when a probe proves life; the loser's fenced `set` returns `FENCED`; and `recoverWorkflow` is never called before `reconcile` resolves.
-2. **`no duplicate external unit`.** Across a full crash-and-restore cycle including a timed-out attempt, assert that the number of **distinct** `identity` values recorded across every unit of one `(workflow, task)` never exceeds the number of launches the record authorized, and that a reattachment adds a unit row without adding an identity.
+2. **`no unrecorded duplicate external unit`.** Across a full crash-and-restore cycle including a timed-out attempt, assert that the number of **distinct** `identity` values recorded across every unit of one `(workflow, phase, task)` never exceeds the number of launches the record authorized, and that a reattachment adds a unit row without adding an identity. This bounds and attributes duplication; it does not assert exactly-once, which no test could.
 
 Package baseline recorded 2026-07-31: Workflow 0.0.8, MCP 0.0.8, Tool 0.0.8, Agent 0.0.13, Toolbox 0.0.2, Workspace 0.0.2, Scaffold 0.0.13, Contract 0.0.9, Database 0.0.7, Terminal 0.0.5. Versions record the inspected baseline; they do not imply feature support.
 
@@ -685,17 +767,19 @@ No mocks, module replacement, fake clocks, or fake provider behavior.
 | Provider adapter | Scripted executable/fixture server speaking each provider's documented stream/protocol and owning a real child process; malformed/unknown frames, approval/input, resume, interruption | Opt-in installed CLI/App Server smoke with a disposable workspace and bounded timeout |
 | MCP              | Protocol-faithful fixture peer over a real transport; capability permutations; durable-id path and, where negotiated, task augmentation                                                | Each supported native client against a local server                                 |
 
-Live assertions must prove session recovery, approval/input parking, process ownership, requested-cancel versus observed-termination, redaction, and no duplicate external unit. A provider that is unavailable or unauthenticated is a reported skipped opt-in gate, never simulated success.
+Live assertions must prove session recovery, approval/input parking, process ownership, requested-cancel versus observed-termination, redaction, and no unrecorded duplicate external unit. A provider that is unavailable or unauthenticated is a reported skipped opt-in gate, never simulated success.
 
 ## Acceptance criteria
 
 - Workflow remains independent of Tool, MCP, Agent, Terminal, and Supervisor, and gains no new `TaskSnapshot` member, checkpoint, or claim field.
 - Supervisor's dependency graph contains neither `@orkestrel/agent` nor `@orkestrel/terminal`.
-- Every proposed public member is one word; every discriminant names its axis; absence is `undefined` everywhere.
+- Every proposed public member is one word; every discriminant names its axis; absence is `undefined` everywhere; no optional field stands in for a state a union should carry.
+- Every supervisor key, `UnitContext`, store index, and correlation token uses the four-part `(workflow, phase, task, attempt)` key; no three-part key survives anywhere.
+- Every write to the record — unit rows and journal appends alike — carries the lease and fences on epoch and revision; reads are unfenced.
 - No code path reaches an executor before the intent row commits, and `RunInterface.launch` is the only place the sequence exists.
 - `reconcile` runs before `recoverWorkflow` in every documented and tested recovery path.
 - `relaunch` is reachable only from proven absence; a missing or failing `probe` yields `quarantine`.
-- Two restorers over one real temporary SQLite file produce one epoch, one `CONFLICT`, and no duplicate external unit.
+- Two restorers over one real temporary SQLite file produce one epoch, one `CONFLICT`, and no unrecorded duplicate external unit.
 - An unsupported executor operation returns a typed `UNSUPPORTED` failure and never reports success.
 - Generic MCP primitives pass protocol-conformance fixtures before the supervisor projection uses them.
 - `supervisor start` promptly returns a durable handle and server execution survives client disconnect.
@@ -705,7 +789,7 @@ Live assertions must prove session recovery, approval/input parking, process own
 
 ## Open verification questions
 
-- Which of Claude Code, Codex, and Cursor exposes a command that **authoritatively** reports a session's absence, as opposed to failing to attach to it? That answer alone decides how much work can ever be relaunched rather than quarantined.
+- Which of Claude Code, Codex, and Cursor exposes a command that **authoritatively** reports a session's absence, as opposed to failing to attach to it — and which of them will accept and echo a caller-supplied correlation token, so that question can be asked about a unit whose native id never committed? The first answer decides how much work can ever be relaunched rather than quarantined; the second decides whether the indeterminate interval is answerable at all for that provider.
 - Does the chosen MCP transport keep the server process alive independently of every supported client, or is `@orkestrel/sea` required from day one?
 - What lease expiry policy fits the deployed SQLite/server topology, and what does an operator do with a run whose owner died mid-interval?
 - Which provider operations acknowledge steering, reply, interrupt, and termination strongly enough to record as observed rather than requested?
