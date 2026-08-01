@@ -79,7 +79,7 @@ Hardening cannot provide distributed exclusivity, provider idempotency, operatin
 | Supervisor core                     | leases and epochs, per-attempt units, native identities, journal, executor contract, the function executor, the workflow adapter | inference runtimes, terminals, MCP messages, authorization, retention policy     |
 | Supervisor server                   | the provider executor, provider adapters, launched process trees, stream framing                                                 | provider session semantics, approval policy, credential handling                 |
 | Tool                                | generic definitions, total call-envelope guard, invocation, registry                                                             | schema-based argument validation, Workflow lifecycle policy, provider adapters   |
-| MCP composition                     | the conceptual `supervisor` tool, generic MCP tasks/progress, session/transport projection, authorization                        | Workflow engine internals, supervisor record internals, client terminal lifetime |
+| MCP composition                     | the conceptual `supervisor` tool, the subscription channel, session/transport projection, authorization                          | Workflow engine internals, supervisor record internals, client terminal lifetime |
 | Application                         | executor enablement, authorization, tenant/workspace binding, journal retention, the agent and human executors                   | the fenced record, provider protocols, the workflow engine                       |
 | Database + SQLite/IndexedDB drivers | atomic durable storage through existing driver and transaction seams                                                             | Workflow recovery policy, supervisor recovery policy                             |
 | Provider native harness             | provider session/turn lifecycle, native approvals/input, native reconnect/recovery                                               | Workflow's logical task and durable snapshot authority                           |
@@ -233,7 +233,7 @@ export interface JournalInterface {
 
 `append` takes the lease and the current row rather than a bare `UnitContext` because C1 requires that observations be accepted "only while epoch and revision match", and a method given neither cannot enforce that. Passing the row carries its `context`, `epoch`, and `revision` together, so the journal fences on exactly the values the unit row was written at, with no second copy to drift. Reads stay unfenced on purpose — a browser that can never hold a lease must still be able to tail the record.
 
-There is no `Monitor` class and no journal entry wrapper. `TaskActivity` already **is** the milestone type: `TaskOperation` is "commands run / files changed" and `TaskConstraint` is "awaiting approval / rate limited". The journal stores `Observation`s directly; a wrapper carrying only `{ context, observation }` would add no boundary, invariant, composition, translation, or lifecycle, so it does not exist. Nor does the one-subscription-per-epoch invariant live here: MCP supplies the mechanism — at most one live stream per subscription key — and the supervisor supplies the key's meaning by binding it to an epoch, which is what makes the invariant true without MCP ever learning the word. Mechanism there, policy in the composition; the journal is neither.
+There is no `Monitor` class and no journal entry wrapper. `TaskActivity` already **is** the milestone type: `TaskOperation` is "commands run / files changed" and `TaskConstraint` is "awaiting approval / rate limited". The journal stores `Observation`s directly; a wrapper carrying only `{ context, observation }` would add no boundary, invariant, composition, translation, or lifecycle, so it does not exist. Nor does the one-subscription-per-epoch invariant live here — and MCP supplies no mechanism for it either. A `subscriptions/listen` stream is identified by the JSON-RPC id of its listen request and by nothing else: there is no subscription key, no uniqueness rule, no supersession, and no rejection code for a second listen. `limit.subscriptions` caps how many streams may be live at once, never which. The invariant is therefore entirely the composition's, enforced by declining to open a second listen while one is live for the epoch. The journal is neither the mechanism nor the policy.
 
 ### The executor seam
 
@@ -650,31 +650,50 @@ Inside that interval a crash leaves an intent row with no identity. The row is a
 
 `RunInterface.launch` also cannot make a never-settling store Promise settle. A blocked required checkpoint blocks the run, and operators need a backend-specific health and shutdown policy outside both workflow core and supervisor core.
 
-## What must land in `@orkestrel/mcp` first
+## The `@orkestrel/mcp` substrate
 
-The supervisor projection is blocked on generic MCP work tracked in that repository's own proposal (`/home/user/mcp/PROPOSAL.md`); it is not restated here.
+`@orkestrel/mcp` 0.0.8 ships the projection layer this design builds on. That package's guide, `guides/src/mcp.md`, is the authoritative statement of what it does, what it declines, and what it does not satisfy; the rulings below are supervisor's, held against that shipped surface rather than against a plan.
 
-- **Target 2026-07-28 first.** The durable id returned in an ordinary tool result is the substrate. The Tasks extension is optional augmentation, never the substrate — it has no implementations, and 2026-07-28 removed blocking `tasks/result`.
-- **No MCP resources in the first slice.** `inspect` already carries the authoritative read.
-- **An independent service host.** A client-spawned stdio process cannot honestly promise to outlive the client that spawned it; `@orkestrel/sea` is the deployment answer.
+- **Target 2026-07-28 first.** The durable id returned in an ordinary tool result is the substrate. A successful `tools/call` now carries the tool's value unchanged as `structuredContent` beside the text block, so the handle arrives in its original shape instead of as a field a client must parse back out of a JSON string — the substrate is cheaper and safer than when this ruling was written. The Tasks extension is optional augmentation, never the substrate: `@orkestrel/mcp` implements none of it by declared non-goal, and 2026-07-28 removed blocking `tasks/result`.
+- **No MCP resources in the first slice.** `inspect` already carries the authoritative read. Resources are a declared non-goal of the package, so there is nothing to negotiate away.
+- **An independent service host.** A client-spawned stdio process cannot honestly promise to outlive the client that spawned it, and `createStdioClientTransport` is exactly that shape — it spawns the server as a child process. The HTTP and WebSocket faces mount on an `@orkestrel/server` spine, where the process lifetime is the host's and no client owns it. `@orkestrel/sea` is the deployment answer wherever a client insists on launching the host.
 - **The durable tool is named `supervisor`.** Toolbox keeps `workflow` for its bounded author-and-run-in-one-call operation, which the application must bound so it cannot become a second long-run path. Renaming toolbox's to `execute` remains a good independent improvement.
-- **MRTR cannot push a later input request into a completed call.** Detached runs surface `input_required` through a subscription plus an explicit `reply` command.
+- **MRTR cannot push a later input request into a completed call.** The shipped mechanism answers the call in hand and only that call: form-mode `ElicitRequest` and nothing else, `inputRequests` as a keyed map, `requestState` as an opaque HMAC-signed string whose protected payload binds principal, TTL, and the originating request id, and a retry carrying `inputResponses` and `requestState` as top-level `params` siblings of `name` and `arguments`. A client that declared no `elicitation` capability receives `-32021` with `{ requiredCapabilities: { elicitation: {} } }` — a refusal, never a fabricated answer, which is the same discipline `reply` owes. Detached runs surface `input_required` through a subscription plus an explicit `reply` command.
+- **`subscriptions/listen` is the live channel, and it is modern-only.** It returns a held-open `MCPStream`. The acknowledgement, `notifications/subscriptions/acknowledged`, carries `params.notifications` — the subset the server will actually honour, not an echo of what was asked — and every delivered notification is stamped `_meta['io.modelcontextprotocol/subscriptionId']`. A graceful close returns `resultType: 'complete'` with that id required in `_meta`, so a stream that ended is distinguishable from one that died. A legacy-era client gets `-32601` and keeps the strictly weaker unsubscribed channel; neither path degrades into polling, because the call's own result stays authoritative and notifications are hints.
+- **The projection registers on a real seam.** `MCPServerInterface.methods` is an `MCPMethodManagerInterface` with `add(name, handler)` and `method(name)`; the built-ins register there, and an unregistered method still answers `-32601`. The `supervisor` composition needs no fork of the dispatch path and no second precedence rule.
+- **The hostile-input floor is the package's; the deployment's floor is not.** Message bytes are bounded before `JSON.parse`, and `_meta` bytes and key count, `requestState` size, produced content size, live subscription count, and JSON depth are all configurable with secure defaults. The origin gate is on by default and trusts loopback literals only until a deployment names other origins, with `origin: { enabled: false }` the explicit word for delegating upstream. Per-caller tool-invocation rate limiting is declared the deployment's, so the service host composes it in front — exactly like authorization.
+
+### Declared gaps that bind this design
+
+`@orkestrel/mcp`'s guide states its own conformance gaps and that list is authoritative. Five of them reach the supervisor projection.
+
+| Declared gap                                              | Consequence here                                                                                                                                                                   |
+| --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `notifications/cancelled` is implemented on no transport  | There is no message-based cancellation anywhere. `stop` is a `supervisor` command, never a protocol cancellation.                                                                  |
+| A unary HTTP request cannot be cancelled mid-flight       | A `supervisor` call must return promptly and leave the work behind a durable handle; the prompt-return rule is a protocol requirement here, not only an ergonomic one.             |
+| Tool-call progress notifications are not implemented      | Progress reaches a client through the subscription and `inspect`, never through a progress token. The journal tail is the incremental read.                                        |
+| Non-text tool-result content blocks are not representable | Every projected result is text plus `structuredContent`. Nothing in the record may depend on carrying an image, audio, or embedded-resource block.                                 |
+| Tool-invocation rate limiting is the deployment's         | The service host must impose a per-caller limit in front of the MCP routes; a supervised run is expensive, so an unbounded `start` is a real exposure and the application owns it. |
 
 ### The `supervisor` tool's command axis
 
-| Command   | Meaning                                                                                                                |
-| --------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `start`   | Validate a definition, durably accept it, begin server-owned execution, and promptly return a durable workflow handle. |
-| `inspect` | Return the authoritative `RunSnapshot`, the workflow snapshot, activity, persistence outcome, and journal tail.        |
-| `pause`   | Close Workflow's cooperative dispatch gates; it does not suspend arbitrary JavaScript or an OS process.                |
-| `resume`  | Reopen a live Workflow pause gate; it is not provider session continuation or crash recovery.                          |
-| `stop`    | Request graceful Workflow stop and, through the owning unit, provider interruption/termination where supported.        |
-| `steer`   | Send provider-native steering to an active unit whose executor implements `steer`; otherwise `UNSUPPORTED`.            |
-| `reply`   | Supply required input or approval through the native channel; never auto-approve.                                      |
+| Command   | Meaning                                                                                                                                                             |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `start`   | Validate a definition, durably accept it, begin server-owned execution, and promptly return a durable workflow handle as `structuredContent` beside the text block. |
+| `inspect` | Return the authoritative `RunSnapshot`, the workflow snapshot, activity, persistence outcome, and journal tail.                                                     |
+| `pause`   | Close Workflow's cooperative dispatch gates; it does not suspend arbitrary JavaScript or an OS process.                                                             |
+| `resume`  | Reopen a live Workflow pause gate; it is not provider session continuation or crash recovery.                                                                       |
+| `stop`    | Request graceful Workflow stop and, through the owning unit, provider interruption/termination where supported. No MCP-level cancellation assists it.               |
+| `steer`   | Send provider-native steering to an active unit whose executor implements `steer`; otherwise `UNSUPPORTED`.                                                         |
+| `reply`   | Supply required input or approval through the native channel; never auto-approve.                                                                                   |
 
 When negotiated, MCP elicitation carries required operator input with related-task metadata. Otherwise the human executor parks on a real operator. Neither path polls, fabricates a reply, or bypasses provider permission policy. The durable workflow id is stable across transports, sessions, and recovery; a provider session id and an MCP task id are correlated identifiers, not replacements for it.
 
+**`stop` is cooperative, and MCP offers nothing to make it otherwise.** `notifications/cancelled` is implemented on no transport — `bindServer` calls `handle(message)` with no `MCPDispatchOptions`, so stdio, WebSocket, and `MessagePort` carry no cancellation signal at all, and an inbound cancellation notification is accepted as an ordinary notification while the call it names keeps running. On the HTTP face, cancellation propagates only after a streamed response has begun, so a long-running unary `tools/call` runs to completion after its caller is gone. `stop` is therefore an ordinary `supervisor` call, and everything it achieves it achieves through Workflow's own cooperative gates and the owning unit's executor. Nothing else stops work. That is what makes the distinction below load-bearing rather than fastidious: a request is the only thing the protocol can carry, and an observation is the only thing that may be reported as termination.
+
 ### State mapping
+
+`@orkestrel/mcp` holds no task state of its own — the Tasks extension and durable task storage are both declared non-goals — so these are the states `inspect` reports, and the states a negotiated task augmentation would be handed.
 
 | Supervisor/workflow observation                                                                 | MCP task projection                                                                 |
 | ----------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
@@ -683,9 +702,9 @@ When negotiated, MCP elicitation carries required operator input with related-ta
 | Workflow execution completes, including graceful mode with failed tasks recorded as result data | `completed`; the Tool result still exposes the Workflow status/results/fault fields |
 | `LAUNCH` / `PROTOCOL` / `STORE` failure, or a required persistence fault                        | `failed`                                                                            |
 | `QUARANTINE`                                                                                    | `failed`, with the quarantine reason in the result — never a retry                  |
-| Valid MCP cancellation or observed Workflow stop                                                | `cancelled`                                                                         |
+| An accepted `stop` command or observed Workflow stop                                            | `cancelled`                                                                         |
 
-`input_required` must arise from a real observation, never from an arbitrary Workflow constraint or a stale log line. MCP requires a cancelled task to remain cancelled even if underlying execution later completes, so inspection records both **requested cancellation** and **observed termination**; a cancelled protocol state must not falsely assert that an uncooperative process has exited.
+`input_required` must arise from a real observation, never from an arbitrary Workflow constraint or a stale log line. A cancelled task remains cancelled even if underlying execution later completes, so inspection records both **requested cancellation** and **observed termination**; a cancelled protocol state must not falsely assert that an uncooperative process has exited.
 
 ## Authority, persistence, and recovery
 
@@ -718,7 +737,7 @@ The projection never reconstructs truth by replaying notifications alone. Only t
 | Unknown/malformed stream frame                               | `ProviderInterface.observe` returns `undefined` for a forward-compatible unknown frame; a malformed required frame fails the attempt with `PROTOCOL` and a bounded redacted `diagnostic` observation.                                                                      |
 | Activity becomes silent                                      | Surface silence as observation; do not infer failure or kill work without explicit application policy.                                                                                                                                                                     |
 | Task is paused until its deadline                            | The deadline continues; the attempt may time out before provider dispatch, matching Workflow semantics.                                                                                                                                                                    |
-| Cancel races completion                                      | Serialize the authoritative observation; retain MCP's terminal cancellation rule once cancellation succeeds and separately record late native completion.                                                                                                                  |
+| Cancel races completion                                      | Serialize the authoritative observation; retain the terminal cancellation rule once cancellation succeeds and separately record late native completion.                                                                                                                    |
 | Store Promise never settles                                  | The run remains blocked at the required checkpoint; operators need a backend-specific health/termination policy outside core.                                                                                                                                              |
 | MCP reconnect or authorization changes                       | Reauthenticate, authorize the workflow id, read current state, then resume hints; never trust a prior transport session as authority.                                                                                                                                      |
 
@@ -752,7 +771,7 @@ Serial where a unit depends on another's contract; parallel otherwise. One write
 | U10  | The two falsification tests (below).                                                                                                                                                                     | `codex` route `implementer` / Sol | U9         | Both fail first against a deliberately mis-ordered launch, then pass.                                                                                                                                                                                                                                  |
 | U11  | `guides/src/supervisor.md` plus parity coverage and showcase.                                                                                                                                            | `implementer` / Opus              | U9         | Every backticked API resolves to a real export; every public export is documented; parity green.                                                                                                                                                                                                       |
 | U12  | Application composition sample: the agent and human executors, authorization, retention, workspace binding.                                                                                              | `application` / Sonnet            | U9         | Neither `@orkestrel/agent` nor `@orkestrel/terminal` appears in supervisor's dependency graph.                                                                                                                                                                                                         |
-| U13  | Generic MCP 2026-07-28 primitives, then the `supervisor` tool composition.                                                                                                                               | per `/home/user/mcp/PROPOSAL.md`  | U11        | Protocol-conformance fixtures pass before the supervisor projection uses them.                                                                                                                                                                                                                         |
+| U13  | The `supervisor` tool composition over the shipped `@orkestrel/mcp` 2026-07-28 primitives.                                                                                                               | `implementer` / Opus              | U11        | Protocol-conformance fixtures pass before any live client drives the projection.                                                                                                                                                                                                                       |
 | U14  | Authoritative tree-wide gates.                                                                                                                                                                           | `verifier` / Sonnet               | U13        | `format → lint → check → build → test` green, output read.                                                                                                                                                                                                                                             |
 
 ### The two falsification tests
@@ -762,7 +781,7 @@ Both engines named these independently. Neither uses a mock, a fake clock, or mo
 1. **`crash after provider commit, before identity commit — two restorers over one real temporary SQLite file`.** Drive a supervised task to the point where the intent row is committed and the executor has accepted, then terminate before `identify`. Start two restorers against the same file. Assert: exactly one `acquire` succeeds and the other returns `CONFLICT`; the winner's `reconcile` returns `quarantine` when the executor omits `probe` or the probe fails transiently, and `reattach` only when a probe proves life; the loser's fenced `set` returns `FENCED`; and `recoverWorkflow` is never called before `reconcile` resolves.
 2. **`no unrecorded duplicate external unit`.** Across a full crash-and-restore cycle including a timed-out attempt, assert that the number of **distinct** `identity` values recorded across every unit of one `(workflow, phase, task)` never exceeds the number of launches the record authorized, and that a reattachment adds a unit row without adding an identity. This bounds and attributes duplication; it does not assert exactly-once, which no test could.
 
-Package baseline recorded 2026-07-31: Workflow 0.0.8, MCP 0.0.8, Tool 0.0.8, Agent 0.0.13, Toolbox 0.0.2, Workspace 0.0.2, Scaffold 0.0.13, Contract 0.0.9, Database 0.0.7, Terminal 0.0.5. Versions record the inspected baseline; they do not imply feature support.
+Package baseline recorded 2026-07-31: Workflow 0.0.8, MCP 0.0.8 (commit `030291c`), Tool 0.0.8, Agent 0.0.13, Toolbox 0.0.2, Workspace 0.0.2, Scaffold 0.0.13, Contract 0.0.9, Database 0.0.7, Terminal 0.0.5. Versions record the inspected baseline; they do not imply feature support.
 
 ## Validation strategy
 
@@ -790,18 +809,24 @@ Live assertions must prove session recovery, approval/input parking, process own
 - `relaunch` is reachable only from proven absence; a missing or failing `probe` yields `quarantine`.
 - Two restorers over one real temporary SQLite file produce one epoch, one `CONFLICT`, and no unrecorded duplicate external unit.
 - An unsupported executor operation returns a typed `UNSUPPORTED` failure and never reports success.
-- Generic MCP primitives pass protocol-conformance fixtures before the supervisor projection uses them.
+- The `supervisor` tool composition passes protocol-conformance fixtures before any live client drives it.
 - `supervisor start` promptly returns a durable handle and server execution survives client disconnect.
 - No integration auto-approves, reads secrets into journals, or claims process termination before observation.
 - Native provider support is feature-detected and live-tested at the recorded version; unsupported features degrade to the documented fallback.
 - Shipped guides describe only implemented behavior; this proposal is the sole home for proposed behavior until implementation lands.
 
-## Open verification questions
+## Verification questions
+
+### Answered by the shipped `@orkestrel/mcp`
+
+- **Does the MCP transport keep the server process alive independently of every supported client?** For HTTP and WebSocket, yes. `createMCPRoutes` returns routes to register on an `@orkestrel/server` spine and `createWebSocketServer` returns an upgrade handler for that same spine, so the process is the host's and no client owns it. For stdio, no, and structurally so: `createStdioClientTransport` spawns the server with `node:child_process.spawn`, and that child dies with its spawner. The service host is HTTP-faced; what survives of the question is the client-support half, below.
+
+### Open
 
 - Which of Claude Code, Codex, and Cursor exposes a command that **authoritatively** reports a session's absence, as opposed to failing to attach to it — and which of them will accept and echo a caller-supplied correlation token, so that question can be asked about a unit whose native id never committed? The first answer decides how much work can ever be relaunched rather than quarantined; the second decides whether the indeterminate interval is answerable at all for that provider.
-- Does the chosen MCP transport keep the server process alive independently of every supported client, or is `@orkestrel/sea` required from day one?
+- Which supported clients will drive an HTTP or WebSocket MCP server rather than insisting on spawning a stdio child, and for those that insist, is `@orkestrel/sea` required from day one?
 - What lease expiry policy fits the deployed SQLite/server topology, and what does an operator do with a run whose owner died mid-interval?
 - Which provider operations acknowledge steering, reply, interrupt, and termination strongly enough to record as observed rather than requested?
-- What tenant/workspace authorization model governs workflow ids, unit ids, MCP task ids, and native provider session identifiers?
+- What tenant/workspace authorization model governs workflow ids, unit ids, MCP task ids, and native provider session identifiers? `@orkestrel/mcp` decides none of it — authorization is front-composed middleware there by declared policy — so the model is entirely ours to state.
 
 These are release gates, not invitations to speculate in a public type.
