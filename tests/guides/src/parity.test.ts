@@ -1,4 +1,4 @@
-// The consumer-side guides-parity drop-in (PROPOSAL §6): runs `@orkestrel/guide`'s
+// The consumer-side guides-parity drop-in (AGENTS §22): runs `@orkestrel/guide`'s
 // checks against this repo's own `guides/README.md` manifest — one row (Workflow)
 // spanning the core/browser/server faces as a multi-dir `GuideModule` (AGENTS §22 —
 // one guide per package).

@@ -34,8 +34,8 @@ attempt. Runtime pause gates are intentionally not persisted.
 Provider sessions, external processes, MCP projection, journals, leases, and
 distributed fencing remain integration concerns rather than core workflow
 behavior. See [guides/src/workflow.md](./guides/src/workflow.md) for the complete
-shipped contract and [PROPOSAL.md](./PROPOSAL.md) for the proposed integration
-architecture.
+shipped contract. The proposed integration architecture now lives with the
+package that implements it, as `plan/PROPOSAL.md` in `@orkestrel/supervisor`.
 
 ## Package
 
