@@ -1,7 +1,6 @@
-// The consumer-side guides-parity drop-in (AGENTS §22): runs `@orkestrel/guide`'s
+// The consumer-side guides-parity drop-in documented in `guides/src/guide.md` runs `@orkestrel/guide`'s
 // checks against this repo's own `guides/README.md` manifest — one row (Workflow)
-// spanning the core/browser/server faces as a multi-dir `GuideModule` (AGENTS §22 —
-// one guide per package).
+// spanning the core/browser/server faces as a multi-dir `GuideModule`.
 
 import { describe, expect, it } from 'vitest'
 import { readdirSync, readFileSync } from 'node:fs'
