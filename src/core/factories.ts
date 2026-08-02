@@ -18,7 +18,7 @@ import { createDatabase, createMemoryDriver } from '@orkestrel/database'
 import { DEFAULT_BAIL } from './constants.js'
 import { cloneWorkflowSnapshot } from './cloners.js'
 import { WorkflowError } from './errors.js'
-import { definitionToSnapshot, recoverWorkflowSnapshot } from './helpers.js'
+import { captureWorkflowOptions, definitionToSnapshot, recoverWorkflowSnapshot } from './helpers.js'
 import { hasWorkflowHandlers } from './validators.js'
 import { workflowShape } from './shapers.js'
 import { DatabaseWorkflowStore } from './stores/DatabaseWorkflowStore.js'
@@ -68,7 +68,7 @@ import { Runner } from './Runner.js'
  *
  * @example
  * ```ts
- * import { createWorkflowContract } from '@src/core'
+ * import { createWorkflowContract } from '@orkestrel/workflow'
  *
  * const contract = createWorkflowContract()
  * const definition = contract.generate()       // a valid WorkflowDefinition
@@ -107,7 +107,7 @@ export function createWorkflowContract(): ContractInterface<WorkflowDefinition> 
  *
  * @example
  * ```ts
- * import { createWorkflow } from '@src/core'
+ * import { createWorkflow } from '@orkestrel/workflow'
  *
  * const workflow = createWorkflow(definition, { on: { complete: () => done() } })
  * const phase = workflow.phase('phase-build')
@@ -118,7 +118,8 @@ export function createWorkflow(
 	definition: WorkflowDefinition,
 	options?: WorkflowOptions,
 ): WorkflowInterface {
-	const bail = options?.bail ?? definition.bail ?? DEFAULT_BAIL
+	const captured = captureWorkflowOptions(options)
+	const bail = captured.bail ?? definition.bail ?? DEFAULT_BAIL
 	// Seed BOTH tiers of the snapshot with the effective bail (`definitionToSnapshot`'s second arg),
 	// so an `options.bail` override reaches each INHERITING phase's snapshot while a phase with its own
 	// `bail` still wins (`phase.bail ?? bail`) — the per-phase-bail-aware derivation reads each
@@ -129,7 +130,7 @@ export function createWorkflow(
 	// stays as given and cascades (uniform re-run). Each task's `run` / `retries` / `timeout` carry
 	// over onto the snapshot (definitionToSnapshot's per-task step), so `options.functions` (forwarded
 	// unchanged) resolves every task's handler identically whether built fresh or restored.
-	return new Workflow(definitionToSnapshot(definition, bail), options)
+	return new Workflow(definitionToSnapshot(definition, bail), captured)
 }
 
 /**
@@ -158,38 +159,46 @@ export function createWorkflow(
  *
  * @example
  * ```ts
- * import { restoreWorkflow } from '@src/core'
+ * import { restoreWorkflow } from '@orkestrel/workflow'
  *
  * const restored = restoreWorkflow(workflow.snapshot()) // bail comes from the snapshot
  * restored.status === workflow.status // true
  * ```
  */
 export function restoreWorkflow(snapshot: unknown, options?: WorkflowOptions): WorkflowInterface {
+	const captured = captureWorkflowOptions(options)
 	const owned = cloneWorkflowSnapshot(snapshot)
-	return new Workflow(owned, options)
+	return new Workflow(owned, captured)
 }
 
 /**
  * Rebuild an interrupted workflow at its remaining retry budget.
+ *
+ * @remarks
+ * Each phase captures every unique initial `run` binding once before constructing tasks. Recovery
+ * validates those live tasks' captured callable handlers without rereading the registry, while the
+ * retained registry identity remains available to resolve future live additions at their mint time.
  *
  * @param snapshot - The hostile persisted snapshot
  * @param options - Runtime handlers and entity options
  * @returns A recoverable live workflow
  */
 export function recoverWorkflow(snapshot: unknown, options?: WorkflowOptions): WorkflowInterface {
+	const captured = captureWorkflowOptions(options)
 	const owned = cloneWorkflowSnapshot(snapshot)
 	if (owned.override !== undefined || owned.phases.some((phase) => phase.override !== undefined)) {
 		throw new WorkflowError('RESTORE', `workflow '${owned.id}' has a terminal override`, {
 			workflow: owned.id,
 		})
 	}
-	if (!hasWorkflowHandlers(owned, options?.functions)) {
+	const recovered = cloneWorkflowSnapshot(recoverWorkflowSnapshot(owned))
+	const workflow = new Workflow(recovered, captured)
+	if (!hasWorkflowHandlers(workflow)) {
 		throw new WorkflowError('RESTORE', `workflow '${owned.id}' has an unresolved run`, {
 			workflow: owned.id,
 		})
 	}
-	const recovered = cloneWorkflowSnapshot(recoverWorkflowSnapshot(owned))
-	return new Workflow(recovered, options)
+	return workflow
 }
 
 /**
@@ -223,7 +232,7 @@ export function assertSnapshot(snapshot: unknown): void {
  *
  * @remarks
  * The snapshot analogue of the server package's `createMemorySessionStore`
- * (and the {@link createMemoryQueueStore} family), but LEANER — there is no idle-TTL, so no
+ * (and the `createMemoryQueueStore` family), but LEANER — there is no idle-TTL, so no
  * options bag (AGENTS §21 minimal): a persisted run-state lives until an explicit `delete`. This is
  * the zero-plumbing DEFAULT (a plain `Map`); its driver-pluggable twin is
  * {@link createDatabaseWorkflowStore} (the snapshot as one opaque JSON column over a `databases`
@@ -235,7 +244,7 @@ export function assertSnapshot(snapshot: unknown): void {
  *
  * @example
  * ```ts
- * import { createMemoryWorkflowStore, createWorkflow, restoreWorkflow } from '@src/core'
+ * import { createMemoryWorkflowStore, createWorkflow, restoreWorkflow } from '@orkestrel/workflow'
  *
  * const store = createMemoryWorkflowStore()
  * const workflow = createWorkflow(definition)
@@ -256,7 +265,7 @@ export function createMemoryWorkflowStore(): WorkflowStoreInterface {
  * @remarks
  * Builds a one-table database (`snapshots`, keyed by `id`) over the supplied driver, the snapshot
  * held as ONE OPAQUE JSON COLUMN — the column map is `{ id; snapshot }` where `snapshot` is a
- * `rawShape` (a JSON blob), exactly as {@link createDatabaseQueueStore} stores its `input`. The
+ * `rawShape` (a JSON blob), exactly as `createDatabaseQueueStore` stores its `input`. The
  * snapshot is already a COMPLETE, self-contained, pure-JSON payload, so storing it whole is lossless
  * AND keeps the row type FLAT — a structured multi-column snapshot table would force the contract to
  * `Infer` the deeply-nested snapshot shape (workflow → phases → tasks → results) and trip TS2589;
@@ -272,7 +281,8 @@ export function createMemoryWorkflowStore(): WorkflowStoreInterface {
  *
  * @example
  * ```ts
- * import { createDatabaseWorkflowStore, createMemoryDriver, createWorkflow, restoreWorkflow } from '@src/core'
+ * import { createMemoryDriver } from '@orkestrel/database'
+ * import { createDatabaseWorkflowStore, createWorkflow, restoreWorkflow } from '@orkestrel/workflow'
  *
  * const store = createDatabaseWorkflowStore(createMemoryDriver()) // a durable driver swaps in here
  * const workflow = createWorkflow(definition)
@@ -325,7 +335,7 @@ export function createDatabaseWorkflowStore(
  *
  * @example
  * ```ts
- * import { createWorkflowRunner } from '@src/core'
+ * import { createWorkflowRunner } from '@orkestrel/workflow'
  *
  * const runner = createWorkflowRunner()
  * const definition = { id: 'w', name: 'W', phases: [{ id: 'p', name: 'P', tasks: [
@@ -362,7 +372,7 @@ export function createWorkflowRunner(options?: WorkflowRunnerOptions): WorkflowR
  *
  * @example
  * ```ts
- * import { createMemoryWorkflowStore, createWorkflowManager } from '@src/core'
+ * import { createMemoryWorkflowStore, createWorkflowManager } from '@orkestrel/workflow'
  *
  * const manager = createWorkflowManager({
  * 	store: createMemoryWorkflowStore(),
@@ -386,7 +396,8 @@ export function createWorkflowManager(options?: WorkflowManagerOptions): Workflo
  * `yield()` gives the host a turn via a zero-delay macrotask (so pending I/O,
  * timers, and rendering actually run — a microtask would not); `delay(ms)` resumes
  * after at least `ms`. Pass `options.signal` to make a pending yield/delay reject
- * with the signal's `reason` on abort (with full timer/listener cleanup).
+ * with the signal's exact `reason`; the shared owned-signal lifecycle clears the timer
+ * without invoking caller-owned listener methods.
  * `options.priority` is accepted for contract compliance but treated uniformly by
  * this default — environment backends honour it.
  *
@@ -394,7 +405,8 @@ export function createWorkflowManager(options?: WorkflowManagerOptions): Workflo
  *
  * @example
  * ```ts
- * import { createAbort, createScheduler } from '@src/core'
+ * import { createAbort } from '@orkestrel/abort'
+ * import { createScheduler } from '@orkestrel/workflow'
  *
  * const abort = createAbort()
  * const scheduler = createScheduler()
@@ -408,7 +420,7 @@ export function createWorkflowManager(options?: WorkflowManagerOptions): Workflo
  *
  * @example
  * ```ts
- * import { createScheduler } from '@src/core'
+ * import { createScheduler } from '@orkestrel/workflow'
  *
  * // A backoff: wait a growing interval between retries.
  * const scheduler = createScheduler()
@@ -451,7 +463,7 @@ export function createScheduler(): SchedulerInterface {
  *
  * @example
  * ```ts
- * import { createRunner } from '@src/core'
+ * import { createRunner } from '@orkestrel/workflow'
  *
  * // A handler that fans out one sibling per declared unit, then returns its own value.
  * const runner = createRunner<number, number>({

@@ -107,6 +107,21 @@ describe('cloneTaskActivity', () => {
 })
 
 describe('workflow snapshot ownership', () => {
+	it('rejects a valid snapshot whose payload id differs from its storage key', () => {
+		const snapshot = createWorkflow({
+			id: 'payload',
+			name: 'Payload',
+			phases: [{ id: 'phase', name: 'Phase', tasks: [{ id: 'task', name: 'Task' }] }],
+		}).snapshot()
+
+		const error = captureError(() => cloneWorkflowSnapshot(snapshot, 'requested'))
+		expect(isWorkflowError(error)).toBe(true)
+		if (!isWorkflowError(error)) throw new Error('expected WorkflowError')
+		expect(error.code).toBe('RESTORE')
+		expect(error.message).toBe("workflow snapshot 'payload' does not match storage key 'requested'")
+		expect(error.context).toEqual({ requested: 'requested', payload: 'payload' })
+	})
+
 	it('translates revoked snapshot reflection failures to RESTORE errors', () => {
 		const revoked = Proxy.revocable({}, {})
 		revoked.revoke()

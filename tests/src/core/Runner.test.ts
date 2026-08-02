@@ -1,3 +1,4 @@
+import type { RunnerEntryOptions, RunnerInterface, RunnerOptions } from '@src/core'
 import { describe, expect, it } from 'vitest'
 import { createRunner } from '@src/core'
 import {
@@ -38,7 +39,7 @@ describe('Runner', () => {
 			handler: (controller) => {
 				ran.push(controller.input)
 				// Each declared unit < 10 fans out exactly one sibling (fire-and-track).
-				if (controller.input < 10) controller.spawn(controller.input + 100)
+				if (controller.input < 10) void controller.spawn(controller.input + 100)
 				return controller.input
 			},
 		})
@@ -54,7 +55,7 @@ describe('Runner', () => {
 			concurrency: 4,
 			handler: (controller) => {
 				// 1 → spawns 2 → spawns 3 (a transitive chain), then stop.
-				if (controller.input < 3) controller.spawn(controller.input + 1)
+				if (controller.input < 3) void controller.spawn(controller.input + 1)
 				return controller.input
 			},
 		})
@@ -163,8 +164,9 @@ describe('Runner', () => {
 		})
 		const run = runner.execute([1, 2, 3])
 		await waitForDelay(10)
-		runner.abort(new Error('shutting down'))
+		const aborting = runner.abort(new Error('shutting down'))
 		await expect(run).rejects.toThrow('shutting down')
+		await aborting
 		await waitForDelay(0)
 		expect(aborted.length).toBe(3)
 		expect(aborted.every((value) => value)).toBe(true)
@@ -212,9 +214,10 @@ describe('Runner', () => {
 
 	it('destroy is idempotent and stops the runner', async () => {
 		const runner = createRunner<number, number>({ handler: (controller) => controller.input })
-		runner.destroy()
-		runner.destroy() // no throw
+		const destroying = runner.destroy()
+		expect(runner.destroy()).toBe(destroying)
 		expect(runner.stopped).toBe(true)
+		await destroying
 		await expect(runner.execute([1])).rejects.toThrow('stopped')
 	})
 
@@ -246,7 +249,7 @@ describe('Runner', () => {
 			concurrency: 1,
 			handler: (controller) => {
 				ran.push(controller.input)
-				if (controller.input === 'parent') controller.spawn('child') // fire-and-track
+				if (controller.input === 'parent') void controller.spawn('child') // fire-and-track
 				return controller.input
 			},
 		})
@@ -296,9 +299,10 @@ describe('Runner', () => {
 		})
 		const run = runner.execute([1, 2, 3])
 		await waitForDelay(10)
-		runner.abort('shutdown') // a non-Error reason — must NOT be coerced to a generic Error
+		const aborting = runner.abort('shutdown') // a non-Error reason — must NOT be coerced to a generic Error
 		// `execute` rejects with the EXACT value the caller passed (FIX 2), not `new Error(...)`.
 		await expect(run).rejects.toBe('shutdown')
+		await aborting
 		await waitForDelay(0)
 		// Every unit's signal carries that same reason verbatim.
 		expect(reasons.length).toBe(3)
@@ -317,7 +321,7 @@ describe('Runner', () => {
 			handler: (controller) => {
 				ran.push(controller.input)
 				if (controller.input === 1) {
-					controller.spawn(99) // launched (count++), then the parent fails fast
+					void controller.spawn(99) // launched (count++), then the parent fails fast
 					throw error
 				}
 				return controller.input
@@ -343,8 +347,9 @@ describe('Runner', () => {
 		const run = runner.execute([1, 2, 3])
 		await waitForDelay(10)
 		expect(runner.active).toBe(3)
-		runner.abort(new Error('stop'))
+		const aborting = runner.abort(new Error('stop'))
 		await expect(run).rejects.toThrow('stop')
+		await aborting
 		await waitForDelay(0)
 		// Every unit settled (its parked wait was released by the abort), so the outstanding
 		// count is back to 0 — `active` is settle-based, not a one-time snapshot.
@@ -362,9 +367,10 @@ describe('Runner', () => {
 		const run = runner.execute([1, 2, 3])
 		await waitForDelay(10)
 		expect(runner.active).toBe(3)
-		runner.destroy() // abort + stop the queue, mid-run
+		const destroying = runner.destroy() // abort + stop the queue, mid-run
 		// destroy() aborts with no reason → the run rejects with the synthesized abort error.
 		await expect(run).rejects.toThrow('runner aborted')
+		await destroying
 		expect(runner.stopped).toBe(true)
 	})
 
@@ -376,12 +382,12 @@ describe('Runner', () => {
 			retries: 0,
 			handler: async (controller) => {
 				if (controller.input === 1) {
-					controller.spawn(2) // child
+					void controller.spawn(2) // child
 					await Promise.race([controller.wait(), release.promise])
 					return controller.input
 				}
 				if (controller.input === 2) {
-					controller.spawn(3) // grandchild (depth 2)
+					void controller.spawn(3) // grandchild (depth 2)
 					await Promise.race([controller.wait(), release.promise])
 					return controller.input
 				}
@@ -394,8 +400,9 @@ describe('Runner', () => {
 		const run = runner.execute([1])
 		// Let the chain spawn down to the grandchild before aborting.
 		await waitForDelay(20)
-		runner.abort(new Error('cascade'))
+		const aborting = runner.abort(new Error('cascade'))
 		await expect(run).rejects.toThrow('cascade')
+		await aborting
 		release.resolve()
 		await waitForDelay(0)
 		// The grandchild — spawned two levels deep — observed its signal fire: `abort`
@@ -413,10 +420,11 @@ describe('Runner', () => {
 		})
 		const run = runner.execute([1, 2, 3])
 		await waitForDelay(10)
-		runner.abort(new Error('first'))
-		runner.abort(new Error('second')) // a second abort is a no-op (no throw, no overwrite)
+		const aborting = runner.abort(new Error('first'))
+		expect(runner.abort(new Error('second'))).toBe(aborting)
 		// The run rejects with the FIRST reason — the second abort did not overwrite it.
 		await expect(run).rejects.toThrow('first')
+		await aborting
 		expect(runner.stopped).toBe(true)
 	})
 
@@ -472,9 +480,9 @@ describe('Runner', () => {
 				// Encode depth in the value: roots are 1-digit, children 2-digit, grandchildren
 				// 3-digit. A node spawns three children unless it is already a grandchild.
 				if (controller.input < 100) {
-					controller.spawn(controller.input * 10 + 1)
-					controller.spawn(controller.input * 10 + 2)
-					controller.spawn(controller.input * 10 + 3)
+					void controller.spawn(controller.input * 10 + 1)
+					void controller.spawn(controller.input * 10 + 2)
+					void controller.spawn(controller.input * 10 + 3)
 				}
 				await waitForDelay(0)
 				return controller.input
@@ -503,7 +511,7 @@ describe('Runner', () => {
 		const runner = createRunner<number, number>({
 			concurrency: 1, // tightest setting — each link runs only after the prior frees the slot
 			handler: (controller) => {
-				if (controller.input < depth) controller.spawn(controller.input + 1)
+				if (controller.input < depth) void controller.spawn(controller.input + 1)
 				return controller.input
 			},
 		})
@@ -558,7 +566,7 @@ describe('Runner', () => {
 		const runner = createRunner<number, unknown>({
 			concurrency: 4,
 			handler: (controller) => {
-				if (controller.input === 1) controller.spawn(2)
+				if (controller.input === 1) void controller.spawn(2)
 				// 1 → 0 (falsy), spawned 2 → '' (falsy).
 				return controller.input === 1 ? 0 : ''
 			},
@@ -650,7 +658,7 @@ describe('Runner', () => {
 				if (controller.input === 0) {
 					// Root spawns ten children: 10..19. Child 15 will fail; 10..14 are spawned
 					// before it, 16..19 after — all must observe the cascade.
-					for (let child = 10; child < 20; child += 1) controller.spawn(child)
+					for (let child = 10; child < 20; child += 1) void controller.spawn(child)
 					await Promise.race([controller.wait(), release.promise])
 					return controller.input
 				}
@@ -714,8 +722,9 @@ describe('Runner', () => {
 		const run = runner.execute(Array.from({ length: total }, (_, index) => index))
 		await waitForDelay(10)
 		expect(runner.active).toBe(total) // all parked, outstanding
-		runner.abort(new Error('shutdown'))
+		const aborting = runner.abort(new Error('shutdown'))
 		await expect(run).rejects.toThrow('shutdown')
+		await aborting
 		await waitForDelay(0)
 		// Every parked handler woke (its signal fired) and settled — full drain.
 		expect(woken.count).toBe(total)
@@ -739,8 +748,9 @@ describe('Runner', () => {
 		const run = runner.execute(Array.from({ length: total }, (_, index) => index))
 		await waitForDelay(10)
 		expect(runner.active).toBe(total)
-		runner.destroy()
+		const destroying = runner.destroy()
 		await expect(run).rejects.toThrow('runner aborted')
+		await destroying
 		await waitForDelay(0)
 		expect(woken.count).toBe(total)
 		expect(runner.active).toBe(0)
@@ -770,8 +780,9 @@ describe('Runner', () => {
 		expect(settled.count).toBe(0)
 		expect(runner.active).toBe(1) // still outstanding, gate armed
 		// Only the abort releases it.
-		runner.abort()
+		const aborting = runner.abort()
 		await run
+		await aborting
 		expect(settled.count).toBe(1)
 		expect(runner.active).toBe(0)
 	})
@@ -787,7 +798,7 @@ describe('Runner', () => {
 			handler: (controller) => {
 				if (controller.input === 0) {
 					// Fan out 30 children (values 1000..1029) — none awaited.
-					for (let child = 0; child < fanout; child += 1) controller.spawn(1000 + child)
+					for (let child = 0; child < fanout; child += 1) void controller.spawn(1000 + child)
 				}
 				return controller.input
 			},
@@ -834,8 +845,9 @@ describe('Runner', () => {
 		const run = runner.execute(Array.from({ length: total }, (_, index) => index))
 		await waitForDelay(10)
 		expect(runner.active).toBe(total) // all outstanding at once
-		runner.abort(new Error('drain'))
+		const aborting = runner.abort(new Error('drain'))
 		await expect(run).rejects.toThrow('drain')
+		await aborting
 		await waitForDelay(0)
 		expect(runner.active).toBe(0)
 		gate.resolve() // releasing the gate after the fact changes nothing — already drained
@@ -849,7 +861,7 @@ describe('Runner', () => {
 		const runner = createRunner<number, number>({
 			concurrency: 8,
 			handler: (controller) => {
-				if (controller.input < 10) controller.spawn(controller.input + 100)
+				if (controller.input < 10) void controller.spawn(controller.input + 100)
 				return controller.input
 			},
 		})
@@ -884,9 +896,9 @@ describe('Runner', () => {
 			concurrency: 8,
 			handler: async (controller) => {
 				if (controller.input === 0) {
-					controller.spawn(1)
-					controller.spawn(2)
-					controller.spawn(3)
+					void controller.spawn(1)
+					void controller.spawn(2)
+					void controller.spawn(3)
 					return controller.input
 				}
 				// Child n waits on gate[n-1]; the test opens them last-to-first.
@@ -1040,7 +1052,7 @@ describe('Runner — emitter (push observation surface)', () => {
 			concurrency: 4,
 			handler: (controller) => {
 				idByInput.set(controller.input, controller.id)
-				if (controller.input === 1) controller.spawn(101)
+				if (controller.input === 1) void controller.spawn(101)
 				return controller.input
 			},
 		})
@@ -1095,8 +1107,9 @@ describe('Runner — emitter (push observation surface)', () => {
 		const run = runner.execute([1, 2, 3])
 		await waitForDelay(10)
 		const reason = new Error('shutting down')
-		runner.abort(reason)
+		const aborting = runner.abort(reason)
 		await expect(run).rejects.toBe(reason)
+		await aborting
 		await waitForDelay(0)
 		// The run-level `abort` fired once; the units were cancelled, not failed → no `fail`.
 		expect(events.abort.calls).toEqual([[reason]])
@@ -1243,23 +1256,26 @@ describe('Runner — spawn() (live, external — a Runner-level counterpart to c
 		})
 		const run = runner.execute([1])
 		await waitForDelay(10)
-		runner.abort(new Error('stop'))
+		const aborting = runner.abort(new Error('stop'))
 		await expect(run).rejects.toThrow('stop')
+		await aborting
 		expect(runner.spawn(2)).toBeUndefined()
 	})
 
-	it('spawn after stop() returns undefined', () => {
+	it('spawn after stop() returns undefined', async () => {
 		// stop() is a synchronous, unconditional gate on `spawn` (`#stopped`) — no run needs to
 		// have started or drained for it to apply.
 		const runner = createRunner<number, number>({ handler: (controller) => controller.input })
-		runner.stop()
+		const stopping = runner.stop()
 		expect(runner.spawn(1)).toBeUndefined()
+		await stopping
 	})
 
 	it('spawn after destroy() returns undefined', async () => {
 		const runner = createRunner<number, number>({ handler: (controller) => controller.input })
-		runner.destroy()
+		const destroying = runner.destroy()
 		expect(runner.spawn(1)).toBeUndefined()
+		await destroying
 	})
 })
 
@@ -1293,13 +1309,14 @@ describe('Runner — pause() / resume() (queue-native: in-flight finishes, next 
 		expect(results).toEqual([1, 2, 3])
 	})
 
-	it('pause()/resume() are no-ops once the runner is stopped (§10 — stop() is the terminal gate)', () => {
+	it('pause()/resume() are no-ops once the runner is stopped (§10 — stop() is the terminal gate)', async () => {
 		const runner = createRunner<number, number>({ handler: (controller) => controller.input })
-		runner.stop()
+		const stopping = runner.stop()
 		runner.pause()
 		expect(runner.paused).toBe(false) // a stopped runner never actually pauses
 		runner.resume() // no throw
 		expect(runner.paused).toBe(false)
+		await stopping
 	})
 })
 
@@ -1319,10 +1336,11 @@ describe('Runner — stop() (graceful, permanent: never-dispatched pending settl
 		await waitForDelay(10)
 		// Only the first unit is in flight; 2 and 3 are still pending, never dispatched.
 		expect(dispatched).toEqual([1])
-		runner.stop()
+		const stopping = runner.stop()
 		gate.resolve() // let the in-flight unit finish
 		// execute() RESOLVES — it does not throw/reject, even with a never-run backlog.
 		const results = await run
+		await stopping
 		// Only the in-flight unit's result landed; the never-dispatched units never ran.
 		expect(dispatched).toEqual([1])
 		expect(results).toEqual([1])
@@ -1332,9 +1350,10 @@ describe('Runner — stop() (graceful, permanent: never-dispatched pending settl
 
 	it('stop() is idempotent', async () => {
 		const runner = createRunner<number, number>({ handler: (controller) => controller.input })
-		runner.stop()
-		runner.stop() // no throw
+		const stopping = runner.stop()
+		expect(runner.stop()).toBe(stopping)
 		expect(runner.stopped).toBe(true)
+		await stopping
 	})
 
 	it('spawn() after stop() returns undefined, even mid-run with an in-flight unit still settling', async () => {
@@ -1348,11 +1367,12 @@ describe('Runner — stop() (graceful, permanent: never-dispatched pending settl
 		})
 		const run = runner.execute([1])
 		await waitForDelay(10)
-		runner.stop()
+		const stopping = runner.stop()
 		// stop() is synchronous — spawn is refused immediately, before the in-flight unit settles.
 		expect(runner.spawn(2)).toBeUndefined()
 		gate.resolve()
 		await run
+		await stopping
 	})
 
 	it('a graceful stop() does not trip fail-fast even when pending units would have failed', async () => {
@@ -1375,10 +1395,436 @@ describe('Runner — stop() (graceful, permanent: never-dispatched pending settl
 		})
 		const run = runner.execute([1, 2, 3])
 		await waitForDelay(10)
-		runner.stop()
+		const stopping = runner.stop()
 		gate.resolve()
 		await expect(run).resolves.toEqual([1])
+		await stopping
 		// The would-have-failed units 2/3 never dispatched — the failing handler branch never ran.
 		expect(ran).toEqual([1])
+	})
+})
+
+describe('Runner — lifecycle and hostile option boundaries', () => {
+	it('rejects strict invalid Queue numeric options synchronously', () => {
+		expect(() => createRunner({ concurrency: 0, handler: () => 0 })).toThrow(
+			'positive safe integer',
+		)
+		expect(() => createRunner({ concurrency: 1.5, handler: () => 0 })).toThrow(
+			'positive safe integer',
+		)
+		expect(() => createRunner({ concurrency: Number.NaN, handler: () => 0 })).toThrow(
+			'positive safe integer',
+		)
+		expect(() =>
+			createRunner({ concurrency: Number.MAX_SAFE_INTEGER + 1, handler: () => 0 }),
+		).toThrow('positive safe integer')
+		expect(() => createRunner({ retries: -1, handler: () => 0 })).toThrow(
+			'nonnegative safe integer',
+		)
+		expect(() => createRunner({ retries: 0.5, handler: () => 0 })).toThrow(
+			'nonnegative safe integer',
+		)
+		expect(() => createRunner({ retries: Number.POSITIVE_INFINITY, handler: () => 0 })).toThrow(
+			'nonnegative safe integer',
+		)
+		expect(() => createRunner({ timeout: -1, handler: () => 0 })).toThrow('native timer range')
+		expect(() => createRunner({ timeout: 0.5, handler: () => 0 })).toThrow('native timer range')
+		expect(() => createRunner({ timeout: 2_147_483_648, handler: () => 0 })).toThrow(
+			'native timer range',
+		)
+		expect(() => createRunner({ timeout: Number.NaN, handler: () => 0 })).toThrow(
+			'native timer range',
+		)
+	})
+
+	it('reads constructor and resolved entry options once, including inherited and non-enumerable values', async () => {
+		let handlerReads = 0
+		let concurrencyReads = 0
+		let retriesReads = 0
+		let timeoutReads = 0
+		let entriesReads = 0
+		let resolverReads = 0
+		let entryRetriesReads = 0
+		let entryTimeoutReads = 0
+		let attempts = 0
+		const entry: RunnerEntryOptions = {}
+		const entryPrototype = {}
+		Object.defineProperty(entryPrototype, 'retries', {
+			get: () => {
+				entryRetriesReads += 1
+				return 1
+			},
+		})
+		Object.setPrototypeOf(entry, entryPrototype)
+		Object.defineProperty(entry, 'timeout', {
+			enumerable: false,
+			get: () => {
+				entryTimeoutReads += 1
+				return 1_000
+			},
+		})
+		const options: RunnerOptions<number, number> = { handler: () => 0 }
+		const optionsPrototype = {}
+		Object.defineProperty(optionsPrototype, 'concurrency', {
+			get: () => {
+				concurrencyReads += 1
+				return 1
+			},
+		})
+		Object.setPrototypeOf(options, optionsPrototype)
+		Object.defineProperties(options, {
+			handler: {
+				enumerable: false,
+				get: () => {
+					handlerReads += 1
+					return (controller: { readonly input: number }) => {
+						attempts += 1
+						if (attempts === 1) throw new Error('retry once')
+						return controller.input
+					}
+				},
+			},
+			retries: {
+				enumerable: false,
+				get: () => {
+					retriesReads += 1
+					return 0
+				},
+			},
+			timeout: {
+				enumerable: false,
+				get: () => {
+					timeoutReads += 1
+					return 0
+				},
+			},
+			entries: {
+				enumerable: false,
+				get: () => {
+					entriesReads += 1
+					return () => {
+						resolverReads += 1
+						return entry
+					}
+				},
+			},
+		})
+		const runner = createRunner(options)
+		expect(await runner.execute([7])).toEqual([7])
+		expect(attempts).toBe(2)
+		expect(handlerReads).toBe(1)
+		expect(concurrencyReads).toBe(1)
+		expect(retriesReads).toBe(1)
+		expect(timeoutReads).toBe(1)
+		expect(entriesReads).toBe(1)
+		expect(resolverReads).toBe(1)
+		expect(entryRetriesReads).toBe(1)
+		expect(entryTimeoutReads).toBe(1)
+	})
+
+	it('converts a synchronous resolver throw into the normal failure path and balances every launch', async () => {
+		const failure = new Error('resolver failed')
+		const resolved: number[] = []
+		const runner = createRunner<number, number>({
+			concurrency: 3,
+			entries: (input) => {
+				resolved.push(input)
+				if (input === 1) throw failure
+				return {}
+			},
+			handler: (controller) => controller.input,
+		})
+		await expect(runner.execute([1, 2, 3])).rejects.toBe(failure)
+		expect(resolved).toEqual([1, 2, 3])
+		expect(runner.active).toBe(0)
+	})
+
+	it('classifies a resolver-triggered graceful stop as never-dispatched work', async () => {
+		const runners: RunnerInterface<number, number>[] = []
+		const ran: number[] = []
+		let stopping: Promise<void> | undefined
+		const runner = createRunner<number, number>({
+			entries: () => {
+				const current = runners[0]
+				if (current === undefined) throw new Error('expected runner fixture')
+				stopping = current.stop()
+				return {}
+			},
+			handler: (controller) => {
+				ran.push(controller.input)
+				return controller.input
+			},
+		})
+		runners.push(runner)
+
+		await expect(runner.execute([1, 2])).resolves.toEqual([])
+		if (stopping === undefined) throw new Error('expected resolver stop')
+		await stopping
+
+		expect(ran).toEqual([])
+		expect(runner.active).toBe(0)
+		expect(runner.stopped).toBe(true)
+	})
+
+	it('converts a synchronous Queue enqueue validation throw into the normal failure path', async () => {
+		const resolved: number[] = []
+		const runner = createRunner<number, number>({
+			entries: (input) => {
+				resolved.push(input)
+				return { retries: input === 1 ? -1 : 0 }
+			},
+			handler: (controller) => controller.input,
+		})
+		await expect(runner.execute([1, 2, 3])).rejects.toThrow('nonnegative safe integer')
+		expect(resolved).toEqual([1, 2, 3])
+		expect(runner.active).toBe(0)
+	})
+
+	it('escalates a graceful stop when an in-flight unit fails and cancels its dispatched sibling', async () => {
+		const release = createGate()
+		const failure = new Error('failed after stop')
+		let siblingAborted = false
+		const runner = createRunner<string, string>({
+			concurrency: 2,
+			handler: async (controller) => {
+				if (controller.input === 'failure') {
+					await release.promise
+					throw failure
+				}
+				await controller.wait()
+				siblingAborted = controller.aborted
+				return controller.input
+			},
+		})
+		const run = runner.execute(['failure', 'sibling'])
+		await waitForDelay(10)
+		const stopping = runner.stop()
+		release.resolve()
+		await expect(run).rejects.toBe(failure)
+		await stopping
+		expect(siblingAborted).toBe(true)
+		expect(runner.active).toBe(0)
+	})
+
+	it('returns stable lifecycle barriers and destroys observation only after active cleanup', async () => {
+		const stopped = createRunner<number, number>({ handler: (controller) => controller.input })
+		const stopping = stopped.stop()
+		expect(stopped.stop()).toBe(stopping)
+		await stopping
+
+		const aborted = createRunner<number, number>({ handler: (controller) => controller.input })
+		const aborting = aborted.abort(new Error('abort'))
+		expect(aborted.abort()).toBe(aborting)
+		await aborting
+
+		const cleanup = createGate()
+		const destroyed = createRunner<number, number>({
+			handler: async (controller) => {
+				await controller.wait()
+				await cleanup.promise
+				return controller.input
+			},
+		})
+		const run = destroyed.execute([1])
+		await waitForDelay(10)
+		const destroying = destroyed.destroy()
+		expect(destroyed.destroy()).toBe(destroying)
+		expect(destroyed.emitter.destroyed).toBe(false)
+		cleanup.resolve()
+		await expect(run).rejects.toThrow('runner aborted')
+		await destroying
+		expect(destroyed.emitter.destroyed).toBe(true)
+	})
+
+	it('settles an empty run when its start listener requests a graceful stop', async () => {
+		const runner = createRunner<number, number>({ handler: (controller) => controller.input })
+		const events = recordEmitterEvents(runner.emitter, RUNNER_EVENTS)
+		let stopping: Promise<void> | undefined
+		runner.emitter.on('start', () => {
+			stopping = runner.stop()
+		})
+
+		await expect(runner.execute([])).resolves.toEqual([])
+		if (stopping === undefined) throw new Error('expected start listener to stop runner')
+		await stopping
+		expect(events.start.count).toBe(1)
+		expect(events.finish.calls).toEqual([[[]]])
+		expect(events.abort.count).toBe(0)
+		expect(runner.active).toBe(0)
+		expect(runner.stopped).toBe(true)
+	})
+
+	it('orders a start-listener spawn after every declared input', async () => {
+		const runner = createRunner<number, number>({ handler: (controller) => controller.input })
+		let spawned: Promise<number> | undefined
+		runner.emitter.on('start', () => {
+			spawned = runner.spawn(3)
+		})
+
+		await expect(runner.execute([1, 2])).resolves.toEqual([1, 2, 3])
+		if (spawned === undefined) throw new Error('expected accepted start-listener spawn')
+		await expect(spawned).resolves.toBe(3)
+	})
+
+	it('rejects an empty run with the exact reason when its start listener aborts', async () => {
+		const reason = { command: 'abort from start' }
+		const runner = createRunner<number, number>({ handler: (controller) => controller.input })
+		const events = recordEmitterEvents(runner.emitter, RUNNER_EVENTS)
+		let aborting: Promise<void> | undefined
+		runner.emitter.on('start', () => {
+			aborting = runner.abort(reason)
+		})
+
+		await expect(runner.execute([])).rejects.toBe(reason)
+		if (aborting === undefined) throw new Error('expected start listener to abort runner')
+		await aborting
+		expect(events.start.count).toBe(1)
+		expect(events.abort.calls).toEqual([[reason]])
+		expect(events.finish.count).toBe(0)
+		expect(runner.active).toBe(0)
+	})
+
+	it('destroys an empty run from its start listener without hanging or duplicating abort', async () => {
+		const runner = createRunner<number, number>({ handler: (controller) => controller.input })
+		const events = recordEmitterEvents(runner.emitter, RUNNER_EVENTS)
+		let destroying: Promise<void> | undefined
+		runner.emitter.on('start', () => {
+			destroying = runner.destroy()
+		})
+
+		await expect(runner.execute([])).rejects.toThrow('runner aborted')
+		if (destroying === undefined) throw new Error('expected start listener to destroy runner')
+		await destroying
+		expect(events.start.count).toBe(1)
+		expect(events.abort.count).toBe(1)
+		expect(events.finish.count).toBe(0)
+		expect(runner.active).toBe(0)
+		expect(runner.emitter.destroyed).toBe(true)
+	})
+
+	it('returns the same barrier when an abort listener recursively aborts', async () => {
+		const reason = new Error('recursive abort')
+		const runner = createRunner<number, number>({
+			handler: async (controller) => {
+				await controller.wait()
+				return controller.input
+			},
+		})
+		const events = recordEmitterEvents(runner.emitter, RUNNER_EVENTS)
+		let recursive: Promise<void> | undefined
+		runner.emitter.on('abort', () => {
+			recursive = runner.abort(new Error('ignored recursive reason'))
+		})
+		const run = runner.execute([1])
+		await waitForDelay(10)
+		const aborting = runner.abort(reason)
+
+		expect(recursive).toBe(aborting)
+		await expect(run).rejects.toBe(reason)
+		await aborting
+		expect(events.abort.calls).toEqual([[reason]])
+		expect(runner.active).toBe(0)
+	})
+
+	it('returns the same destroy barrier from an abort listener and destroys observation last', async () => {
+		const cleanup = createGate()
+		const runner = createRunner<number, number>({
+			handler: async (controller) => {
+				await controller.wait()
+				await cleanup.promise
+				return controller.input
+			},
+		})
+		const events = recordEmitterEvents(runner.emitter, RUNNER_EVENTS)
+		let recursive: Promise<void> | undefined
+		runner.emitter.on('abort', () => {
+			recursive = runner.destroy()
+		})
+		const run = runner.execute([1])
+		await waitForDelay(10)
+		const destroying = runner.destroy()
+
+		expect(recursive).toBe(destroying)
+		expect(runner.destroy()).toBe(destroying)
+		expect(runner.emitter.destroyed).toBe(false)
+		cleanup.resolve()
+		await expect(run).rejects.toThrow('runner aborted')
+		await destroying
+		expect(events.abort.count).toBe(1)
+		expect(runner.active).toBe(0)
+		expect(runner.emitter.destroyed).toBe(true)
+	})
+
+	it('allows a finish listener to destroy the runner after successful drain', async () => {
+		const runner = createRunner<number, number>({ handler: (controller) => controller.input })
+		const events = recordEmitterEvents(runner.emitter, RUNNER_EVENTS)
+		let destroying: Promise<void> | undefined
+		let destroyedDuring = true
+		runner.emitter.on('finish', () => {
+			destroyedDuring = runner.emitter.destroyed
+			destroying = runner.destroy()
+		})
+
+		await expect(runner.execute([1])).resolves.toEqual([1])
+		if (destroying === undefined) throw new Error('expected finish listener to destroy runner')
+		await destroying
+		expect(destroyedDuring).toBe(false)
+		expect(events.finish.calls).toEqual([[[1]]])
+		expect(events.abort.count).toBe(1)
+		expect(runner.active).toBe(0)
+		expect(runner.emitter.destroyed).toBe(true)
+	})
+
+	it('escalates stop to abort to destroy with stable barriers and one exact failure', async () => {
+		const reason = { command: 'escalate' }
+		const runner = createRunner<number, number>({
+			handler: async (controller) => {
+				await controller.wait()
+				return controller.input
+			},
+		})
+		const events = recordEmitterEvents(runner.emitter, RUNNER_EVENTS)
+		const run = runner.execute([1])
+		await waitForDelay(10)
+		const stopping = runner.stop()
+		const aborting = runner.abort(reason)
+
+		expect(runner.stop()).toBe(aborting)
+		expect(runner.abort(new Error('ignored later abort'))).toBe(aborting)
+		const destroying = runner.destroy()
+		expect(runner.destroy()).toBe(destroying)
+		expect(runner.stop()).toBe(destroying)
+		await expect(run).rejects.toBe(reason)
+		await stopping
+		await aborting
+		await destroying
+		expect(events.abort.calls).toEqual([[reason]])
+		expect(runner.active).toBe(0)
+		expect(runner.stopped).toBe(true)
+		expect(runner.emitter.destroyed).toBe(true)
+	})
+
+	it('rejects Controller.spawn after stop before creating observable work', async () => {
+		const gate = createGate()
+		let spawn: ((input: number) => Promise<number>) | undefined
+		const events = createRecorder<[string, string | undefined]>()
+		const runner = createRunner<number, number>({
+			handler: async (controller) => {
+				spawn = (input) => controller.spawn(input)
+				await gate.promise
+				return controller.input
+			},
+		})
+		runner.emitter.on('spawn', events.handler)
+		const run = runner.execute([1])
+		await waitForDelay(10)
+		const stopping = runner.stop()
+		const active = runner.active
+		expect(() => spawn?.(2)).toThrow('spawn is unavailable outside an active run')
+		expect(runner.active).toBe(active)
+		expect(events.count).toBe(0)
+		gate.resolve()
+		await run
+		await stopping
 	})
 })

@@ -201,8 +201,11 @@ export class WorkflowPersistence implements WorkflowPersistenceInterface {
 			await this.#writing
 			return
 		}
-		const writing = this.#drain()
+		const reservation = Promise.withResolvers<void>()
+		const writing = reservation.promise
+		// Reserve the writer before the drain can synchronously enter external store code.
 		this.#writing = writing
+		void this.#drain().then(reservation.resolve, reservation.reject)
 		try {
 			await writing
 		} finally {

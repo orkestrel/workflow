@@ -11,11 +11,49 @@ import type {
 	TaskStatus,
 	WorkflowContext,
 	WorkflowDefinition,
+	WorkflowOptions,
 	WorkflowSnapshot,
 	WorkflowStatus,
 } from './types.js'
 import type { Failure, Success } from '@orkestrel/contract'
+import { linkSignal } from '@orkestrel/abort'
 import { DEFAULT_BAIL, MAX_TIMER_MS, TASK_TRANSITIONS } from './constants.js'
+
+/**
+ * Capture every top-level {@link WorkflowOptions} value exactly once into an owned plain bag.
+ *
+ * @remarks
+ * Direct property reads preserve inherited and non-enumerable option values while preventing
+ * accessor-backed caller bags from shifting policy, handlers, hooks, or nested options between
+ * construction stages. Nested bags and the functions registry retain their original identities so
+ * entity constructors can snapshot keyed child options and live additions can resolve against the
+ * same registry.
+ *
+ * @param options - The caller-owned workflow construction options
+ * @returns An owned top-level options bag containing the captured values
+ *
+ * @example
+ * ```ts
+ * const captured = captureWorkflowOptions(options)
+ * const workflow = createWorkflow(definition, captured)
+ * ```
+ */
+export function captureWorkflowOptions(options?: WorkflowOptions): WorkflowOptions {
+	const on = options?.on
+	const bail = options?.bail
+	const error = options?.error
+	const phases = options?.phases
+	const functions = options?.functions
+	const silence = options?.silence
+	return Object.freeze({
+		...(on === undefined ? {} : { on }),
+		...(bail === undefined ? {} : { bail }),
+		...(error === undefined ? {} : { error }),
+		...(phases === undefined ? {} : { phases }),
+		...(functions === undefined ? {} : { functions }),
+		...(silence === undefined ? {} : { silence }),
+	})
+}
 
 // Workflow derivation helpers — pure, side-effect-free functions (AGENTS §4.3,
 // §14). Every function is exported and unit-tested. The status derivations encode
@@ -604,6 +642,74 @@ export function moveEntry<T>(
  */
 export function createDeferred<T>(): DeferredInterface<T> {
 	return Promise.withResolvers<T>()
+}
+
+/**
+ * Schedule one cancellable host operation behind an owned settlement signal.
+ *
+ * @remarks
+ * The completion and failure paths each own an {@link AbortController}; their native composite is
+ * linked to the optional caller signal before `start` can arm host work. Scheduler backends attach
+ * only to that safe composite, so caller mutation of `addEventListener` or `removeEventListener`
+ * cannot strand the operation. The first completion resolves, the first host failure rejects with
+ * its exact value, and caller abort rejects with its exact linked reason. Caller abort and host
+ * failure cancel an armed handle; synchronous settlement also cancels the handle immediately after
+ * `start` returns it. Cancellation is secondary cleanup: if its closure throws, the already-winning
+ * completion, exact host failure, or exact caller reason still settles without escape or replacement.
+ *
+ * @param start - Arm host work and return its cancellation closure
+ * @param signal - Optional caller cancellation signal
+ * @returns A promise settled exactly once by completion, host failure, or caller abort
+ */
+export function scheduleHost(
+	start: (complete: () => void, failure: (error: unknown) => void) => () => void,
+	signal?: AbortSignal,
+): Promise<void> {
+	const completion = new AbortController()
+	const failed = new AbortController()
+	let settled: AbortSignal
+	try {
+		settled = linkSignal(AbortSignal.any([completion.signal, failed.signal]), signal)
+	} catch (error) {
+		return Promise.reject(error)
+	}
+	if (settled.aborted) return Promise.reject(settled.reason)
+	return new Promise<void>((resolve, reject) => {
+		let cancel: (() => void) | undefined
+		let hostFailure: unknown
+		settled.addEventListener(
+			'abort',
+			() => {
+				if (completion.signal.aborted) {
+					resolve()
+					return
+				}
+				const reason = failed.signal.aborted ? hostFailure : settled.reason
+				try {
+					cancel?.()
+				} catch {}
+				reject(reason)
+			},
+			{ once: true },
+		)
+		try {
+			cancel = start(
+				() => completion.abort(),
+				(error) => {
+					hostFailure = error
+					failed.abort()
+				},
+			)
+		} catch (error) {
+			hostFailure = error
+			failed.abort()
+		}
+		if (settled.aborted) {
+			try {
+				cancel?.()
+			} catch {}
+		}
+	})
 }
 
 /**

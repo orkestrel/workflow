@@ -76,17 +76,17 @@ describe('BrowserScheduler', () => {
 			)
 		})
 
-		it('a completed yield removed its abort listener (no leak — counted on a real signal)', async () => {
+		it('a completed yield leaves caller-owned listener methods untouched', async () => {
 			const scheduler = new BrowserScheduler()
 			const controller = new AbortController()
 			const { added, removed } = instrumentSignal(controller.signal)
 
 			await scheduler.yield({ signal: controller.signal })
-			expect(added.count).toBe(1)
-			expect(removed.count).toBe(1)
+			expect(added.count).toBe(0)
+			expect(removed.count).toBe(0)
 		})
 
-		it('aborting a pending yield removes the listener and is inert thereafter (no double-settle)', async () => {
+		it('aborting a pending yield cancels the task and is inert thereafter', async () => {
 			const scheduler = new BrowserScheduler()
 			const controller = new AbortController()
 			let settled = 0
@@ -141,14 +141,14 @@ describe('BrowserScheduler', () => {
 			expect(resolved).toBe(false)
 		})
 
-		it('a completed delay removed its abort listener (no leak)', async () => {
+		it('a completed delay leaves caller-owned listener methods untouched', async () => {
 			const scheduler = new BrowserScheduler()
 			const controller = new AbortController()
 			const { added, removed } = instrumentSignal(controller.signal)
 
 			await scheduler.delay(5, { signal: controller.signal })
-			expect(added.count).toBe(1)
-			expect(removed.count).toBe(1)
+			expect(added.count).toBe(0)
+			expect(removed.count).toBe(0)
 		})
 	})
 })

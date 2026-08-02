@@ -521,8 +521,8 @@ export interface WorkflowSnapshot {
 /**
  * The durable persistence seam for a {@link WorkflowSnapshot} — three async primitives
  * (`get` / `set` / `delete`) keyed by a workflow id, the snapshot analogue of
- * the server package's `SessionStoreInterface` (and the
- * {@link QueueStoreInterface} driver-swap pattern).
+ * the server package's `SessionStoreInterface` (and the `@orkestrel/queue`
+ * `QueueStoreInterface` driver-swap pattern).
  *
  * @remarks
  * The store persists the W-a {@link WorkflowSnapshot} — the COMPLETE, self-contained,
@@ -535,7 +535,7 @@ export interface WorkflowSnapshot {
  *
  * Every primitive is async (a `Promise`), so a durable backend (a database round-trip) fits the
  * same shape as the memory one. The snapshot carries its OWN id, so `set` takes no separate id
- * param (mirroring {@link QueueStoreInterface.save} / the server package's
+ * param (mirroring `QueueStoreInterface.save` from `@orkestrel/queue` / the server package's
  * `SessionStoreInterface.set`, which key off the value's own
  * `id`). UNLIKE a session store there is NO idle-TTL / eviction — a persisted workflow run-state
  * lives until an explicit `delete`, never silently expiring (it is durable orchestration state,
@@ -545,6 +545,8 @@ export interface WorkflowSnapshot {
 export interface WorkflowStoreInterface {
 	/**
 	 * Resolve the persisted snapshot for `id`, or `undefined` if none is stored.
+	 * A present payload whose own `id` differs from the requested storage key is corrupt and
+	 * rejects with a normalized `RESTORE` error carrying both ids.
 	 *
 	 * @param id - The workflow id to resolve (a {@link WorkflowSnapshot.id})
 	 * @returns The persisted snapshot, or `undefined` if absent
@@ -552,7 +554,7 @@ export interface WorkflowStoreInterface {
 	get(id: string): Promise<WorkflowSnapshot | undefined>
 	/**
 	 * Insert or replace a snapshot under its own `snapshot.id` (no separate id param —
-	 * mirroring {@link QueueStoreInterface.save}).
+	 * mirroring `QueueStoreInterface.save` from `@orkestrel/queue`).
 	 *
 	 * @param snapshot - The snapshot to store (keyed by its `id`)
 	 */
@@ -1881,10 +1883,17 @@ export interface WorkflowManagerOptions {
  *   `workflows()` lists them in insertion order.
  * - **Durable open / save (the optional `store` seam).** When a {@link WorkflowStoreInterface}
  *   is supplied (the `store` option), `open(id)` resolves an already-registered workflow
- *   directly (no store hit); on a registry MISS it HYDRATES one from `store.get(id)` through
+ *   directly (no store hit); same-id registry misses share one in-flight hydration. On a MISS
+ *   it HYDRATES one from `store.get(id)` through
  *   {@link import('./factories.js').restoreWorkflow} — flowing this manager's `functions`
- *   registry in so the rehydrated tree is RUNNABLE — registers it, and returns it. `save(id)`
- *   PERSISTS a registered workflow's {@link WorkflowInterface.snapshot} to the store. Both are
+ *   registry in so the rehydrated tree is RUNNABLE — registers it, and returns it. Registry
+ *   mutation wins over an earlier pending hydration: `add` supplies the live result, while
+ *   `remove` (even for an absent id) and `clear` invalidate the earlier read. Missed and failed
+ *   reads leave no stale in-flight entry, and a payload whose own id differs from the requested
+ *   key rejects with `RESTORE` instead of registering under either id. `save(id)` captures a
+ *   registered workflow's {@link WorkflowInterface.snapshot} at invocation, then PERSISTS it.
+ *   Same-id writes run serially in invocation order; different ids remain independent, and an
+ *   earlier rejection reaches its caller without preventing a later queued write. Both are
  *   LENIENT without a store — `open` resolves only registered ids, `save` is a no-op
  *   (`false`) — never a throw. The EXACT analogue of
  *   `ConversationManagerInterface.open` / `.save` and `WorkspaceManagerInterface.open` /
@@ -1898,7 +1907,7 @@ export interface WorkflowManagerOptions {
  *
  * @example
  * ```ts
- * import { createWorkflowManager } from '@src/core'
+ * import { createWorkflowManager } from '@orkestrel/workflow'
  *
  * const manager = createWorkflowManager({
  * 	functions: { compile: async (controller) => `built ${controller.task.id}` },
@@ -1932,11 +1941,17 @@ export interface WorkflowManagerInterface {
 	 *
 	 * @remarks
 	 * - If `id` is ALREADY registered, it is returned directly — no store hit.
-	 * - Else if a `store` is set, `store.get(id)` is awaited; on a HIT the snapshot is
+	 * - Same-id registry misses share one in-flight `store.get(id)` and resolve to the same live
+	 *   object. On a HIT the snapshot is
 	 *   rehydrated into a fresh {@link WorkflowInterface} via
 	 *   {@link import('./factories.js').restoreWorkflow}, flowing this manager's `functions`
 	 *   registry in (so the rehydrated tree carries real resolved `handler`s and can RESUME
-	 *   real work), registers it, and returns it.
+	 *   real work), registers it, and returns it. A payload whose own id differs from `id` rejects
+	 *   with a normalized `RESTORE` error carrying the requested and payload ids.
+	 * - Registry mutation after the store read starts has precedence: `add(definition)` for the
+	 *   same id wins and becomes every pending caller's result; `remove(id)` invalidates that read
+	 *   even when the id was absent; `clear()` invalidates every earlier read. A miss or rejection
+	 *   clears the in-flight entry so a later call retries.
 	 * - Else (no store, or a store MISS) ⇒ `undefined` (lenient — no throw).
 	 *
 	 * @param id - The workflow id to open
@@ -1948,9 +1963,10 @@ export interface WorkflowManagerInterface {
 	 * {@link WorkflowStoreInterface} (`store`).
 	 *
 	 * @remarks
-	 * Lenient: when a `store` is set AND `id` is registered, `store.set(workflow.snapshot())`
-	 * is awaited and `true` is returned; otherwise (no store, OR an unknown id) it is a NO-OP
-	 * returning `false` — never a throw.
+	 * When a `store` is set AND `id` is registered, the snapshot is captured synchronously at
+	 * invocation. Same-id `store.set` calls are serialized in invocation order; different ids are
+	 * independent. A rejected write reaches that caller unchanged but does not poison a later
+	 * queued write. Otherwise (no store, OR an unknown id) it is a NO-OP returning `false`.
 	 *
 	 * @param id - The id of the registered workflow to persist
 	 * @returns `true` when the snapshot was persisted; `false` when no store / unknown id
@@ -2131,11 +2147,11 @@ export interface RunnerEntryOptions {
  * - `handler` — runs each unit's work against its {@link ControllerInterface};
  *   rejecting fails the unit (and, after retries are exhausted, fails the run).
  * - `concurrency` — the maximum units in flight at once; defaults to `1` (ordered,
- *   one-at-a-time). Floored at `1`.
+ *   one-at-a-time) and must be a positive safe integer.
  * - `retries` — the default extra attempts per unit on failure (or a per-attempt
- *   timeout); defaults to `0`.
- * - `timeout` — the per-attempt deadline in milliseconds; defaults to none (a
- *   non-positive value means no deadline).
+ *   timeout); defaults to `0` and must be a nonnegative safe integer.
+ * - `timeout` — the per-attempt deadline in milliseconds; defaults to `0`, must be
+ *   an integer in `0..2_147_483_647`, and `0` disables the deadline.
  * - `entries` — per-entry `retries` / `timeout` overrides, resolved from each
  *   input; falls back to the runner-level `retries` / `timeout` defaults.
  * - `on` — the reserved {@link EmitterHooks} key (§8): initial listeners for the runner's
@@ -2252,8 +2268,9 @@ export interface RunnerInterface<TInput, TResult> {
 	 * `execute` reject.
 	 *
 	 * @param reason - An optional cancellation reason propagated to every unit's signal
+	 * @returns The stable cleanup barrier
 	 */
-	abort(reason?: unknown): void
+	abort(reason?: unknown): Promise<void>
 	/**
 	 * Suspend dispatch (AGENTS §10 — resumable): the backing queue holds the NEXT dispatch
 	 * while any in-flight unit finishes; idempotent.
@@ -2290,10 +2307,15 @@ export interface RunnerInterface<TInput, TResult> {
 	 * runner.stop() // the in-flight unit finishes; the rest are gracefully dropped
 	 * await results // resolves with whatever settled — never rejects
 	 * ```
+	 * @returns The stable graceful-cleanup barrier
 	 */
-	stop(): void
-	/** Tear the runner down — `abort` plus stop the backing queue; idempotent. */
-	destroy(): void
+	stop(): Promise<void>
+	/**
+	 * Tear the runner down, awaiting backing-queue cleanup before destroying the emitter last.
+	 *
+	 * @returns The stable teardown barrier
+	 */
+	destroy(): Promise<void>
 }
 
 /**

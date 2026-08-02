@@ -13,15 +13,16 @@ import { IdleScheduler } from './IdleScheduler.js'
  * The default browser scheduler: it honours `options.priority` (`user` /
  * `normal` / `background`) when `scheduler.postTask` is available and degrades to a plain
  * macrotask elsewhere. Both methods are abort-aware: pass `options.signal` and a pending
- * yield/delay rejects with the signal's `reason` verbatim, with full task/timer/listener
- * cleanup. Prefer {@link createFrameScheduler} for paint-aligned work or
+ * yield/delay rejects with the signal's exact `reason`; the shared owned-signal lifecycle
+ * cancels the native handle without invoking caller listener methods. Prefer
+ * {@link createFrameScheduler} for paint-aligned work or
  * {@link createIdleScheduler} for idle-time background work.
  *
  * @returns A {@link SchedulerInterface} backed by `scheduler.postTask` (or a macrotask)
  *
  * @example
  * ```ts
- * import { createBrowserScheduler } from '@src/browser'
+ * import { createBrowserScheduler } from '@orkestrel/workflow/browser'
  *
  * const scheduler = createBrowserScheduler()
  * await scheduler.yield({ priority: 'background' })
@@ -47,7 +48,7 @@ export function createBrowserScheduler(): SchedulerInterface {
  *
  * @example
  * ```ts
- * import { createFrameScheduler } from '@src/browser'
+ * import { createFrameScheduler } from '@orkestrel/workflow/browser'
  *
  * const scheduler = createFrameScheduler()
  * await scheduler.yield() // resumes before the next paint
@@ -73,7 +74,7 @@ export function createFrameScheduler(): SchedulerInterface {
  *
  * @example
  * ```ts
- * import { createIdleScheduler } from '@src/browser'
+ * import { createIdleScheduler } from '@orkestrel/workflow/browser'
  *
  * const scheduler = createIdleScheduler()
  * await scheduler.yield() // resumes when the host is idle

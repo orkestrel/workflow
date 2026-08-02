@@ -1,3 +1,4 @@
+import type { BudgetInterface, TokenUsage } from '@orkestrel/budget'
 import type { EmitterInterface, EventMap } from '@orkestrel/emitter'
 import type {
 	SchedulerInterface,
@@ -9,6 +10,7 @@ import type {
 	WorkflowFunction,
 	WorkflowInterface,
 	WorkflowSnapshot,
+	WorkflowStoreInterface,
 } from '@src/core'
 import { createScheduler, createWorkflowRunner, TaskController } from '@src/core'
 
@@ -154,6 +156,95 @@ export function createGate<T = void>(): TestGateInterface<T> {
 		reject = rej
 	})
 	return { promise, resolve, reject }
+}
+
+/**
+ * A scripted real {@link WorkflowStoreInterface} boundary whose queued gates control store
+ * settlement while its readonly histories expose the exact durable calls made by a test.
+ */
+export class WorkflowStoreBoundary implements WorkflowStoreInterface {
+	readonly #reads: TestGateInterface<WorkflowSnapshot | undefined>[]
+	readonly #writes: TestGateInterface<void>[]
+	readonly #gets: string[] = []
+	readonly #sets: WorkflowSnapshot[] = []
+	readonly #deletes: string[] = []
+
+	constructor(
+		reads: readonly TestGateInterface<WorkflowSnapshot | undefined>[] = [],
+		writes: readonly TestGateInterface<void>[] = [],
+	) {
+		this.#reads = [...reads]
+		this.#writes = [...writes]
+	}
+
+	get gets(): readonly string[] {
+		return this.#gets
+	}
+
+	get sets(): readonly WorkflowSnapshot[] {
+		return this.#sets
+	}
+
+	get deletes(): readonly string[] {
+		return this.#deletes
+	}
+
+	get(id: string): Promise<WorkflowSnapshot | undefined> {
+		this.#gets.push(id)
+		const gate = this.#reads.shift()
+		return gate === undefined ? Promise.resolve(undefined) : gate.promise
+	}
+
+	set(snapshot: WorkflowSnapshot): Promise<void> {
+		this.#sets.push(snapshot)
+		const gate = this.#writes.shift()
+		return gate === undefined ? Promise.resolve() : gate.promise
+	}
+
+	delete(id: string): Promise<void> {
+		this.#deletes.push(id)
+		return Promise.resolve()
+	}
+}
+
+/** A real budget boundary whose signal getter throws the supplied setup failure. */
+export class FaultBudget implements BudgetInterface<TokenUsage> {
+	readonly id = 'fault-budget'
+	readonly max = 10
+	readonly consumed = 7
+	readonly remaining = 3
+	readonly exhausted = false
+	readonly #failure: unknown
+	#starts = 0
+	#clears = 0
+
+	constructor(failure: unknown) {
+		this.#failure = failure
+	}
+
+	get signal(): AbortSignal {
+		throw this.#failure
+	}
+
+	get starts(): number {
+		return this.#starts
+	}
+
+	get clears(): number {
+		return this.#clears
+	}
+
+	start(): void {
+		this.#starts += 1
+	}
+
+	consume(usage: TokenUsage): void {
+		void usage
+	}
+
+	clear(): void {
+		this.#clears += 1
+	}
 }
 
 // ── Call recorder (a real callback, not a mock) ──────────────────────────────

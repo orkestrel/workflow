@@ -5,12 +5,14 @@ import type {
 	TaskResult,
 	TaskStatus,
 	WorkflowDefinition,
+	WorkflowOptions,
 } from '@src/core'
 import {
 	buildPhaseContext,
 	buildTaskContext,
 	buildWorkflowContext,
 	canTransitionTask,
+	captureWorkflowOptions,
 	collectResults,
 	definitionToSnapshot,
 	deriveBoundary,
@@ -25,10 +27,12 @@ import {
 	parkSignal,
 	phaseDefinitionToSnapshot,
 	resolveTaskSilence,
+	scheduleHost,
 	success,
 	taskDefinitionToSnapshot,
 } from '@src/core'
 import { describe, expect, it } from 'vitest'
+import { captureError, createErrorRecorder } from '../../setup.js'
 
 // The §10/§14 logic core: the derivation truth tables under BOTH bail modes, the ONE
 // terminal predicate, and the task-form `via` guards. Pure functions — real inputs, no
@@ -46,6 +50,127 @@ const EVERY_STATUS: readonly LifecycleStatus[] = [
 	'skipped',
 	'stopped',
 ]
+
+describe('captureWorkflowOptions — one-read hostile option ownership', () => {
+	it('captures inherited and non-enumerable values once while retaining nested identities', () => {
+		let onReads = 0
+		let bailReads = 0
+		let errorReads = 0
+		let phasesReads = 0
+		let functionsReads = 0
+		let silenceReads = 0
+		const on = {}
+		const errors = createErrorRecorder()
+		const phases = {}
+		const functions = {}
+		const options: WorkflowOptions = {}
+		const prototype = {}
+		Object.defineProperties(prototype, {
+			on: {
+				get: () => {
+					onReads += 1
+					return on
+				},
+			},
+			bail: {
+				get: () => {
+					bailReads += 1
+					return true
+				},
+			},
+			error: {
+				get: () => {
+					errorReads += 1
+					return errors.handler
+				},
+			},
+		})
+		Object.setPrototypeOf(options, prototype)
+		Object.defineProperties(options, {
+			phases: {
+				enumerable: false,
+				get: () => {
+					phasesReads += 1
+					return phases
+				},
+			},
+			functions: {
+				enumerable: false,
+				get: () => {
+					functionsReads += 1
+					return functions
+				},
+			},
+			silence: {
+				enumerable: false,
+				get: () => {
+					silenceReads += 1
+					return 25
+				},
+			},
+		})
+
+		const captured = captureWorkflowOptions(options)
+
+		expect(captured).not.toBe(options)
+		expect(captured.on).toBe(on)
+		expect(captured.bail).toBe(true)
+		expect(captured.error).toBe(errors.handler)
+		expect(captured.phases).toBe(phases)
+		expect(captured.functions).toBe(functions)
+		expect(captured.silence).toBe(25)
+		expect([onReads, bailReads, errorReads, phasesReads, functionsReads, silenceReads]).toEqual([
+			1, 1, 1, 1, 1, 1,
+		])
+	})
+
+	it('stops reading at the first throwing option getter', () => {
+		const reads: string[] = []
+		const fault = new Error('bail unavailable')
+		const options: WorkflowOptions = {}
+		Object.defineProperties(options, {
+			on: {
+				get: () => {
+					reads.push('on')
+					return {}
+				},
+			},
+			bail: {
+				get: () => {
+					reads.push('bail')
+					throw fault
+				},
+			},
+			error: {
+				get: () => {
+					reads.push('error')
+					return undefined
+				},
+			},
+			phases: {
+				get: () => {
+					reads.push('phases')
+					return {}
+				},
+			},
+			functions: {
+				get: () => {
+					reads.push('functions')
+					return {}
+				},
+			},
+			silence: {
+				get: () => {
+					reads.push('silence')
+					return 25
+				},
+			},
+		})
+
+		expect(captureError(() => captureWorkflowOptions(options))).toBe(fault)
+		expect(reads).toEqual(['on', 'bail'])
+	})
+})
 
 describe('isTerminalStatus — the ONE terminal check across all three tiers', () => {
 	it('is true for the four terminal states', () => {
@@ -561,6 +686,307 @@ describe('taskDefinitionToSnapshot — the declarative trio copies verbatim, omi
 		const snapshot = taskDefinitionToSnapshot({ id: 't', name: 'T', retries: 0, timeout: 0 })
 		expect(snapshot.retries).toBe(0)
 		expect(snapshot.timeout).toBe(0)
+	})
+})
+
+describe('scheduleHost — centralized host settlement lifecycle', () => {
+	it('rejects a pre-aborted signal without starting host work', async () => {
+		const controller = new AbortController()
+		const reason = new Error('already stopped')
+		let starts = 0
+		controller.abort(reason)
+
+		await expect(
+			scheduleHost(() => {
+				starts += 1
+				return () => undefined
+			}, controller.signal),
+		).rejects.toBe(reason)
+		expect(starts).toBe(0)
+	})
+
+	it('rejects an invalid signal before starting host work', async () => {
+		let starts = 0
+		const pending: unknown = Reflect.apply(scheduleHost, undefined, [
+			() => {
+				starts += 1
+				return () => undefined
+			},
+			{},
+		])
+		if (!(pending instanceof Promise)) throw new Error('expected rejected scheduling promise')
+
+		await expect(pending).rejects.toBeInstanceOf(TypeError)
+		expect(starts).toBe(0)
+	})
+
+	it('schedules safely when the caller addEventListener method is patched to throw', async () => {
+		const controller = new AbortController()
+		Object.defineProperty(controller.signal, 'addEventListener', {
+			value: () => {
+				throw new Error('caller listener method must stay unread')
+			},
+		})
+
+		await expect(
+			scheduleHost((complete) => {
+				const handle = setTimeout(complete, 0)
+				return () => clearTimeout(handle)
+			}, controller.signal),
+		).resolves.toBeUndefined()
+	})
+
+	it('cannot hang when the caller removeEventListener method changes after scheduling', async () => {
+		const controller = new AbortController()
+		let complete: (() => void) | undefined
+		const pending = scheduleHost((settle) => {
+			complete = settle
+			return () => undefined
+		}, controller.signal)
+		Object.defineProperty(controller.signal, 'removeEventListener', {
+			value: () => {
+				throw new Error('caller listener method must stay unread')
+			},
+		})
+		if (complete === undefined) throw new Error('expected armed host completion')
+
+		complete()
+
+		await expect(pending).resolves.toBeUndefined()
+	})
+
+	it('rejects an exact start throw before a cancellation closure exists', async () => {
+		const fault = new Error('host setup failed')
+
+		await expect(
+			scheduleHost(() => {
+				throw fault
+			}),
+		).rejects.toBe(fault)
+	})
+
+	it('cancels once when completion settles synchronously before start returns', async () => {
+		let cancellations = 0
+
+		await expect(
+			scheduleHost((complete) => {
+				complete()
+				return () => {
+					cancellations += 1
+				}
+			}),
+		).resolves.toBeUndefined()
+		expect(cancellations).toBe(1)
+	})
+
+	it('cancels once when host failure settles synchronously before start returns', async () => {
+		const fault = new Error('host failed while arming')
+		let cancellations = 0
+		const pending = scheduleHost((_complete, fail) => {
+			fail(fault)
+			return () => {
+				cancellations += 1
+			}
+		})
+
+		await expect(pending).rejects.toBe(fault)
+		expect(cancellations).toBe(1)
+	})
+
+	it('cancels once and preserves the exact reason when the caller aborts during start', async () => {
+		const controller = new AbortController()
+		const reason = { command: 'stop' }
+		let cancellations = 0
+
+		const pending = scheduleHost(() => {
+			controller.abort(reason)
+			return () => {
+				cancellations += 1
+			}
+		}, controller.signal)
+
+		await expect(pending).rejects.toBe(reason)
+		expect(cancellations).toBe(1)
+	})
+
+	it('keeps the caller reason when cancellation synchronously reports a host failure', async () => {
+		const controller = new AbortController()
+		const reason = new Error('caller stopped first')
+		const cleanupFailure = new Error('cleanup reported failure')
+		let cancellations = 0
+		const pending = scheduleHost((_complete, fail) => {
+			return () => {
+				cancellations += 1
+				fail(cleanupFailure)
+			}
+		}, controller.signal)
+
+		controller.abort(reason)
+
+		await expect(pending).rejects.toBe(reason)
+		expect(cancellations).toBe(1)
+	})
+
+	it('contains a throwing cancellation closure after an asynchronous caller abort', async () => {
+		const controller = new AbortController()
+		const reason = new Error('caller stopped')
+		const cleanup = new Error('caller cleanup failed')
+		const pending = scheduleHost(
+			() => () => {
+				throw cleanup
+			},
+			controller.signal,
+		)
+
+		expect(() => controller.abort(reason)).not.toThrow()
+		await expect(pending).rejects.toBe(reason)
+	})
+
+	it('contains a throwing cancellation closure after an asynchronous host failure', async () => {
+		const reason = new Error('host failed')
+		const cleanup = new Error('host cleanup failed')
+		const pending = scheduleHost((_complete, fail) => {
+			queueMicrotask(() => fail(reason))
+			return () => {
+				throw cleanup
+			}
+		})
+
+		await expect(pending).rejects.toBe(reason)
+	})
+
+	it('preserves every falsy host failure and cancels each handle once', async () => {
+		const reasons: readonly unknown[] = [undefined, null, false, 0, '']
+
+		for (const reason of reasons) {
+			let cancellations = 0
+			const pending = scheduleHost((_complete, fail) => {
+				queueMicrotask(() => fail(reason))
+				return () => {
+					cancellations += 1
+				}
+			})
+			const outcome = await pending.then(
+				() => success(undefined),
+				(error) => failure(error),
+			)
+
+			expect(outcome.success).toBe(false)
+			if (outcome.success) throw new Error('expected host rejection')
+			expect(outcome.error).toBe(reason)
+			expect(cancellations).toBe(1)
+		}
+	})
+
+	it('ignores late caller abort and host failure after completion', async () => {
+		const controller = new AbortController()
+		let complete: (() => void) | undefined
+		let fail: ((error: unknown) => void) | undefined
+		let settlements = 0
+		let cancellations = 0
+		const pending = scheduleHost((settle, reject) => {
+			complete = settle
+			fail = reject
+			return () => {
+				cancellations += 1
+			}
+		}, controller.signal).then(
+			() => {
+				settlements += 1
+				return 'resolved'
+			},
+			() => {
+				settlements += 1
+				return 'rejected'
+			},
+		)
+		if (complete === undefined || fail === undefined) throw new Error('expected armed host')
+
+		complete()
+		expect(await pending).toBe('resolved')
+		controller.abort(new Error('late caller abort'))
+		fail(new Error('late host failure'))
+		complete()
+		await Promise.resolve()
+
+		expect(settlements).toBe(1)
+		expect(cancellations).toBe(0)
+	})
+
+	it('ignores late completion and caller abort after host failure', async () => {
+		const controller = new AbortController()
+		const reason = new Error('host failed first')
+		let complete: (() => void) | undefined
+		let fail: ((error: unknown) => void) | undefined
+		let settlements = 0
+		let cancellations = 0
+		const pending = scheduleHost((settle, reject) => {
+			complete = settle
+			fail = reject
+			return () => {
+				cancellations += 1
+			}
+		}, controller.signal).then(
+			() => {
+				settlements += 1
+				return success(undefined)
+			},
+			(error) => {
+				settlements += 1
+				return failure(error)
+			},
+		)
+		if (complete === undefined || fail === undefined) throw new Error('expected armed host')
+
+		fail(reason)
+		const outcome = await pending
+		expect(outcome.success).toBe(false)
+		if (outcome.success) throw new Error('expected host rejection')
+		expect(outcome.error).toBe(reason)
+		complete()
+		controller.abort(new Error('late caller abort'))
+		await Promise.resolve()
+
+		expect(settlements).toBe(1)
+		expect(cancellations).toBe(1)
+	})
+
+	it('ignores late completion and host failure after caller abort', async () => {
+		const controller = new AbortController()
+		const reason = new Error('caller stopped first')
+		let complete: (() => void) | undefined
+		let fail: ((error: unknown) => void) | undefined
+		let settlements = 0
+		let cancellations = 0
+		const pending = scheduleHost((settle, reject) => {
+			complete = settle
+			fail = reject
+			return () => {
+				cancellations += 1
+			}
+		}, controller.signal).then(
+			() => {
+				settlements += 1
+				return success(undefined)
+			},
+			(error) => {
+				settlements += 1
+				return failure(error)
+			},
+		)
+		if (complete === undefined || fail === undefined) throw new Error('expected armed host')
+
+		controller.abort(reason)
+		const outcome = await pending
+		expect(outcome.success).toBe(false)
+		if (outcome.success) throw new Error('expected caller rejection')
+		expect(outcome.error).toBe(reason)
+		complete()
+		fail(new Error('late host failure'))
+		await Promise.resolve()
+
+		expect(settlements).toBe(1)
+		expect(cancellations).toBe(1)
 	})
 })
 

@@ -1,16 +1,14 @@
 import { defineConfig } from 'vite'
 import dts from 'vite-plugin-dts'
 import {
-	ENVIRONMENT_CSS,
 	environmentBoundary,
 	outputBoundary,
 	srcCore,
 	resolveWorkspacePath,
-} from '../../vite.config'
+} from '../../vite.config.js'
 
 export default defineConfig(
 	srcCore({
-		css: ENVIRONMENT_CSS,
 		publicDir: false,
 		plugins: [
 			outputBoundary('dist/src/core'),

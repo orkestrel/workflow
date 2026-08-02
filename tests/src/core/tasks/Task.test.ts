@@ -1,9 +1,10 @@
-import type { TaskInterface, WorkflowDefinition, WorkflowInterface } from '@src/core'
-import { MAX_TIMER_MS, createWorkflow, isWorkflowError, restoreWorkflow } from '@src/core'
+import type { TaskInterface, TaskOptions, WorkflowDefinition, WorkflowInterface } from '@src/core'
+import { MAX_TIMER_MS, createWorkflow, isWorkflowError, restoreWorkflow, Task } from '@src/core'
 import { describe, expect, it } from 'vitest'
 import {
 	captureError,
 	createErrorRecorder,
+	createRecorder,
 	recordEmitterEvents,
 	waitForDelay,
 } from '../../../setup.js'
@@ -27,6 +28,103 @@ function loneTask(workflow: WorkflowInterface): TaskInterface {
 	if (task === undefined) throw new Error('expected the lone task to exist')
 	return task
 }
+
+describe('Task — direct construction option ownership', () => {
+	it('captures inherited and non-enumerable metadata, hooks, errors, and silence once', () => {
+		let metadataReads = 0
+		let onReads = 0
+		let errorReads = 0
+		let silenceReads = 0
+		const starts = createRecorder<readonly [string]>()
+		const errors = createErrorRecorder()
+		const failure = new Error('task listener failed')
+		const options: TaskOptions = {}
+		const prototype = {}
+		Object.defineProperties(prototype, {
+			metadata: {
+				get: () => {
+					metadataReads += 1
+					return { source: 'captured' }
+				},
+			},
+			on: {
+				get: () => {
+					onReads += 1
+					return { start: starts.handler }
+				},
+			},
+			error: {
+				get: () => {
+					errorReads += 1
+					return errors.handler
+				},
+			},
+		})
+		Object.setPrototypeOf(options, prototype)
+		Object.defineProperty(options, 'silence', {
+			enumerable: false,
+			get: () => {
+				silenceReads += 1
+				return 25
+			},
+		})
+		const source = loneTask(createWorkflow(buildSingleTaskWorkflow()))
+		const task = new Task(source.context, source.phase, source.workflow, () => {}, options)
+		task.emitter.on('start', () => {
+			throw failure
+		})
+
+		task.start()
+
+		expect(task.snapshot().metadata).toEqual({ source: 'captured' })
+		expect(task.silence).toBe(25)
+		expect(starts.calls).toEqual([[task.id]])
+		expect(errors.calls).toEqual([[failure, 'start']])
+		expect([metadataReads, onReads, errorReads, silenceReads]).toEqual([1, 1, 1, 1])
+	})
+
+	it('normalizes a throwing metadata getter before reading later task options', () => {
+		const reads: string[] = []
+		const options: TaskOptions = {}
+		Object.defineProperties(options, {
+			metadata: {
+				get: () => {
+					reads.push('metadata')
+					throw new Error('metadata unavailable')
+				},
+			},
+			on: {
+				get: () => {
+					reads.push('on')
+					return {}
+				},
+			},
+			error: {
+				get: () => {
+					reads.push('error')
+					return undefined
+				},
+			},
+			silence: {
+				get: () => {
+					reads.push('silence')
+					return 25
+				},
+			},
+		})
+		const source = loneTask(createWorkflow(buildSingleTaskWorkflow()))
+
+		const error = captureError(
+			() => new Task(source.context, source.phase, source.workflow, () => {}, options),
+		)
+
+		expect(reads).toEqual(['metadata'])
+		expect(isWorkflowError(error) ? error.code : undefined).toBe('RESTORE')
+		expect(isWorkflowError(error) ? error.message : undefined).toContain(
+			"task 't' metadata could not be read safely",
+		)
+	})
+})
 
 describe('Task — identity + lineage', () => {
 	it('mirrors the definition identity and navigates UP its lineage', () => {

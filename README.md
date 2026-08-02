@@ -19,7 +19,7 @@ npm install @orkestrel/workflow
 
 ## Status
 
-Pre-release (`0.0.7`): the definition contract, live entity tree, runner,
+Pre-release: the definition contract, live entity tree, runner,
 cooperative schedulers, and durable stores are implemented and tested. A task
 can publish its current note, progress, operations, constraints, pulse, and
 signal; observers can derive silence without polling. Workflow, phase, and task

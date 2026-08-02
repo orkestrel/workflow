@@ -1,5 +1,6 @@
 import type { SchedulerInterface, SchedulerOptions, SchedulerPriority } from '@src/core'
-import { isFunction, isRecord } from '@orkestrel/contract'
+import { scheduleHost } from '@src/core'
+import { isFunction, isPromise, isRecord } from '@orkestrel/contract'
 import { POST_TASK_PRIORITY } from './constants.js'
 
 /**
@@ -16,23 +17,17 @@ import { POST_TASK_PRIORITY } from './constants.js'
  *   never an `as` (AGENTS §14). Where the API is absent (Firefox today, older engines),
  *   it **falls back** to a `setTimeout(0)` macrotask — still a real host-turn, just
  *   without priority. `delay(ms)` is always a real `setTimeout`.
- * - **Abort fidelity is verbatim.** A pending `yield` / `delay` rejects with `signal.reason`
- *   exactly — the value the caller passed, never wrapped or replaced. The discipline
- *   mirrors the cross-environment default's `#sleep`: an already-aborted signal rejects
- *   immediately WITHOUT scheduling; otherwise the host-turn is scheduled and a
- *   `{ once: true }` abort listener attached, and the two settle paths are mutually
- *   exclusive — the turn path removes the listener before resolving, and the abort path
- *   cancels the scheduled turn before rejecting. The promise settles exactly once, with no
- *   leaked task/timer and no leaked listener. The caller's `signal` is NOT handed to
- *   `postTask` (whose own abort would reject with a platform `AbortError`, not the
- *   caller's `reason`); instead an internal controller cancels the posted task while this
- *   scheduler rejects with the verbatim `signal.reason`.
+ * - **Abort fidelity is verbatim.** The shared `scheduleHost` lifecycle links an owned
+ *   settlement composite before scheduling, preserving the exact caller reason without
+ *   invoking caller-owned signal methods. The caller signal is NOT handed to `postTask`;
+ *   an internal controller cancels that native task. An unexpected native promise rejection
+ *   is routed back as the exact host failure instead of being discarded.
  * - **Event-free.** A pure functional primitive — no Emitter, no events.
  *
  * @example
  * ```ts
- * import { createAbort } from '@src/core'
- * import { BrowserScheduler } from '@src/browser'
+ * import { createAbort } from '@orkestrel/abort'
+ * import { BrowserScheduler } from '@orkestrel/workflow/browser'
  *
  * const abort = createAbort()
  * const scheduler = new BrowserScheduler()
@@ -50,7 +45,7 @@ export class BrowserScheduler implements SchedulerInterface {
 	 */
 	yield(options?: SchedulerOptions): Promise<void> {
 		const post = this.#postTask()
-		if (post === undefined) return this.#macrotask(options?.signal)
+		if (post === undefined) return this.#timer(0, options?.signal)
 		return this.#yieldVia(post, options?.priority ?? 'normal', options?.signal)
 	}
 
@@ -81,74 +76,29 @@ export class BrowserScheduler implements SchedulerInterface {
 		return (callback, options) => Reflect.apply(post, candidate, [callback, options])
 	}
 
-	// A `scheduler.postTask` host-turn at the mapped priority. The caller's signal is NOT
-	// passed to `postTask` (its abort rejects with a platform `AbortError`, not the
-	// caller's `reason`); instead an internal controller cancels the posted task on abort
-	// while this rejects with the verbatim `signal.reason`. Settle-once, no leak: the task
-	// path removes the abort listener before resolving; the abort path aborts the internal
-	// controller (cancelling the task) before rejecting.
+	// A `scheduler.postTask` boundary with an internal cancellation controller; `scheduleHost`
+	// owns caller linking and first-settlement arbitration, including native promise failure.
 	#yieldVia(
 		post: (callback: () => void, options: Record<string, unknown>) => unknown,
 		priority: SchedulerPriority,
 		signal?: AbortSignal,
 	): Promise<void> {
-		if (signal?.aborted === true) return Promise.reject(signal.reason)
-		return new Promise<void>((resolve, reject) => {
+		return scheduleHost((complete, failure) => {
 			const internal = new AbortController()
-			const task = post(
-				() => {
-					signal?.removeEventListener('abort', onAbort)
-					resolve()
-				},
-				{ priority: POST_TASK_PRIORITY[priority], signal: internal.signal },
-			)
-			const onAbort = this.#abortTask.bind(this, internal, reject, signal)
-			// `postTask` returns a promise that rejects when the internal controller aborts;
-			// swallow that rejection (the abort path already rejected with the real reason).
-			if (task instanceof Promise) task.catch(() => {})
-			signal?.addEventListener('abort', onAbort, { once: true })
-		})
+			const task = post(complete, {
+				priority: POST_TASK_PRIORITY[priority],
+				signal: internal.signal,
+			})
+			if (isPromise(task)) void task.catch(failure)
+			return () => internal.abort()
+		}, signal)
 	}
 
-	// The `setTimeout(0)` macrotask fallback for `yield` when `postTask` is absent. Same
-	// settle-once discipline as the core `#sleep`: an already-aborted signal rejects
-	// without arming; otherwise the timer path removes the listener before resolving and
-	// the abort path clears the timer before rejecting with `signal.reason`.
-	#macrotask(signal?: AbortSignal): Promise<void> {
-		return this.#timer(0, signal)
-	}
-
-	// The abort-aware `setTimeout` sleep shared by `delay` and the `yield` macrotask
-	// fallback. Settle-once, no leak (the core `#sleep` discipline): already-aborted →
-	// reject without arming; the timer path removes the listener before resolving; the
-	// abort path clears the timer before rejecting with the verbatim `signal.reason`.
+	// The browser timer boundary shared by `delay` and fallback `yield`.
 	#timer(ms: number, signal?: AbortSignal): Promise<void> {
-		if (signal?.aborted === true) return Promise.reject(signal.reason)
-		return new Promise<void>((resolve, reject) => {
-			const handle = setTimeout(() => {
-				signal?.removeEventListener('abort', onAbort) // load-bearing: prevents a post-resolve reject
-				resolve()
-			}, ms)
-			const onAbort = this.#abortTimeout.bind(this, handle, reject, signal)
-			signal?.addEventListener('abort', onAbort, { once: true })
-		})
-	}
-
-	#abortTask(
-		internal: AbortController,
-		reject: (reason?: unknown) => void,
-		signal?: AbortSignal,
-	): void {
-		internal.abort()
-		reject(signal?.reason)
-	}
-
-	#abortTimeout(
-		handle: ReturnType<typeof setTimeout>,
-		reject: (reason?: unknown) => void,
-		signal?: AbortSignal,
-	): void {
-		clearTimeout(handle)
-		reject(signal?.reason)
+		return scheduleHost((complete) => {
+			const handle = setTimeout(complete, ms)
+			return () => clearTimeout(handle)
+		}, signal)
 	}
 }

@@ -1,4 +1,9 @@
-import type { WorkflowDefinition, WorkflowFunction, WorkflowSnapshot } from '@src/core'
+import type {
+	WorkflowDefinition,
+	WorkflowFunction,
+	WorkflowOptions,
+	WorkflowSnapshot,
+} from '@src/core'
 import {
 	assertSnapshot,
 	createMemoryWorkflowStore,
@@ -64,6 +69,12 @@ const RESTORE_FUNCTIONS = {
 	compile: () => null,
 	scan: () => null,
 	audit: () => null,
+}
+
+const SHIFTED_FUNCTIONS = {
+	compile: () => 'shifted compile',
+	scan: () => 'shifted scan',
+	audit: () => 'shifted audit',
 }
 
 // ── createWorkflowContract — the anti-drift spine (four-way parity) ──
@@ -227,6 +238,45 @@ describe('createWorkflow — builds the live tree (the W-b factory)', () => {
 		expect(createWorkflow(noBail).bail).toBe(false)
 	})
 
+	it('captures a shifting bail accessor once so root and inherited phase policy agree', () => {
+		let reads = 0
+		const options: WorkflowOptions = {}
+		Object.defineProperty(options, 'bail', {
+			get: () => {
+				reads += 1
+				return reads === 1
+			},
+		})
+
+		const workflow = createWorkflow(localDefinition({ bail: false }), options)
+
+		expect(reads).toBe(1)
+		expect(workflow.bail).toBe(true)
+		expect(workflow.phases.phases().map((phase) => phase.bail)).toEqual([true, true])
+	})
+
+	it('captures a shifting functions registry once and resolves every fresh handler from it', () => {
+		let reads = 0
+		const options: WorkflowOptions = {}
+		Object.defineProperty(options, 'functions', {
+			get: () => {
+				reads += 1
+				return reads === 1 ? RESTORE_FUNCTIONS : SHIFTED_FUNCTIONS
+			},
+		})
+
+		const workflow = createWorkflow(localDefinition(), options)
+
+		expect(reads).toBe(1)
+		expect(workflow.phase('phase-build')?.task('task-compile')?.handler).toBe(
+			RESTORE_FUNCTIONS.compile,
+		)
+		expect(workflow.phase('phase-build')?.task('task-scan')?.handler).toBe(RESTORE_FUNCTIONS.scan)
+		expect(workflow.phase('phase-review')?.task('task-audit')?.handler).toBe(
+			RESTORE_FUNCTIONS.audit,
+		)
+	})
+
 	it(
 		'PROGRAMMATIC-FIRST: a task whose `run` resolves against `options.functions` runs the real handler at construction time (via a live runner)',
 		async () => {
@@ -258,6 +308,29 @@ describe('createWorkflow — builds the live tree (the W-b factory)', () => {
 // ── restoreWorkflow / assertSnapshot — the round-trip inverse ──
 
 describe('restoreWorkflow / assertSnapshot — the round-trip inverse', () => {
+	it('captures a shifting functions registry once for every restored handler', () => {
+		let reads = 0
+		const options: WorkflowOptions = {}
+		Object.defineProperty(options, 'functions', {
+			get: () => {
+				reads += 1
+				return reads === 1 ? RESTORE_FUNCTIONS : SHIFTED_FUNCTIONS
+			},
+		})
+		const snapshot = createWorkflow(localDefinition()).snapshot()
+
+		const restored = restoreWorkflow(snapshot, options)
+
+		expect(reads).toBe(1)
+		expect(restored.phase('phase-build')?.task('task-compile')?.handler).toBe(
+			RESTORE_FUNCTIONS.compile,
+		)
+		expect(restored.phase('phase-build')?.task('task-scan')?.handler).toBe(RESTORE_FUNCTIONS.scan)
+		expect(restored.phase('phase-review')?.task('task-audit')?.handler).toBe(
+			RESTORE_FUNCTIONS.audit,
+		)
+	})
+
 	it('restoreWorkflow rebuilds an equivalent tree from a snapshot', () => {
 		const workflow = createWorkflow(localDefinition({ bail: true }))
 		const compile = workflow.phase('phase-build')?.task('task-compile')
@@ -303,7 +376,7 @@ describe('restoreWorkflow / assertSnapshot — the round-trip inverse', () => {
 		const restored = restoreWorkflow(snapshot)
 		expect(restored.phase('phase-build')?.task('task-compile')?.run).toBe('compile')
 		expect(restored.phase('phase-build')?.task('task-compile')?.handler).toBeUndefined()
-		expect(() => runner().execute(restored)).toThrowError(/not drivable/)
+		expect(() => runner().execute(restored)).toThrow(/not drivable/)
 	})
 
 	it("SNAPSHOT TRIO round-trip: a definition's run/retries/timeout survive definitionToSnapshot → live tree → snapshot() → restore", () => {
@@ -671,7 +744,7 @@ describe('createWorkflowRunner', () => {
 			name: 'WF',
 			phases: [{ id: 'a', name: 'A', tasks: [{ id: 't', name: 'T', run: 'unregistered' }] }],
 		}
-		expect(() => createWorkflowRunner().execute(definition)).toThrowError(/not drivable/)
+		expect(() => createWorkflowRunner().execute(definition)).toThrow(/not drivable/)
 	})
 })
 

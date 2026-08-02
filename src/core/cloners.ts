@@ -7,19 +7,14 @@ import { isOwnedWorkflowSnapshot, isTaskActivity, workflowSnapshotContext } from
  * Validate and own a workflow snapshot before live construction.
  *
  * @param input - The hostile snapshot boundary
+ * @param id - The optional storage key the owned snapshot must match
  * @returns A deeply owned frozen snapshot
+ * @throws {WorkflowError} With `RESTORE` when the snapshot is invalid or does not match `id`
  */
-export function cloneWorkflowSnapshot(input: unknown): WorkflowSnapshot {
+export function cloneWorkflowSnapshot(input: unknown, id?: string): WorkflowSnapshot {
+	let cloned: unknown
 	try {
-		const cloned = cloneJSONValue(input)
-		if (!isOwnedWorkflowSnapshot(cloned)) {
-			throw new WorkflowError(
-				'RESTORE',
-				'workflow snapshot is inconsistent',
-				workflowSnapshotContext(cloned),
-			)
-		}
-		return cloned
+		cloned = cloneJSONValue(input)
 	} catch (error) {
 		if (isWorkflowError(error)) throw error
 		if (isContractError(error)) {
@@ -30,6 +25,21 @@ export function cloneWorkflowSnapshot(input: unknown): WorkflowSnapshot {
 		}
 		throw new WorkflowError('RESTORE', 'workflow snapshot could not be read safely')
 	}
+	if (!isOwnedWorkflowSnapshot(cloned)) {
+		throw new WorkflowError(
+			'RESTORE',
+			'workflow snapshot is inconsistent',
+			workflowSnapshotContext(cloned),
+		)
+	}
+	if (id !== undefined && cloned.id !== id) {
+		throw new WorkflowError(
+			'RESTORE',
+			`workflow snapshot '${cloned.id}' does not match storage key '${id}'`,
+			{ requested: id, payload: cloned.id },
+		)
+	}
+	return cloned
 }
 
 /**

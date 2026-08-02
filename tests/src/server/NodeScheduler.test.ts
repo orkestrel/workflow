@@ -102,19 +102,20 @@ describe('NodeScheduler', () => {
 			expect(settled.calls).toEqual([['rejected']])
 		})
 
-		it('removes every listener after completed yield and delay calls', async () => {
+		it('never invokes caller-owned listener methods for completed yield and delay calls', async () => {
 			const scheduler = new NodeScheduler()
 			const controller = new AbortController()
 			const { added, removed } = instrumentSignal(controller.signal)
 
 			await scheduler.yield({ signal: controller.signal })
 			await scheduler.delay(10, { signal: controller.signal })
-			expect(added.count).toBe(2)
-			expect(removed.count).toBe(2)
+			expect(added.count).toBe(0)
+			expect(removed.count).toBe(0)
 
 			controller.abort(new Error('after completion'))
 			await waitForDelay(0)
-			expect(added.count).toBe(removed.count)
+			expect(added.count).toBe(0)
+			expect(removed.count).toBe(0)
 		})
 
 		it('resolves concurrent delays in deadline order rather than call order', async () => {
@@ -168,7 +169,7 @@ describe('NodeScheduler', () => {
 	})
 
 	describe('pressure', () => {
-		it('keeps listener ownership balanced through modest resolved churn', async () => {
+		it('keeps caller listener methods untouched through modest resolved churn', async () => {
 			const scheduler = new NodeScheduler()
 			const controller = new AbortController()
 			const { added, removed } = instrumentSignal(controller.signal)
@@ -177,8 +178,8 @@ describe('NodeScheduler', () => {
 				await scheduler.delay(0, { signal: controller.signal })
 			}
 
-			expect(added.count).toBe(25)
-			expect(removed.count).toBe(25)
+			expect(added.count).toBe(0)
+			expect(removed.count).toBe(0)
 		})
 
 		it('settles modest aborted churn promptly without late resolutions', async () => {

@@ -3,6 +3,9 @@ import type {
 	TaskControllerInterface,
 	WorkflowDefinition,
 	WorkflowFunction,
+	WorkflowFunctions,
+	WorkflowOptions,
+	WorkflowRunOptions,
 	WorkflowRunnerInterface,
 	WorkflowRunnerOptions,
 	WorkflowSnapshot,
@@ -10,6 +13,7 @@ import type {
 } from '@src/core'
 import { createTokenBudget } from '@orkestrel/budget'
 import {
+	createMemoryWorkflowStore,
 	createScheduler,
 	createWorkflow,
 	createWorkflowRunner,
@@ -19,6 +23,7 @@ import {
 import { describe, expect, it, vi } from 'vitest'
 import type { TestGateInterface } from '../../setup.js'
 import {
+	FaultBudget,
 	createGate,
 	createRecorder,
 	createRecordingScheduler,
@@ -149,6 +154,55 @@ const parkUntilDeadline: WorkflowFunction = (controller: TaskControllerInterface
 	})
 
 describe('WorkflowRunner — phases sequential, tasks concurrent', () => {
+	it('snapshots each run-control option once, including inherited and non-enumerable values', async () => {
+		let signalReads = 0
+		let timeoutReads = 0
+		let budgetReads = 0
+		let storeReads = 0
+		const abort = new AbortController()
+		const budget = createTokenBudget({ max: 10, scope: 'total' })
+		const store = createMemoryWorkflowStore()
+		const options: WorkflowRunOptions = {}
+		const prototype = {}
+		Object.defineProperty(prototype, 'signal', {
+			get: () => {
+				signalReads += 1
+				return abort.signal
+			},
+		})
+		Object.setPrototypeOf(options, prototype)
+		Object.defineProperties(options, {
+			timeout: {
+				enumerable: false,
+				get: () => {
+					timeoutReads += 1
+					return 1_000
+				},
+			},
+			budget: {
+				enumerable: false,
+				get: () => {
+					budgetReads += 1
+					return budget
+				},
+			},
+			store: {
+				enumerable: false,
+				get: () => {
+					storeReads += 1
+					return store
+				},
+			},
+		})
+		const result = await pacedRunner().execute(buildDefinition([]), options)
+		expect(result.status).toBe('completed')
+		expect(result.durable).toBe(true)
+		expect(signalReads).toBe(1)
+		expect(timeoutReads).toBe(1)
+		expect(budgetReads).toBe(1)
+		expect(storeReads).toBe(1)
+	})
+
 	it('starts every task of a phase before any settles, and phase 2 only after phase 1 settles', async () => {
 		const starts = createRecorder<readonly [string]>()
 		const gate = createGate()
@@ -244,7 +298,12 @@ describe('WorkflowRunner — dispatch by function-registry name', () => {
 
 	it('an unresolved named task is rejected before execution', () => {
 		const definition = buildDefinition([{ id: 'a', tasks: [functionTask('t', 'missing')] }])
-		expect(() => pacedRunner().execute(definition)).toThrowError(/not drivable/)
+		expect(() => pacedRunner().execute(definition)).toThrow(/not drivable/)
+
+		const functions: WorkflowFunctions = {}
+		Object.defineProperty(functions, 'missing', { value: 'not callable' })
+		const workflow = createWorkflow(definition, { functions })
+		expect(() => pacedRunner().execute(workflow)).toThrow(/not drivable/)
 	})
 
 	it('a task whose `run` is omitted entirely auto-completes', async () => {
@@ -946,6 +1005,7 @@ describe('WorkflowRunner — scheduler infrastructure faults', () => {
 			]),
 			{ functions: { run: () => null } },
 		)
+		const listeners = instrumentSignal(workflow.signal)
 
 		await expect(createWorkflowRunner({ scheduler }).execute(workflow, { store })).rejects.toBe(
 			fault,
@@ -953,10 +1013,43 @@ describe('WorkflowRunner — scheduler infrastructure faults', () => {
 		expect(workflow.status).toBe('stopped')
 		expect(workflow.phase('b')?.task('t1')?.status).toBe('skipped')
 		expect(snapshots.at(-1)?.status).toBe('stopped')
+		expect(listeners.added.calls).toEqual([['abort']])
+		expect(listeners.removed.calls).toEqual([['abort']])
 	})
 })
 
 describe('WorkflowRunner — budget / timeout fold', () => {
+	it('preserves a setup failure while clearing its long deadline and retaining caller budget state', async () => {
+		const failure = new Error('budget signal unavailable')
+		const budget = new FaultBudget(failure)
+		const writes = createRecorder<readonly [WorkflowSnapshot]>()
+		const store: WorkflowStoreInterface = {
+			get: () => Promise.resolve(undefined),
+			delete: () => Promise.resolve(),
+			set: (snapshot) => {
+				writes.handler(snapshot)
+				return Promise.resolve()
+			},
+		}
+		const workflow = createWorkflow(buildDefinition([]))
+		const before = process
+			.getActiveResourcesInfo()
+			.filter((resource) => resource === 'Timeout').length
+
+		await expect(pacedRunner().execute(workflow, { budget, store, timeout: 60_000 })).rejects.toBe(
+			failure,
+		)
+
+		const after = process
+			.getActiveResourcesInfo()
+			.filter((resource) => resource === 'Timeout').length
+		expect(after).toBe(before)
+		expect(budget.starts).toBe(1)
+		expect(budget.clears).toBe(0)
+		expect(budget.consumed).toBe(7)
+		expect(writes.count).toBe(0)
+	})
+
 	it('a pre-exhausted budget halts the run (no task runs) and stops the workflow', async () => {
 		const ran = createRecorder<readonly [string]>()
 		const fn: WorkflowFunction = (controller) => {
@@ -1024,6 +1117,110 @@ describe('WorkflowRunner — budget / timeout fold', () => {
 })
 
 describe('WorkflowRunner — construction options', () => {
+	it('captures shifting bail and functions once for a definition run', async () => {
+		let bailReads = 0
+		let functionsReads = 0
+		const first = createRecorder<readonly [string]>()
+		const shifted = createRecorder<readonly [string]>()
+		const firstFunctions = {
+			work: (controller: TaskControllerInterface) => {
+				first.handler(controller.task.id)
+				return controller.task.id
+			},
+		}
+		const shiftedFunctions = {
+			work: (controller: TaskControllerInterface) => {
+				shifted.handler(controller.task.id)
+				return controller.task.id
+			},
+		}
+		const options: WorkflowRunOptions = {}
+		const prototype = {}
+		Object.defineProperty(prototype, 'bail', {
+			get: () => {
+				bailReads += 1
+				return bailReads === 1
+			},
+		})
+		Object.setPrototypeOf(options, prototype)
+		Object.defineProperty(options, 'functions', {
+			enumerable: false,
+			get: () => {
+				functionsReads += 1
+				return functionsReads === 1 ? firstFunctions : shiftedFunctions
+			},
+		})
+		const definition = buildDefinition([
+			{ id: 'a', tasks: [functionTask('t0', 'work')] },
+			{ id: 'b', tasks: [functionTask('t1', 'work')] },
+		])
+
+		const result = await pacedRunner().execute(definition, options)
+
+		expect(bailReads).toBe(1)
+		expect(functionsReads).toBe(1)
+		expect(result.workflow.bail).toBe(true)
+		expect(result.workflow.phases.phases().map((phase) => phase.bail)).toEqual([true, true])
+		expect(result.workflow.phase('a')?.task('t0')?.handler).toBe(firstFunctions.work)
+		expect(result.workflow.phase('b')?.task('t1')?.handler).toBe(firstFunctions.work)
+		expect(first.calls.map((call) => call[0])).toEqual(['t0', 't1'])
+		expect(shifted.count).toBe(0)
+	})
+
+	it('reads only run-control keys when executing an existing live workflow', async () => {
+		let signalReads = 0
+		const abort = new AbortController()
+		const failure = new Error('construction option was read')
+		const workflow = createWorkflow(
+			buildDefinition([{ id: 'a', tasks: [functionTask('t0', 'work')] }]),
+			{ functions: { work: (controller) => controller.task.id } },
+		)
+		const options: Omit<WorkflowRunOptions, keyof WorkflowOptions> = {}
+		Object.defineProperties(options, {
+			signal: {
+				get: () => {
+					signalReads += 1
+					return abort.signal
+				},
+			},
+			on: {
+				get: () => {
+					throw failure
+				},
+			},
+			bail: {
+				get: () => {
+					throw failure
+				},
+			},
+			error: {
+				get: () => {
+					throw failure
+				},
+			},
+			phases: {
+				get: () => {
+					throw failure
+				},
+			},
+			functions: {
+				get: () => {
+					throw failure
+				},
+			},
+			silence: {
+				get: () => {
+					throw failure
+				},
+			},
+		})
+
+		const result = await pacedRunner().execute(workflow, options)
+
+		expect(result.status).toBe('completed')
+		expect(signalReads).toBe(1)
+	})
+
 	it('forwards the WorkflowOptions half (bail override + on listeners) to the built tree', async () => {
 		const failures = createRecorder<readonly [string]>()
 		const fail: WorkflowFunction = () => {
@@ -1153,7 +1350,7 @@ describe('WorkflowRunner — execute(workflow) TRANSITION guard (synchronous)', 
 		const first = pacedRunner().execute(workflow)
 		let caught: unknown
 		try {
-			pacedRunner().execute(workflow)
+			void pacedRunner().execute(workflow)
 		} catch (error) {
 			caught = error
 		}
@@ -1178,7 +1375,7 @@ describe('WorkflowRunner — execute(workflow) TRANSITION guard (synchronous)', 
 		expect(workflow.status).toBe('running')
 		let caught: unknown
 		try {
-			runner.execute(workflow)
+			void runner.execute(workflow)
 		} catch (error) {
 			caught = error
 		}
@@ -1197,7 +1394,7 @@ describe('WorkflowRunner — execute(workflow) TRANSITION guard (synchronous)', 
 		expect(workflow.status).toBe('completed')
 		let caught: unknown
 		try {
-			runner.execute(workflow)
+			void runner.execute(workflow)
 		} catch (error) {
 			caught = error
 		}
@@ -1213,7 +1410,7 @@ describe('WorkflowRunner — execute(workflow) TRANSITION guard (synchronous)', 
 		const runner = pacedRunner()
 		let caught: unknown
 		try {
-			runner.execute(workflow)
+			void runner.execute(workflow)
 		} catch (error) {
 			caught = error
 		}

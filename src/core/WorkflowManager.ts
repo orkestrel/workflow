@@ -4,9 +4,11 @@ import type {
 	WorkflowInterface,
 	WorkflowManagerInterface,
 	WorkflowManagerOptions,
+	WorkflowSnapshot,
 	WorkflowStoreInterface,
 } from './types.js'
 import { isArray } from '@orkestrel/contract'
+import { cloneWorkflowSnapshot } from './cloners.js'
 import { createWorkflow, restoreWorkflow } from './factories.js'
 
 /**
@@ -21,12 +23,11 @@ import { createWorkflow, restoreWorkflow } from './factories.js'
  *   `functions` registry in) and stores it under `definition.id` — an already-present id
  *   OVERWRITES (last write wins). `count` is the map size, `workflow(id)` looks one up,
  *   `workflows()` lists them in insertion order.
- * - **Durable open / save.** `open(id)` returns an already-registered workflow directly; on a
- *   registry MISS with a `store` set it rehydrates through {@link restoreWorkflow} (flowing the
- *   manager's `functions` registry in so the rehydrated tree is RUNNABLE), registers it, and
- *   returns it — lenient (`undefined`) with no store or a store miss. `save(id)` persists a
- *   registered workflow's `snapshot()` to the `store` — lenient (`false`) with no store or an
- *   unknown id.
+ * - **Durable open / save.** `open(id)` returns an already-registered workflow directly; same-id
+ *   misses share one hydration. A concurrent `add` wins, while `remove` / `clear` invalidate
+ *   earlier reads; wrong-key payloads reject with `RESTORE`. `save(id)` captures a registered
+ *   workflow's snapshot at invocation and serializes same-id writes without coupling other ids.
+ *   Both remain lenient without a store or registered id.
  * - **Removal.** `remove` drops one by id, or a batch (§9.2, array overload FIRST) — `true` when
  *   any was removed. `clear` empties the registry.
  * - **No active pointer.** Unlike its `ConversationManager` / `WorkspaceManager` twins, there is
@@ -44,6 +45,12 @@ import { createWorkflow, restoreWorkflow } from './factories.js'
  */
 export class WorkflowManager implements WorkflowManagerInterface {
 	readonly #workflows = new Map<string, WorkflowInterface>()
+	readonly #opens = new Map<string, Promise<WorkflowInterface | undefined>>()
+	readonly #saves = new Map<string, Promise<void>>()
+	readonly #mutations = new Map<string, symbol>()
+	readonly #additions = new Map<string, symbol>()
+	readonly #hydrations = new Map<string, Set<symbol>>()
+	#generation = Symbol()
 	// The functions registry flowed into every workflow this manager mints or hydrates, so
 	// each live task's `run` resolves to a real `handler` (RUNNABLE) rather than the
 	// inspectable unresolved state; the runner rejects it until matching functions are supplied.
@@ -74,33 +81,58 @@ export class WorkflowManager implements WorkflowManagerInterface {
 		const workflow = createWorkflow(definition, {
 			...(this.#functions === undefined ? {} : { functions: this.#functions }),
 		})
+		const mutation = this.#invalidate(workflow.id)
+		if (mutation === undefined) this.#additions.delete(workflow.id)
+		else this.#additions.set(workflow.id, mutation)
 		this.#workflows.set(workflow.id, workflow)
 		return workflow
 	}
 
-	async open(id: string): Promise<WorkflowInterface | undefined> {
+	open(id: string): Promise<WorkflowInterface | undefined> {
 		// Already registered ⇒ the registry is the live source, no store hit.
 		const existing = this.#workflows.get(id)
-		if (existing !== undefined) return existing
+		if (existing !== undefined) return Promise.resolve(existing)
 		// No store ⇒ a registry miss resolves nothing (lenient).
-		if (this.#store === undefined) return undefined
-		// Store hit ⇒ rehydrate through restoreWorkflow, flowing this manager's `functions`
-		// registry in so the rehydrated tree is RUNNABLE (a restored tree is otherwise inert).
-		const snapshot = await this.#store.get(id)
-		if (snapshot === undefined) return undefined
-		const workflow = restoreWorkflow(snapshot, {
-			...(this.#functions === undefined ? {} : { functions: this.#functions }),
-		})
-		this.#workflows.set(workflow.id, workflow)
-		return workflow
+		if (this.#store === undefined) return Promise.resolve(undefined)
+		const pending = this.#opens.get(id)
+		if (pending !== undefined) return pending
+		const mutation = this.#mutations.get(id)
+		const generation = this.#generation
+		const lease = this.#retain(id)
+		const reservation = Promise.withResolvers<WorkflowInterface | undefined>()
+		const opening = reservation.promise
+		// Reserve identity before hydration can synchronously cross the external store boundary.
+		this.#opens.set(id, opening)
+		void this.#hydrate(id, mutation, generation, lease, this.#store).then(
+			reservation.resolve,
+			reservation.reject,
+		)
+		void opening.then(
+			() => this.#releaseOpen(id, opening),
+			() => this.#releaseOpen(id, opening),
+		)
+		return opening
 	}
 
-	async save(id: string): Promise<boolean> {
+	save(id: string): Promise<boolean> {
 		// Lenient: persist only when a store is set AND the id is registered; otherwise a no-op.
 		const workflow = this.#workflows.get(id)
-		if (this.#store === undefined || workflow === undefined) return false
-		await this.#store.set(workflow.snapshot())
-		return true
+		if (this.#store === undefined || workflow === undefined) return Promise.resolve(false)
+		const snapshot = workflow.snapshot()
+		const previous = this.#saves.get(id)
+		const reservation = Promise.withResolvers<void>()
+		const saving = reservation.promise
+		// Reserve the serialization predecessor before persistence can synchronously reenter.
+		this.#saves.set(id, saving)
+		void this.#persist(this.#store, previous, snapshot).then(
+			reservation.resolve,
+			reservation.reject,
+		)
+		void saving.then(
+			() => this.#settle(id, saving),
+			() => this.#settle(id, saving),
+		)
+		return saving.then(() => true)
 	}
 
 	// §9.2: the array overload FIRST, so a list resolves to the batch form.
@@ -110,14 +142,132 @@ export class WorkflowManager implements WorkflowManagerInterface {
 		if (isArray(ids)) {
 			let removed = false
 			for (const id of ids) {
+				this.#invalidate(id)
+				this.#additions.delete(id)
 				if (this.#workflows.delete(id)) removed = true
 			}
 			return removed
 		}
+		this.#invalidate(ids)
+		this.#additions.delete(ids)
 		return this.#workflows.delete(ids)
 	}
 
 	clear(): void {
+		this.#generation = Symbol()
+		this.#mutations.clear()
+		this.#additions.clear()
+		this.#opens.clear()
 		this.#workflows.clear()
+	}
+
+	async #hydrate(
+		id: string,
+		mutation: symbol | undefined,
+		generation: symbol,
+		lease: symbol,
+		store: WorkflowStoreInterface,
+	): Promise<WorkflowInterface | undefined> {
+		try {
+			const snapshot = await store.get(id)
+			if (!this.#owns(id, mutation, generation)) return this.#resolve(id, generation)
+			if (snapshot === undefined) return undefined
+			let owned: WorkflowSnapshot
+			try {
+				owned = cloneWorkflowSnapshot(snapshot, id)
+			} catch (error) {
+				if (!this.#owns(id, mutation, generation)) return this.#resolve(id, generation)
+				throw error
+			}
+			if (!this.#owns(id, mutation, generation)) return this.#resolve(id, generation)
+			let workflow: WorkflowInterface
+			try {
+				workflow = restoreWorkflow(owned, {
+					...(this.#functions === undefined ? {} : { functions: this.#functions }),
+				})
+			} catch (error) {
+				if (!this.#owns(id, mutation, generation)) return this.#resolve(id, generation)
+				throw error
+			}
+			if (!this.#owns(id, mutation, generation)) return this.#resolve(id, generation)
+			return this.#register(id, workflow, mutation, generation)
+		} finally {
+			this.#releaseHydration(id, lease)
+		}
+	}
+
+	#owns(id: string, mutation: symbol | undefined, generation: symbol): boolean {
+		return this.#generation === generation && this.#mutations.get(id) === mutation
+	}
+
+	#resolve(id: string, generation: symbol): WorkflowInterface | undefined {
+		if (this.#generation !== generation) return undefined
+		const mutation = this.#mutations.get(id)
+		const workflow = this.#workflows.get(id)
+		return workflow !== undefined && this.#additions.get(id) === mutation ? workflow : undefined
+	}
+
+	#register(
+		id: string,
+		workflow: WorkflowInterface,
+		mutation: symbol | undefined,
+		generation: symbol,
+	): WorkflowInterface | undefined {
+		if (!this.#owns(id, mutation, generation)) return this.#resolve(id, generation)
+		this.#workflows.set(id, workflow)
+		return workflow
+	}
+
+	async #persist(
+		store: WorkflowStoreInterface,
+		previous: Promise<void> | undefined,
+		snapshot: WorkflowSnapshot,
+	): Promise<void> {
+		if (previous !== undefined) {
+			try {
+				await previous
+			} catch {
+				// The prior caller owns its rejection; this invocation still reaches the store.
+			}
+		}
+		await store.set(snapshot)
+	}
+
+	#invalidate(id: string): symbol | undefined {
+		this.#opens.delete(id)
+		if (!this.#hydrations.has(id)) {
+			this.#mutations.delete(id)
+			this.#additions.delete(id)
+			return undefined
+		}
+		const mutation = Symbol()
+		this.#mutations.set(id, mutation)
+		return mutation
+	}
+
+	#retain(id: string): symbol {
+		const lease = Symbol()
+		const hydrations = this.#hydrations.get(id)
+		if (hydrations === undefined) this.#hydrations.set(id, new Set([lease]))
+		else hydrations.add(lease)
+		return lease
+	}
+
+	#releaseOpen(id: string, opening: Promise<WorkflowInterface | undefined>): void {
+		if (this.#opens.get(id) === opening) this.#opens.delete(id)
+	}
+
+	#releaseHydration(id: string, lease: symbol): void {
+		const hydrations = this.#hydrations.get(id)
+		if (hydrations === undefined) return
+		hydrations.delete(lease)
+		if (hydrations.size !== 0) return
+		this.#hydrations.delete(id)
+		this.#mutations.delete(id)
+		this.#additions.delete(id)
+	}
+
+	#settle(id: string, saving: Promise<void>): void {
+		if (this.#saves.get(id) === saving) this.#saves.delete(id)
 	}
 }

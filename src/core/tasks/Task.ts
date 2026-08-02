@@ -125,7 +125,8 @@ export class Task implements TaskInterface {
 		this.#workflow = workflow
 		this.#recompute = recompute
 		try {
-			this.#metadata = cloneJSONRecord(options?.metadata ?? metadata)
+			const metadataOption = options?.metadata
+			this.#metadata = cloneJSONRecord(metadataOption ?? metadata)
 		} catch (error) {
 			if (isContractError(error)) {
 				throw new WorkflowError(
@@ -138,9 +139,12 @@ export class Task implements TaskInterface {
 				task: context.id,
 			})
 		}
+		const on = options?.on
+		const listenerError = options?.error
+		const silenceOption = options?.silence
 		this.#emitter = new Emitter<TaskEventMap>({
-			...(options?.on === undefined ? {} : { on: options.on }),
-			...(options?.error === undefined ? {} : { error: options.error }),
+			...(on === undefined ? {} : { on }),
+			...(listenerError === undefined ? {} : { error: listenerError }),
 		})
 		this.#status = status
 		// A RESTORE seeds the recorded outcome (present for a `completed` / `failed` leaf), so
@@ -163,7 +167,7 @@ export class Task implements TaskInterface {
 		// Resolved ONCE by the caller (Phase) against the functions registry; stored as-is.
 		this.#handler = handler
 		this.#abort = createAbort()
-		this.#silence = resolveTaskSilence(options?.silence, silence)
+		this.#silence = resolveTaskSilence(silenceOption, silence)
 		this.#onSilence = this.#expire.bind(this)
 		this.#liveness =
 			this.#silence === undefined

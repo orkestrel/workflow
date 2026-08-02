@@ -1,4 +1,5 @@
 import type { SchedulerInterface, SchedulerOptions } from '@src/core'
+import { scheduleHost } from '@src/core'
 
 /**
  * The frame-aligned {@link SchedulerInterface} — a browser cooperative-yield backend
@@ -11,20 +12,15 @@ import type { SchedulerInterface, SchedulerOptions } from '@src/core'
  *   is hidden (the host throttles rAF). `delay(ms)` is a real `setTimeout`, unaligned to
  *   frames. `options.priority` is accepted for contract compliance but a no-op — a frame
  *   callback has no priority dimension.
- * - **Abort fidelity is verbatim, with cleanup.** A pending `yield` / `delay` rejects with
- *   `signal.reason` exactly. The discipline mirrors the cross-environment default's
- *   `#sleep`: an already-aborted signal rejects immediately WITHOUT scheduling a frame;
- *   otherwise the frame is requested and a `{ once: true }` abort listener attached, and
- *   the two settle paths are mutually exclusive — the frame path removes the listener
- *   before resolving, and the abort path `cancelAnimationFrame`s the pending handle before
- *   rejecting. The promise settles exactly once, with no leaked frame request and no
- *   leaked listener.
+ * - **Abort fidelity is verbatim, with cleanup.** The shared `scheduleHost` lifecycle links
+ *   an owned settlement composite before requesting a frame, never invokes caller-owned
+ *   signal methods, and cancels the native handle when abort wins.
  * - **Event-free.** A pure functional primitive — no Emitter, no events.
  *
  * @example
  * ```ts
- * import { createAbort } from '@src/core'
- * import { FrameScheduler } from '@src/browser'
+ * import { createAbort } from '@orkestrel/abort'
+ * import { FrameScheduler } from '@orkestrel/workflow/browser'
  *
  * const abort = createAbort()
  * const scheduler = new FrameScheduler()
@@ -59,49 +55,19 @@ export class FrameScheduler implements SchedulerInterface {
 
 	// === Private
 
-	// The `requestAnimationFrame` host-turn for `yield`. Resolves in the next frame
-	// callback (before paint); rejects with `signal.reason` if already aborted (no frame
-	// requested) or aborted while pending. Settle-once, no leak: the frame path removes the
-	// abort listener before resolving; the abort path cancels the frame before rejecting.
+	// The frame request boundary; `scheduleHost` owns cancellation lifecycle.
 	#frame(signal?: AbortSignal): Promise<void> {
-		if (signal?.aborted === true) return Promise.reject(signal.reason)
-		return new Promise<void>((resolve, reject) => {
-			const handle = requestAnimationFrame(() => {
-				signal?.removeEventListener('abort', onAbort) // load-bearing: prevents a post-resolve reject
-				resolve()
-			})
-			const onAbort = this.#abortFrame.bind(this, handle, reject, signal)
-			signal?.addEventListener('abort', onAbort, { once: true })
-		})
+		return scheduleHost((complete) => {
+			const handle = requestAnimationFrame(complete)
+			return () => cancelAnimationFrame(handle)
+		}, signal)
 	}
 
-	// The abort-aware `setTimeout` sleep for `delay`. Same settle-once discipline as the
-	// core `#sleep`: already-aborted → reject without arming; the timer path removes the
-	// listener before resolving; the abort path clears the timer before rejecting with the
-	// verbatim `signal.reason`.
+	// The browser timer boundary; `scheduleHost` owns cancellation lifecycle.
 	#sleep(ms: number, signal?: AbortSignal): Promise<void> {
-		if (signal?.aborted === true) return Promise.reject(signal.reason)
-		return new Promise<void>((resolve, reject) => {
-			const handle = setTimeout(() => {
-				signal?.removeEventListener('abort', onAbort) // load-bearing: prevents a post-resolve reject
-				resolve()
-			}, ms)
-			const onAbort = this.#abortTimeout.bind(this, handle, reject, signal)
-			signal?.addEventListener('abort', onAbort, { once: true })
-		})
-	}
-
-	#abortFrame(handle: number, reject: (reason?: unknown) => void, signal?: AbortSignal): void {
-		cancelAnimationFrame(handle)
-		reject(signal?.reason)
-	}
-
-	#abortTimeout(
-		handle: ReturnType<typeof setTimeout>,
-		reject: (reason?: unknown) => void,
-		signal?: AbortSignal,
-	): void {
-		clearTimeout(handle)
-		reject(signal?.reason)
+		return scheduleHost((complete) => {
+			const handle = setTimeout(complete, ms)
+			return () => clearTimeout(handle)
+		}, signal)
 	}
 }

@@ -76,14 +76,14 @@ describe('IdleScheduler', () => {
 			)
 		})
 
-		it('a completed yield removed its abort listener (no leak — counted on a real signal)', async () => {
+		it('a completed yield leaves caller-owned listener methods untouched', async () => {
 			const scheduler = new IdleScheduler()
 			const controller = new AbortController()
 			const { added, removed } = instrumentSignal(controller.signal)
 
 			await scheduler.yield({ signal: controller.signal })
-			expect(added.count).toBe(1)
-			expect(removed.count).toBe(1)
+			expect(added.count).toBe(0)
+			expect(removed.count).toBe(0)
 		})
 	})
 
@@ -113,14 +113,14 @@ describe('IdleScheduler', () => {
 			expect(resolved).toBe(false)
 		})
 
-		it('a completed delay removed its abort listener (no leak)', async () => {
+		it('a completed delay leaves caller-owned listener methods untouched', async () => {
 			const scheduler = new IdleScheduler()
 			const controller = new AbortController()
 			const { added, removed } = instrumentSignal(controller.signal)
 
 			await scheduler.delay(5, { signal: controller.signal })
-			expect(added.count).toBe(1)
-			expect(removed.count).toBe(1)
+			expect(added.count).toBe(0)
+			expect(removed.count).toBe(0)
 		})
 	})
 })

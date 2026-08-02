@@ -5,6 +5,7 @@ import type {
 	TaskFailure,
 	TaskResult,
 	WorkflowFunctions,
+	WorkflowInterface,
 	WorkflowSnapshot,
 } from './types.js'
 import {
@@ -13,6 +14,7 @@ import {
 	isArray,
 	isBoolean,
 	isFiniteNumber,
+	isFunction,
 	isInteger,
 	isJSONValue,
 	isNonEmptyString,
@@ -328,14 +330,39 @@ export function isWorkflowSnapshot(value: unknown): value is WorkflowSnapshot {
 	return cloned.success && isOwnedWorkflowSnapshot(cloned.value)
 }
 
-/** Test that every present behavior reference resolves before dispatch. */
+/**
+ * Test that every named task has a callable runtime handler before dispatch.
+ *
+ * @remarks
+ * A snapshot lookup reads each unique `run` binding at most once from `functions`. A live workflow
+ * validates its tasks' already-resolved handlers without consulting the retained registry again.
+ *
+ * @param workflow - The persisted snapshot or constructed live workflow to validate
+ * @returns Whether every named task resolves to a callable handler
+ */
+export function hasWorkflowHandlers(workflow: WorkflowInterface): boolean
 export function hasWorkflowHandlers(
-	snapshot: WorkflowSnapshot,
+	workflow: WorkflowSnapshot,
 	functions: WorkflowFunctions | undefined,
+): boolean
+export function hasWorkflowHandlers(
+	workflow: WorkflowInterface | WorkflowSnapshot,
+	functions?: WorkflowFunctions,
 ): boolean {
-	for (const phase of snapshot.phases) {
+	if ('destroyed' in workflow) {
+		for (const phase of workflow.phases.phases()) {
+			for (const task of phase.tasks.tasks()) {
+				if (task.run !== undefined && !isFunction(task.handler)) return false
+			}
+		}
+		return true
+	}
+	const runs = new Set<string>()
+	for (const phase of workflow.phases) {
 		for (const task of phase.tasks) {
-			if (task.run !== undefined && functions?.[task.run] === undefined) return false
+			if (task.run === undefined || runs.has(task.run)) continue
+			runs.add(task.run)
+			if (!isFunction(functions?.[task.run])) return false
 		}
 	}
 	return true

@@ -1,5 +1,11 @@
-import type { WorkflowDefinition, WorkflowInterface } from '@src/core'
-import { createWorkflow, isWorkflowError, restoreWorkflow } from '@src/core'
+import type { WorkflowDefinition, WorkflowInterface, WorkflowOptions } from '@src/core'
+import {
+	createWorkflow,
+	definitionToSnapshot,
+	isWorkflowError,
+	restoreWorkflow,
+	Workflow,
+} from '@src/core'
 import { describe, expect, it } from 'vitest'
 import {
 	buildWorkflowDefinition,
@@ -46,6 +52,112 @@ function completeTask(workflow: WorkflowInterface, phase: string, task: string):
 	leaf?.start()
 	leaf?.complete('ok')
 }
+
+describe('Workflow — direct construction option ownership', () => {
+	it('captures root and keyed phase values once while retaining inherited non-enumerable behavior', () => {
+		let onReads = 0
+		let bailReads = 0
+		let errorReads = 0
+		let phasesReads = 0
+		let functionsReads = 0
+		let silenceReads = 0
+		let phaseAReads = 0
+		let phaseBReads = 0
+		const starts = createRecorder<readonly []>()
+		const errors = createErrorRecorder()
+		const failure = new Error('workflow listener failed')
+		const phaseOptions = {}
+		const phases = {}
+		Object.defineProperties(phases, {
+			a: {
+				enumerable: false,
+				get: () => {
+					phaseAReads += 1
+					return phaseOptions
+				},
+			},
+			b: {
+				enumerable: false,
+				get: () => {
+					phaseBReads += 1
+					return phaseOptions
+				},
+			},
+		})
+		const options: WorkflowOptions = {}
+		const prototype = {}
+		Object.defineProperties(prototype, {
+			on: {
+				get: () => {
+					onReads += 1
+					return { start: starts.handler }
+				},
+			},
+			bail: {
+				get: () => {
+					bailReads += 1
+					return true
+				},
+			},
+			error: {
+				get: () => {
+					errorReads += 1
+					return errors.handler
+				},
+			},
+		})
+		Object.setPrototypeOf(options, prototype)
+		Object.defineProperties(options, {
+			phases: {
+				enumerable: false,
+				get: () => {
+					phasesReads += 1
+					return phases
+				},
+			},
+			functions: {
+				enumerable: false,
+				get: () => {
+					functionsReads += 1
+					return RESTORE_FUNCTIONS
+				},
+			},
+			silence: {
+				enumerable: false,
+				get: () => {
+					silenceReads += 1
+					return 25
+				},
+			},
+		})
+
+		const workflow = new Workflow(definitionToSnapshot(buildTwoPhaseWorkflow(false)), options)
+		const added = workflow.phase('a')?.add({ id: 'late', name: 'Late', run: 'f' })
+		if (added === undefined || !added.success) throw new Error('expected live task addition')
+		workflow.emitter.on('start', () => {
+			throw failure
+		})
+		workflow.phase('a')?.task('t0')?.start()
+
+		expect(workflow.bail).toBe(true)
+		expect(workflow.phases.phases().map((phase) => phase.bail)).toEqual([true, true])
+		expect(workflow.phase('a')?.task('t0')?.handler).toBe(RESTORE_FUNCTIONS.f)
+		expect(added.value.handler).toBe(RESTORE_FUNCTIONS.f)
+		expect(workflow.phase('a')?.task('t0')?.silence).toBe(25)
+		expect(starts.count).toBe(1)
+		expect(errors.calls).toEqual([[failure, 'start']])
+		expect([
+			onReads,
+			bailReads,
+			errorReads,
+			phasesReads,
+			functionsReads,
+			silenceReads,
+			phaseAReads,
+			phaseBReads,
+		]).toEqual([1, 1, 1, 1, 1, 1, 1, 1])
+	})
+})
 
 describe('Workflow — construction from a definition', () => {
 	it('builds the whole live tree with lineage + bail from the definition', () => {

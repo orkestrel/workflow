@@ -1,7 +1,7 @@
-import type { PhaseInterface, WorkflowDefinition, WorkflowInterface } from '@src/core'
-import { createWorkflow, restoreWorkflow } from '@src/core'
+import type { PhaseInterface, PhaseOptions, WorkflowDefinition, WorkflowInterface } from '@src/core'
+import { createWorkflow, Phase, restoreWorkflow } from '@src/core'
 import { describe, expect, it } from 'vitest'
-import { createErrorRecorder, recordEmitterEvents } from '../../../setup.js'
+import { createErrorRecorder, createRecorder, recordEmitterEvents } from '../../../setup.js'
 
 // The DERIVED phase state machine (W-b): status derived from its tasks via the W-a
 // helper, recomputed reactively as a task transitions (the cascade's middle tier), the
@@ -32,6 +32,76 @@ function lonePhase(workflow: WorkflowInterface): PhaseInterface {
 	if (phase === undefined) throw new Error('expected the lone phase to exist')
 	return phase
 }
+
+describe('Phase — direct construction option ownership', () => {
+	it('captures inherited hooks and every non-enumerable keyed task option once', () => {
+		let onReads = 0
+		let errorReads = 0
+		let tasksReads = 0
+		let task0Reads = 0
+		let task1Reads = 0
+		const starts = createRecorder<readonly []>()
+		const errors = createErrorRecorder()
+		const failure = new Error('phase listener failed')
+		const taskOptions = { metadata: { source: 'nested' } }
+		const tasks = {}
+		Object.defineProperties(tasks, {
+			t0: {
+				enumerable: false,
+				get: () => {
+					task0Reads += 1
+					return taskOptions
+				},
+			},
+			t1: {
+				enumerable: false,
+				get: () => {
+					task1Reads += 1
+					return taskOptions
+				},
+			},
+		})
+		const options: PhaseOptions = {}
+		const prototype = {}
+		Object.defineProperties(prototype, {
+			on: {
+				get: () => {
+					onReads += 1
+					return { start: starts.handler }
+				},
+			},
+			error: {
+				get: () => {
+					errorReads += 1
+					return errors.handler
+				},
+			},
+		})
+		Object.setPrototypeOf(options, prototype)
+		Object.defineProperty(options, 'tasks', {
+			enumerable: false,
+			get: () => {
+				tasksReads += 1
+				return tasks
+			},
+		})
+		const source = lonePhase(createWorkflow(buildPhaseWorkflow(2)))
+		const phase = new Phase(source.snapshot(), source.workflow, () => {}, options, undefined, {
+			f: () => null,
+		})
+		phase.emitter.on('start', () => {
+			throw failure
+		})
+
+		phase.task('t0')?.start()
+
+		expect(phase.task('t0')?.snapshot().metadata).toEqual({ source: 'nested' })
+		expect(phase.task('t1')?.snapshot().metadata).toEqual({ source: 'nested' })
+		expect(starts.count).toBe(1)
+		expect(errors.calls).toEqual([[failure, 'start']])
+		expect([onReads, errorReads, tasksReads, task0Reads, task1Reads]).toEqual([1, 1, 1, 1, 1])
+	})
+})
 
 describe('Phase — derived status (the cascade)', () => {
 	it('is pending while every task is pending', () => {

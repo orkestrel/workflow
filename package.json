@@ -1,6 +1,6 @@
 {
 	"name": "@orkestrel/workflow",
-	"version": "0.0.8",
+	"version": "0.0.9",
 	"description": "A typed workflow engine for the @orkestrel line — a serializable Workflow → Phase → Task tree run by a composed runner on a cooperative scheduler. Part of the @orkestrel line.",
 	"keywords": [
 		"orchestration",
@@ -90,13 +90,13 @@
 		"@orkestrel/contract": "^0.0.9",
 		"@orkestrel/database": "^0.0.7",
 		"@orkestrel/emitter": "^0.0.5",
-		"@orkestrel/queue": "^0.0.4",
+		"@orkestrel/queue": "^0.0.7",
 		"@orkestrel/timeout": "^0.0.4"
 	},
 	"devDependencies": {
 		"@microsoft/api-extractor": "^7.58.12",
 		"@orkestrel/guide": "^0.0.8",
-		"@orkestrel/scaffold": "^0.0.13",
+		"@orkestrel/scaffold": "^0.0.16",
 		"@types/node": "^26.1.2",
 		"@vitest/browser-playwright": "^4.1.10",
 		"oxfmt": "^0.61.0",

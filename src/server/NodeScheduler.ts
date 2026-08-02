@@ -1,4 +1,5 @@
 import type { SchedulerInterface, SchedulerOptions } from '@src/core'
+import { scheduleHost } from '@src/core'
 
 /**
  * The Node {@link SchedulerInterface} — the server-native cooperative-yield backend.
@@ -10,17 +11,11 @@ import type { SchedulerInterface, SchedulerOptions } from '@src/core'
  *   resuming (unlike a microtask, which drains within the current task). `delay(ms)`
  *   waits on a real `setTimeout`.
  * - **Abort fidelity is verbatim.** A pending `yield` / `delay` rejects with
- *   `signal.reason` exactly — the value the caller passed, never wrapped or replaced.
- *   The discipline mirrors the cross-environment default's `#sleep`: an already-aborted
- *   signal rejects immediately WITHOUT arming a timer; otherwise the timer is armed and
- *   a `{ once: true }` abort listener attached, and the two settle paths are mutually
- *   exclusive — the timer path removes the listener before resolving (so a later abort
- *   cannot reach `reject`), and the abort path clears the timer before rejecting (so the
- *   macrotask cannot reach `resolve`). The promise settles exactly once, with no leaked
- *   timer and no leaked listener. It deliberately does NOT use `node:timers/promises`,
- *   whose `{ signal }` option rejects with a Node `AbortError` (`code: 'ABORT_ERR'`)
- *   rather than the caller's `signal.reason` — that would break reason fidelity, so the
- *   timer and listener are hand-rolled to match the contract.
+ *   `signal.reason` exactly. The shared `scheduleHost` lifecycle links an owned composite
+ *   before arming either Node handle, so caller signal method mutation is harmless and the
+ *   first completion, abort, or setup failure owns settlement and cleanup. It deliberately
+ *   does NOT use `node:timers/promises`, whose `{ signal }` option replaces the caller reason
+ *   with a Node `AbortError` (`code: 'ABORT_ERR'`).
  * - **Priority is accepted but a no-op.** Node has no priority primitive (no equivalent
  *   of the browser's `scheduler.postTask` priorities), so `options.priority` is accepted
  *   for contract compliance and ignored — every yield/delay is uniform.
@@ -28,8 +23,8 @@ import type { SchedulerInterface, SchedulerOptions } from '@src/core'
  *
  * @example
  * ```ts
- * import { createAbort } from '@src/core'
- * import { NodeScheduler } from '@src/server'
+ * import { createAbort } from '@orkestrel/abort'
+ * import { NodeScheduler } from '@orkestrel/workflow/server'
  *
  * const abort = createAbort()
  * const scheduler = new NodeScheduler()
@@ -64,55 +59,19 @@ export class NodeScheduler implements SchedulerInterface {
 
 	// === Private
 
-	// The `setImmediate` host-turn for `yield`. Resolves after the immediate callback
-	// fires (after the current operation and pending I/O); rejects with `signal.reason`
-	// if the signal is already aborted (no immediate armed) or aborts while pending.
-	// The two settle paths disarm each other: the immediate path removes the abort
-	// listener before resolving; the abort path clears the immediate before rejecting —
-	// so it settles exactly once, with no leaked handle and no leaked listener.
+	// The Node-native immediate boundary; `scheduleHost` owns cancellation lifecycle.
 	#immediate(signal?: AbortSignal): Promise<void> {
-		if (signal?.aborted === true) return Promise.reject(signal.reason)
-		return new Promise<void>((resolve, reject) => {
-			const handle = setImmediate(() => {
-				signal?.removeEventListener('abort', onAbort) // load-bearing: prevents a post-resolve reject
-				resolve()
-			})
-			const onAbort = this.#abortImmediate.bind(this, handle, reject, signal)
-			signal?.addEventListener('abort', onAbort, { once: true })
-		})
+		return scheduleHost((complete) => {
+			const handle = setImmediate(complete)
+			return () => clearImmediate(handle)
+		}, signal)
 	}
 
-	// The abort-aware `setTimeout` sleep for `delay`. Same settle-once discipline as
-	// `#immediate`, with a timer in place of the immediate: an already-aborted signal
-	// rejects without arming; otherwise the timer path removes the listener before
-	// resolving and the abort path clears the timer before rejecting with `signal.reason`.
+	// The Node timer boundary; `scheduleHost` owns cancellation lifecycle.
 	#sleep(ms: number, signal?: AbortSignal): Promise<void> {
-		if (signal?.aborted === true) return Promise.reject(signal.reason)
-		return new Promise<void>((resolve, reject) => {
-			const handle = setTimeout(() => {
-				signal?.removeEventListener('abort', onAbort) // load-bearing: prevents a post-resolve reject
-				resolve()
-			}, ms)
-			const onAbort = this.#abortTimeout.bind(this, handle, reject, signal)
-			signal?.addEventListener('abort', onAbort, { once: true })
-		})
-	}
-
-	#abortImmediate(
-		handle: ReturnType<typeof setImmediate>,
-		reject: (reason?: unknown) => void,
-		signal?: AbortSignal,
-	): void {
-		clearImmediate(handle)
-		reject(signal?.reason)
-	}
-
-	#abortTimeout(
-		handle: ReturnType<typeof setTimeout>,
-		reject: (reason?: unknown) => void,
-		signal?: AbortSignal,
-	): void {
-		clearTimeout(handle)
-		reject(signal?.reason)
+		return scheduleHost((complete) => {
+			const handle = setTimeout(complete, ms)
+			return () => clearTimeout(handle)
+		}, signal)
 	}
 }

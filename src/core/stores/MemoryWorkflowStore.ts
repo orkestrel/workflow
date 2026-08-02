@@ -29,7 +29,7 @@ import { cloneWorkflowSnapshot } from '../cloners.js'
  *
  * @example
  * ```ts
- * import { createMemoryWorkflowStore, createWorkflow, restoreWorkflow } from '@src/core'
+ * import { createMemoryWorkflowStore, createWorkflow, restoreWorkflow } from '@orkestrel/workflow'
  *
  * const store = createMemoryWorkflowStore()
  * const workflow = createWorkflow(definition)

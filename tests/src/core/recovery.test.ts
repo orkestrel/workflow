@@ -1,4 +1,10 @@
-import type { WorkflowDefinition, WorkflowSnapshot, WorkflowStoreInterface } from '@src/core'
+import type {
+	WorkflowDefinition,
+	WorkflowFunctions,
+	WorkflowOptions,
+	WorkflowSnapshot,
+	WorkflowStoreInterface,
+} from '@src/core'
 import {
 	createWorkflow,
 	createWorkflowRunner,
@@ -23,6 +29,9 @@ const DEFINITION: WorkflowDefinition = {
 	],
 }
 
+const VALIDATED_FUNCTIONS = { work: () => 'validated' }
+const SHIFTED_FUNCTIONS = { work: () => 'shifted' }
+
 function runner(): ReturnType<typeof createWorkflowRunner> {
 	return createWorkflowRunner({ scheduler: createRecordingScheduler() })
 }
@@ -36,6 +45,79 @@ function taskSnapshot(
 }
 
 describe('workflow recovery', () => {
+	it('uses the exact once-read functions registry for validation and recovered handlers', () => {
+		const source = createWorkflow(DEFINITION, { functions: VALIDATED_FUNCTIONS })
+		const task = source.phase('phase')?.task('task')
+		if (task === undefined) throw new Error('expected recoverable task')
+		task.start()
+		let reads = 0
+		const options: WorkflowOptions = {}
+		Object.defineProperty(options, 'functions', {
+			get: () => {
+				reads += 1
+				return reads === 1 ? VALIDATED_FUNCTIONS : SHIFTED_FUNCTIONS
+			},
+		})
+
+		const recovered = recoverWorkflow(source.snapshot(), options)
+
+		expect(reads).toBe(1)
+		expect(recovered.phase('phase')?.task('task')?.handler).toBe(VALIDATED_FUNCTIONS.work)
+	})
+
+	it('captures each unique initial run once and retains the registry for later live additions', () => {
+		const definition: WorkflowDefinition = {
+			id: 'captured-runs',
+			name: 'Captured runs',
+			phases: [
+				{
+					id: 'phase',
+					name: 'Phase',
+					tasks: [
+						{ id: 'first', name: 'First', run: 'work' },
+						{ id: 'second', name: 'Second', run: 'work' },
+					],
+				},
+			],
+		}
+		const snapshot = createWorkflow(definition, { functions: VALIDATED_FUNCTIONS }).snapshot()
+		let reads = 0
+		const functions: WorkflowFunctions = {}
+		Object.defineProperty(functions, 'work', {
+			get: () => {
+				reads += 1
+				return reads === 1 ? VALIDATED_FUNCTIONS.work : SHIFTED_FUNCTIONS.work
+			},
+		})
+
+		const recovered = recoverWorkflow(snapshot, { functions })
+
+		expect(reads).toBe(1)
+		expect(recovered.phase('phase')?.task('first')?.handler).toBe(VALIDATED_FUNCTIONS.work)
+		expect(recovered.phase('phase')?.task('second')?.handler).toBe(VALIDATED_FUNCTIONS.work)
+		const added = recovered.phase('phase')?.add({ id: 'later', name: 'Later', run: 'work' })
+		if (added === undefined || !added.success) throw new Error('expected live task addition')
+		expect(reads).toBe(2)
+		expect(added.value.handler).toBe(SHIFTED_FUNCTIONS.work)
+	})
+
+	it('rejects the first unresolved keyed binding without rereading a later valid value', () => {
+		const snapshot = createWorkflow(DEFINITION, { functions: VALIDATED_FUNCTIONS }).snapshot()
+		let reads = 0
+		const functions: WorkflowFunctions = {}
+		Object.defineProperty(functions, 'work', {
+			get: () => {
+				reads += 1
+				return reads === 1 ? undefined : VALIDATED_FUNCTIONS.work
+			},
+		})
+
+		const error = captureError(() => recoverWorkflow(snapshot, { functions }))
+
+		expect(reads).toBe(1)
+		expect(isWorkflowError(error) ? error.code : undefined).toBe('RESTORE')
+	})
+
 	it('preserves out-of-order completed siblings and executes only recovered pending work', async () => {
 		const definition: WorkflowDefinition = {
 			id: 'mixed',
@@ -67,7 +149,7 @@ describe('workflow recovery', () => {
 		interrupted.start()
 
 		const exact = restoreWorkflow(source.snapshot(), { functions })
-		expect(() => runner().execute(exact)).toThrowError(/not drivable/)
+		expect(() => runner().execute(exact)).toThrow(/not drivable/)
 
 		const calls: string[] = []
 		const recovered = recoverWorkflow(source.snapshot(), {
@@ -338,7 +420,7 @@ describe('workflow recovery', () => {
 		}).snapshot()
 		const restored = restoreWorkflow(snapshot)
 		expect(restored.phase('phase')?.task('task')?.run).toBe('work')
-		expect(() => runner().execute(restored)).toThrowError(/not drivable/)
+		expect(() => runner().execute(restored)).toThrow(/not drivable/)
 
 		const hostile = {
 			get id(): string {
@@ -374,6 +456,35 @@ describe('workflow recovery', () => {
 })
 
 describe('runner durability', () => {
+	it('reserves the writer before a synchronous store mutation and persists the latest state', async () => {
+		const workflow = createWorkflow(DEFINITION, { functions: { work: () => null } })
+		const task = workflow.phase('phase')?.task('task')
+		if (task === undefined) throw new Error('expected persistence task')
+		const snapshots: WorkflowSnapshot[] = []
+		let active = 0
+		let maximum = 0
+		const store: WorkflowStoreInterface = {
+			get: () => Promise.resolve(undefined),
+			delete: () => Promise.resolve(),
+			set: (snapshot) => {
+				active += 1
+				maximum = Math.max(maximum, active)
+				snapshots.push(snapshot)
+				if (snapshots.length === 1) task.start()
+				return Promise.resolve().then(() => {
+					active -= 1
+				})
+			},
+		}
+		const persistence = new WorkflowPersistence(workflow, store)
+
+		await expect(persistence.checkpoint('initial')).resolves.toBe(true)
+		await expect(persistence.finalize()).resolves.toBe(true)
+
+		expect(maximum).toBe(1)
+		expect(taskSnapshot(snapshots.at(-1) ?? workflow.snapshot()).status).toBe('running')
+	})
+
 	it('does not request persistence for runtime-only pause or resume events', async () => {
 		let writes = 0
 		const store: WorkflowStoreInterface = {

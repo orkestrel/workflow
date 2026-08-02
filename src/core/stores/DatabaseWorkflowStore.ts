@@ -29,7 +29,8 @@ import { cloneWorkflowSnapshot } from '../cloners.js'
  *   the row `{ id: snapshot.id, snapshot }`.
  * - **`get(id)` resolves the stored snapshot for an id**, narrowing the opaque JSON column back to
  *   a {@link WorkflowSnapshot} ({@link import('../helpers.js').isWorkflowSnapshot} — the AGENTS §14
- *   boundary narrow for an untrusted storage read), or `undefined` if none is stored.
+ *   boundary narrow for an untrusted storage read), or `undefined` if none is stored. A present
+ *   snapshot whose own id differs from the requested key rejects with normalized `RESTORE` evidence.
  * - **`delete(id)` drops a snapshot by id**; an absent id is a no-op (no throw).
  *
  * UNLIKE the server package's `SessionStoreInterface` there is NO
@@ -40,7 +41,8 @@ import { cloneWorkflowSnapshot } from '../cloners.js'
  *
  * @example
  * ```ts
- * import { createDatabaseWorkflowStore, createMemoryDriver, createWorkflow, restoreWorkflow } from '@src/core'
+ * import { createMemoryDriver } from '@orkestrel/database'
+ * import { createDatabaseWorkflowStore, createWorkflow, restoreWorkflow } from '@orkestrel/workflow'
  *
  * const store = createDatabaseWorkflowStore(createMemoryDriver()) // a durable driver swaps in here
  * const workflow = createWorkflow(definition)
@@ -63,13 +65,13 @@ export class DatabaseWorkflowStore implements WorkflowStoreInterface {
 		this.#table = table
 	}
 
-	/** Resolve the persisted snapshot for `id`, narrowing the opaque JSON column back to a `WorkflowSnapshot`. */
+	/** Resolve and key-check the snapshot for `id`, narrowing the opaque column to `WorkflowSnapshot`. */
 	async get(id: string): Promise<WorkflowSnapshot | undefined> {
 		const row = await this.#table.get(id)
 		if (row === undefined) return undefined
 		// The snapshot crosses back as an untrusted storage read. A present malformed row is
 		// corruption, not absence, so preserve cloneWorkflowSnapshot's normalized RESTORE failure.
-		return cloneWorkflowSnapshot(row.snapshot)
+		return cloneWorkflowSnapshot(row.snapshot, id)
 	}
 
 	/** Insert or replace under the snapshot's OWN `id` (no separate id param) — the row is `{ id, snapshot }`. */

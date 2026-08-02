@@ -1,4 +1,5 @@
 import type { SchedulerInterface, SchedulerOptions } from '@src/core'
+import { scheduleHost } from '@src/core'
 import type { AnyFunction } from '@orkestrel/contract'
 import type { IdleAPI } from './types.js'
 import { isFunction } from '@orkestrel/contract'
@@ -17,20 +18,15 @@ import { isFunction } from '@orkestrel/contract'
  *   `setTimeout(0)` macrotask — still a real host-turn, just not idle-gated. `delay(ms)` is
  *   always a real `setTimeout`. `options.priority` is accepted for contract compliance but a
  *   no-op — idle scheduling has no priority dimension.
- * - **Abort fidelity is verbatim, with cleanup.** A pending `yield` / `delay` rejects with
- *   `signal.reason` exactly. The discipline mirrors the cross-environment default's
- *   `#sleep`: an already-aborted signal rejects immediately WITHOUT scheduling; otherwise
- *   the idle callback (or fallback timer) is requested and a `{ once: true }` abort listener
- *   attached, and the two settle paths are mutually exclusive — the resume path removes the
- *   listener before resolving, and the abort path `cancelIdleCallback`s (or `clearTimeout`s)
- *   the pending handle before rejecting. The promise settles exactly once, with no leaked
- *   callback/timer and no leaked listener.
+ * - **Abort fidelity is verbatim, with cleanup.** The shared `scheduleHost` lifecycle links
+ *   an owned settlement composite before scheduling, never invokes caller-owned signal
+ *   methods, and cancels the idle callback or fallback timer when abort wins.
  * - **Event-free.** A pure functional primitive — no Emitter, no events.
  *
  * @example
  * ```ts
- * import { createAbort } from '@src/core'
- * import { IdleScheduler } from '@src/browser'
+ * import { createAbort } from '@orkestrel/abort'
+ * import { IdleScheduler } from '@orkestrel/workflow/browser'
  *
  * const abort = createAbort()
  * const scheduler = new IdleScheduler()
@@ -81,36 +77,20 @@ export class IdleScheduler implements SchedulerInterface {
 		}
 	}
 
-	// The `requestIdleCallback` host-turn for `yield`. Resolves in the idle callback;
-	// rejects with `signal.reason` if already aborted (nothing scheduled) or aborted while
-	// pending. Settle-once, no leak: the resume path removes the abort listener before
-	// resolving; the abort path cancels the idle callback before rejecting.
+	// The idle callback boundary; `scheduleHost` owns cancellation lifecycle.
 	#idle(idle: IdleAPI, signal?: AbortSignal): Promise<void> {
-		if (signal?.aborted === true) return Promise.reject(signal.reason)
-		return new Promise<void>((resolve, reject) => {
-			const handle = idle.request(() => {
-				signal?.removeEventListener('abort', onAbort) // load-bearing: prevents a post-resolve reject
-				resolve()
-			})
-			const onAbort = this.#abortIdle.bind(this, idle, handle, reject, signal)
-			signal?.addEventListener('abort', onAbort, { once: true })
-		})
+		return scheduleHost((complete) => {
+			const handle = idle.request(complete)
+			return () => idle.cancel(handle)
+		}, signal)
 	}
 
-	// The abort-aware `setTimeout` sleep shared by `delay` and the `yield` macrotask
-	// fallback. Same settle-once discipline as the core `#sleep`: already-aborted → reject
-	// without arming; the timer path removes the listener before resolving; the abort path
-	// clears the timer before rejecting with the verbatim `signal.reason`.
+	// The browser timer boundary shared by `delay` and fallback `yield`.
 	#sleep(ms: number, signal?: AbortSignal): Promise<void> {
-		if (signal?.aborted === true) return Promise.reject(signal.reason)
-		return new Promise<void>((resolve, reject) => {
-			const handle = setTimeout(() => {
-				signal?.removeEventListener('abort', onAbort) // load-bearing: prevents a post-resolve reject
-				resolve()
-			}, ms)
-			const onAbort = this.#abortTimeout.bind(this, handle, reject, signal)
-			signal?.addEventListener('abort', onAbort, { once: true })
-		})
+		return scheduleHost((complete) => {
+			const handle = setTimeout(complete, ms)
+			return () => clearTimeout(handle)
+		}, signal)
 	}
 
 	#request(request: AnyFunction, callback: () => void): number {
@@ -119,24 +99,5 @@ export class IdleScheduler implements SchedulerInterface {
 
 	#cancel(cancel: AnyFunction, handle: number): void {
 		Reflect.apply(cancel, globalThis, [handle])
-	}
-
-	#abortIdle(
-		idle: IdleAPI,
-		handle: number,
-		reject: (reason?: unknown) => void,
-		signal?: AbortSignal,
-	): void {
-		idle.cancel(handle)
-		reject(signal?.reason)
-	}
-
-	#abortTimeout(
-		handle: ReturnType<typeof setTimeout>,
-		reject: (reason?: unknown) => void,
-		signal?: AbortSignal,
-	): void {
-		clearTimeout(handle)
-		reject(signal?.reason)
 	}
 }

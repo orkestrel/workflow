@@ -16,6 +16,7 @@ import type {
 	TaskResult,
 	TaskSnapshot,
 	TaskUpdate,
+	WorkflowFunction,
 	WorkflowFunctions,
 	WorkflowInterface,
 } from '../types.js'
@@ -41,9 +42,9 @@ import { TaskManager } from '../tasks/TaskManager.js'
  *
  * @remarks
  * - **Derived status.** `status` is `#override` when one is in force, else
- *   {@link derivePhaseStatus} over the live tasks' statuses. {@link #recompute} (passed to
+ *   {@link derivePhaseStatus} over the live tasks' statuses. `#recompute` (passed to
  *   each child {@link Task}) re-derives on every child transition; a CHANGE emits the matching
- *   event AND escalates to the workflow ({@link #escalate}, the upward step of the cascade).
+ *   event AND escalates to the workflow (`#escalate`, the upward step of the cascade).
  * - **Override (AGENTS §10).** `skip` / `stop` FORCE the phase's status (e.g. skipping a whole
  *   phase), overriding the derived value; the override is PERSISTED in the snapshot's own
  *   `override` field and restored DIRECTLY (no divergence guess), so a forced phase round-trips.
@@ -74,10 +75,12 @@ import { TaskManager } from '../tasks/TaskManager.js'
  *   construction path {@link #append} uses at build time, so a live mint and a restored/built
  *   task are wired IDENTICALLY. At construction, the workflow-level
  *   {@link import('../types.js').WorkflowFunctions} registry (threaded from
- *   {@link import('../types.js').WorkflowOptions.functions}) resolves each task's `run` name into
- *   its runtime {@link import('../types.js').TaskInterface.handler} ONCE; a `run` that is omitted
- *   or unregistered resolves to no handler; only an omitted `run` is a no-op, while an
- *   unresolved present name makes the containing tree non-drivable.
+ *   {@link import('../types.js').WorkflowOptions.functions}) resolves every unique initial `run`
+ *   name ONCE before any task is built; siblings sharing a name receive the exact same captured
+ *   runtime {@link import('../types.js').TaskInterface.handler}. A later live {@link add} reads
+ *   that name once from the retained registry at its own mint moment. An omitted or unregistered
+ *   `run` resolves to no handler; only omission is a no-op, while an unresolved present name makes
+ *   the containing tree non-drivable.
  * - **Runtime lifecycle (AGENTS §10).** `pause` / `resume` / `wait` mirror the workflow's own
  *   quartet, scoped to this phase — a driving
  *   {@link import('../types.js').WorkflowRunnerInterface.execute} gates a task's own
@@ -96,11 +99,9 @@ export class Phase implements PhaseInterface {
 	// — injected by the parent so the phase needs no back-reference plumbing of its own.
 	readonly #escalateUp: () => void
 	readonly #tasks: TaskManager = new TaskManager()
-	// The workflow-level function registry each task's `run` name resolves against ONCE at
-	// construction (build, restore, or a live mint) — threaded from Workflow, never re-read.
-	// Because resolution happens at THAT construction/mint moment, mutating the registry object
-	// after this phase (or an earlier task) has resolved changes only later mints, never
-	// already-resolved tasks — do not mutate it.
+	// The workflow-level function registry retained from Workflow. Initial tasks capture one
+	// binding per unique run name. A later live mint reads its own
+	// binding from this retained registry; existing handlers never change when the registry does.
 	readonly #functions: WorkflowFunctions | undefined
 	readonly #silence: number | undefined
 	// The EFFECTIVE failure policy this phase runs under (`phase.bail ?? workflow.bail`, resolved
@@ -133,6 +134,9 @@ export class Phase implements PhaseInterface {
 		functions?: WorkflowFunctions,
 		silence?: number,
 	) {
+		const on = options?.on
+		const error = options?.error
+		const tasks = options?.tasks
 		this.#id = snapshot.id
 		this.#name = snapshot.name
 		if (snapshot.description !== undefined) {
@@ -145,6 +149,12 @@ export class Phase implements PhaseInterface {
 		this.#escalateUp = escalate
 		this.#functions = functions
 		this.#silence = silence
+		const handlers = new Map<string, WorkflowFunction | undefined>()
+		for (const task of snapshot.tasks) {
+			if (task.run !== undefined && !handlers.has(task.run)) {
+				handlers.set(task.run, functions?.[task.run])
+			}
+		}
 		// The effective per-phase policy: the explicit workflow `bail` OVERRIDE when supplied (a
 		// deliberate "re-run the whole tree under THIS uniform policy" knob — `createWorkflow` /
 		// `restoreWorkflow` thread `options.bail` here), else the snapshot's persisted per-phase `bail`
@@ -154,13 +164,16 @@ export class Phase implements PhaseInterface {
 		this.#bail = bail ?? snapshot.bail
 		this.#concurrency = snapshot.concurrency
 		this.#emitter = new Emitter<PhaseEventMap>({
-			...(options?.on === undefined ? {} : { on: options.on }),
-			...(options?.error === undefined ? {} : { error: options.error }),
+			...(on === undefined ? {} : { on }),
+			...(error === undefined ? {} : { error }),
 		})
 		// Build the live tasks positionally from the snapshot — each wired to recompute THIS phase
-		// on a transition, carrying its own restore state (status + result + metadata) and resolving
-		// its `run` name against `#functions` into its runtime handler.
-		for (const task of snapshot.tasks) this.#append(task, options)
+		// on a transition, carrying its own restore state and the once-captured handler for its run.
+		for (const task of snapshot.tasks) {
+			const taskOptions = tasks?.[task.id]
+			const handler = task.run === undefined ? undefined : handlers.get(task.run)
+			this.#append(task, taskOptions, handler)
+		}
 		// Restore the override DIRECTLY from the snapshot's own field (present only when a whole-
 		// phase skip / stop forced it) — no fragile status-divergence guess. Then seed the baseline
 		// from the EFFECTIVE status so a recompute diffs against the right value.
@@ -461,19 +474,26 @@ export class Phase implements PhaseInterface {
 	// Build one live task from its snapshot, threading its per-task options (its own `on` /
 	// `metadata`, keyed by id under the phase options) and its restore state (including its
 	// declarative `run` / `retries` / `timeout`), then append it.
-	#append(task: TaskSnapshot, options: PhaseOptions | undefined): void {
-		const created = this.#create(task, options?.tasks?.[task.id])
+	#append(
+		task: TaskSnapshot,
+		options: TaskOptions | undefined,
+		handler: WorkflowFunction | undefined,
+	): void {
+		const created = this.#create(task, options, handler)
 		this.#tasks.append(created)
 	}
 
 	// Build one live task wired to THIS phase — the shared construction step behind both
 	// `#append` (build-time wiring, from a TaskSnapshot's restore state) and `#mint` (a live
 	// `add`, from a freshly-converted TaskDefinition snapshot) — so a mint and a built/restored
-	// task are wired IDENTICALLY (recompute cascade, emitter hooks, context stamping). Resolves
-	// `snapshot.run` against `#functions` ONCE into the task's runtime handler.
-	#create(snapshot: TaskSnapshot, options: TaskOptions | undefined): Task {
+	// task are wired IDENTICALLY (recompute cascade, emitter hooks, context stamping). The caller
+	// supplies the once-resolved runtime handler for the construction moment it owns.
+	#create(
+		snapshot: TaskSnapshot,
+		options: TaskOptions | undefined,
+		handler: WorkflowFunction | undefined,
+	): Task {
 		const context = buildTaskContext(this.context, snapshot)
-		const handler = snapshot.run === undefined ? undefined : this.#functions?.[snapshot.run]
 		return new Task(
 			context,
 			this,
@@ -495,9 +515,11 @@ export class Phase implements PhaseInterface {
 
 	// MINT a live task from a TaskDefinition for a live `add` — converts it to an initial
 	// TaskSnapshot (definitionToSnapshot's per-task step, carrying its `run` / `retries` /
-	// `timeout`) then builds it via `#create`, which resolves its handler the SAME way.
+	// `timeout`) then resolves its handler once against the retained registry for this live mint.
 	#mint(definition: TaskDefinition): Task {
-		return this.#create(taskDefinitionToSnapshot(definition), undefined)
+		const snapshot = taskDefinitionToSnapshot(definition)
+		const handler = snapshot.run === undefined ? undefined : this.#functions?.[snapshot.run]
+		return this.#create(snapshot, undefined, handler)
 	}
 
 	// The live tasks' statuses, in positional order — the input to `derivePhaseStatus`.

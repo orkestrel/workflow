@@ -219,6 +219,26 @@ describe('DatabaseWorkflowStore — upsert (set replaces under the same id)', ()
 })
 
 describe('DatabaseWorkflowStore — delete & absent', () => {
+	it('rejects a valid snapshot stored under a different row key with exact RESTORE evidence', async () => {
+		const database = createDatabase({
+			driver: createMemoryDriver(),
+			tables: { snapshots: { id: stringShape(), snapshot: rawShape({}) } },
+		})
+		const table: TableInterface<WorkflowSnapshotRow> = database.table('snapshots')
+		const store = new DatabaseWorkflowStore(table)
+		const snapshot = createWorkflow(buildReleaseDefinition('payload')).snapshot()
+		await table.set({ id: 'requested', snapshot })
+
+		const reading = store.get('requested')
+		await expect(reading).rejects.toMatchObject({
+			code: 'RESTORE',
+			context: { requested: 'requested', payload: 'payload' },
+		})
+		await expect(reading).rejects.toThrow(
+			"workflow snapshot 'payload' does not match storage key 'requested'",
+		)
+	})
+
 	it('rejects a present corrupt row with the normalized RESTORE error', async () => {
 		const database = createDatabase({
 			driver: createMemoryDriver(),

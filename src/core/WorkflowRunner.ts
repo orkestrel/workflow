@@ -17,9 +17,16 @@ import type {
 import { createTimeout } from '@orkestrel/timeout'
 import { DEFAULT_BAIL, DEFAULT_PHASE_CONCURRENCY, MAX_TIMER_MS } from './constants.js'
 import { WorkflowError } from './errors.js'
-import { definitionToSnapshot, errorToMessage, failure, isTerminalStatus } from './helpers.js'
+import {
+	captureWorkflowOptions,
+	definitionToSnapshot,
+	errorToMessage,
+	failure,
+	isTerminalStatus,
+} from './helpers.js'
 import { Runner } from './Runner.js'
 import { TaskController } from './tasks/TaskController.js'
+import { hasWorkflowHandlers } from './validators.js'
 import { Workflow } from './Workflow.js'
 import { WorkflowPersistence } from './WorkflowPersistence.js'
 
@@ -43,8 +50,9 @@ import { WorkflowPersistence } from './WorkflowPersistence.js'
  * - **Composes, never re-implements.** Per-phase bounded concurrency is one
  *   {@link createRunner} per phase (the substrate {@link RunnerInterface} over the workers
  *   `Queue`); `bail` maps onto that Runner's fail-fast vs settle-all; the run-level abort /
- *   timeout / budget / entity `signal` fold through {@link createAbort} / {@link createTimeout} +
- *   `AbortSignal.any` (exactly as the agent runtime folds its bounds); pacing is the shipped
+ *   timeout / budget / entity `signal` fold through the `@orkestrel/abort` signal contract,
+ *   {@link createTimeout}, and `AbortSignal.any` (exactly as the agent runtime folds its bounds);
+ *   pacing is the shipped
  *   {@link SchedulerInterface}. The runner writes ZERO concurrency / retry / abort logic of
  *   its own — it only sequences phases, dispatches a task's own handler, and drives the live
  *   entity. The workflow layer owns per-task deadlines because timeout settlement must
@@ -189,9 +197,18 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 		options?: WorkflowRunOptions,
 	): Promise<WorkflowResult> {
 		if (this.#isWorkflow(target)) {
+			const signal = options?.signal
+			const timeout = options?.timeout
+			const budget = options?.budget
+			const store = options?.store
 			this.#acquire(target)
-			return this.#execute(target, options)
+			return this.#execute(target, signal, timeout, budget, store)
 		}
+		const captured = captureWorkflowOptions(options)
+		const signal = options?.signal
+		const timeout = options?.timeout
+		const budget = options?.budget
+		const store = options?.store
 		// SINGLE SOURCE OF TRUTH: build the live tree from the SAME definition we drive, so the
 		// executed entity can never drift from the `run` / `concurrency` metadata. The
 		// WorkflowOptions half (initial `on` listeners + a `bail` override + the per-node `phases`
@@ -200,19 +217,19 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 		// (signal/timeout/budget) feed the fold in `#execute`. The tree is built DIRECTLY (not via
 		// `createWorkflow`) so the runner never imports its own module's factory — preserving this
 		// codebase's factories→classes direction (no class↔factory cycle).
-		const bail = options?.bail ?? target.bail ?? DEFAULT_BAIL
+		const bail = captured.bail ?? target.bail ?? DEFAULT_BAIL
 		// Seed BOTH tiers of the snapshot with the effective bail (`definitionToSnapshot`'s 2nd arg) so
 		// an `options.bail` override reaches each INHERITING phase's snapshot (a per-phase `bail` still
-		// wins). `options.bail` itself is forwarded UNCHANGED (NOT overwritten with the resolved
+		// wins). The captured `options.bail` value is preserved (NOT overwritten with the resolved
 		// `bail`): the snapshot already carries the resolved bail at both tiers, so `Workflow` reads
 		// `#bail` from it; injecting a resolved `bail` would make `Workflow` treat it as an EXPLICIT
 		// uniform override and clobber the per-phase overrides. A caller's genuine `options.bail` stays
-		// as given and cascades uniformly. `options` is forwarded UNCHANGED — `Workflow` resolves each
-		// task's `handler` from `options.functions` once at construction (V-c), so a definition run and
-		// a `createWorkflow` build follow the SAME single construction path.
-		const workflow = new Workflow(definitionToSnapshot(target, bail), options)
+		// as given and cascades uniformly. The owned top-level `captured` bag is forwarded — `Workflow`
+		// resolves each task's `handler` from its retained `functions` registry at construction (V-c),
+		// so a definition run and a `createWorkflow` build follow the SAME construction path.
+		const workflow = new Workflow(definitionToSnapshot(target, bail), captured)
 		this.#acquire(workflow)
-		return this.#execute(workflow, options)
+		return this.#execute(workflow, signal, timeout, budget, store)
 	}
 
 	#acquire(workflow: WorkflowInterface): void {
@@ -221,7 +238,7 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 			(workflow.status === 'pending' || workflow.status === 'running') &&
 			tasks.every((task) => task.status !== 'running') &&
 			(tasks.length === 0 || tasks.some((task) => task.status === 'pending')) &&
-			tasks.every((task) => task.run === undefined || task.handler !== undefined)
+			hasWorkflowHandlers(workflow)
 		if (!runnable || workflow.destroyed || WorkflowRunner.#executions.has(workflow)) {
 			throw new WorkflowError('TRANSITION', `workflow '${workflow.id}' is not drivable`, {
 				id: workflow.id,
@@ -240,33 +257,38 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 	// terminal status). The active-Runner `holder` is LOCAL (re-entrant-safe).
 	async #execute(
 		workflow: WorkflowInterface,
-		options: WorkflowRunOptions | undefined,
+		signal: AbortSignal | undefined,
+		ms: number | undefined,
+		budget: WorkflowRunOptions['budget'],
+		store: WorkflowRunOptions['store'],
 	): Promise<WorkflowResult> {
 		// Arm the deadline + budget and fold every present bound — INCLUDING the live workflow's
 		// own `signal` (fires on `destroy`) — into ONE run signal the tasks race against, the same
 		// fold the agent runtime uses. A fire of any cancels every in-flight task.
 		// Arm only a host-safe deadline. Non-positive, non-finite, and over-max values disable
 		// the bound instead of clamping into an immediate host-timer cancellation.
-		const ms = options?.timeout
-		const timeout =
-			ms !== undefined && Number.isFinite(ms) && ms > 0 && ms <= MAX_TIMER_MS
-				? createTimeout({ ms })
-				: undefined
-		timeout?.start()
-		options?.budget?.start()
-		const runSignal = this.#fold(workflow, options, timeout)
-		const persistence =
-			options?.store === undefined ? undefined : new WorkflowPersistence(workflow, options.store)
 		// On a run-level cancel, abort the ACTIVE phase's Runner (cancelling its in-flight tasks).
 		// The active Runner is swapped per phase via the LOCAL holder; a closure over it always
 		// fires the current one. A one-shot listener (the run halts once); cleared in the `finally`.
 		const holder: { runner: RunnerInterface<TaskInterface, void> | undefined } = {
 			runner: undefined,
 		}
-		const onCancel = this.#abortActive.bind(this, holder, runSignal)
-		if (runSignal.aborted) onCancel()
-		else runSignal.addEventListener('abort', onCancel, { once: true })
+		let timeout: TimeoutInterface | undefined
+		let persistence: WorkflowPersistence | undefined
+		let runSignal: AbortSignal | undefined
+		let onCancel: (() => void) | undefined
 		try {
+			timeout =
+				ms !== undefined && Number.isFinite(ms) && ms > 0 && ms <= MAX_TIMER_MS
+					? createTimeout({ ms })
+					: undefined
+			timeout?.start()
+			budget?.start()
+			runSignal = this.#fold(workflow, signal, budget, timeout)
+			persistence = store === undefined ? undefined : new WorkflowPersistence(workflow, store)
+			onCancel = this.#abortActive.bind(this, holder, runSignal)
+			if (runSignal.aborted) onCancel()
+			else runSignal.addEventListener('abort', onCancel, { once: true })
 			if (persistence !== undefined && !(await persistence.checkpoint('initial'))) {
 				if (this.#stoppable(workflow)) workflow.stop()
 				this.#skipFrom(workflow.phases.phases(), 0)
@@ -318,11 +340,7 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 				// any other scheduler error is a genuine fault and re-thrown.
 				const remaining = workflow.phases.phases()
 				if (index < remaining.length && !this.#cancelled(runSignal)) {
-					try {
-						await this.#scheduler.yield({ signal: runSignal })
-					} catch (error) {
-						if (!runSignal.aborted) throw error
-					}
+					await this.#pace(runSignal)
 				}
 			}
 			// A run-level cancel makes the run STOPPED — `#haltFrom` forces `stop` BEFORE sweeping
@@ -351,7 +369,17 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 		} finally {
 			persistence?.detach()
 			timeout?.clear()
-			runSignal.removeEventListener('abort', onCancel)
+			if (runSignal !== undefined && onCancel !== undefined) {
+				runSignal.removeEventListener('abort', onCancel)
+			}
+		}
+	}
+
+	async #pace(signal: AbortSignal): Promise<void> {
+		try {
+			await this.#scheduler.yield({ signal })
+		} catch (error) {
+			if (!signal.aborted) throw error
 		}
 	}
 
@@ -422,8 +450,11 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 				// `#execute`'s halt guard skip the remaining phases + force the workflow `stop`.
 				return !this.#cancelled(runSignal)
 			} finally {
-				created.destroy()
-				holder.runner = undefined
+				try {
+					await created.destroy()
+				} finally {
+					holder.runner = undefined
+				}
 			}
 		} finally {
 			phase.emitter.off('add', onAdd)
@@ -446,7 +477,7 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 		holder: { runner: RunnerInterface<TaskInterface, void> | undefined },
 		runSignal: AbortSignal,
 	): void {
-		holder.runner?.abort(runSignal.reason)
+		void holder.runner?.abort(runSignal.reason)
 	}
 
 	#spawnAdded(
@@ -456,7 +487,7 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 	): void {
 		if (launched.has(task.id)) return
 		launched.add(task.id)
-		holder.runner?.spawn(task)
+		void holder.runner?.spawn(task)
 	}
 
 	#entry(task: TaskInterface): RunnerEntryOptions {
@@ -947,13 +978,14 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 	// never `destroy`ed simply never fires it, so a bounds-free run is unaffected.
 	#fold(
 		workflow: WorkflowInterface,
-		options: WorkflowRunOptions | undefined,
+		signal: AbortSignal | undefined,
+		budget: WorkflowRunOptions['budget'],
 		timeout: TimeoutInterface | undefined,
 	): AbortSignal {
 		const signals: AbortSignal[] = [workflow.signal]
-		if (options?.signal !== undefined) signals.push(options.signal)
+		if (signal !== undefined) signals.push(signal)
 		if (timeout !== undefined) signals.push(timeout.signal)
-		if (options?.budget !== undefined) signals.push(options.budget.signal)
+		if (budget !== undefined) signals.push(budget.signal)
 		return signals.length === 1 ? workflow.signal : AbortSignal.any(signals)
 	}
 

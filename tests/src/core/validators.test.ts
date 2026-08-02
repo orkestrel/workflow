@@ -1,3 +1,4 @@
+import type { WorkflowFunctions } from '@src/core'
 import {
 	createWorkflow,
 	hasWorkflowHandlers,
@@ -363,6 +364,56 @@ describe('snapshot logical leaves', () => {
 				undefined,
 			),
 		).toBe(true)
+	})
+
+	it('reads each unique persisted run once and requires a callable binding', () => {
+		const named = createWorkflow({
+			id: 'unique-handlers',
+			name: 'Unique handlers',
+			phases: [
+				{
+					id: 'phase',
+					name: 'Phase',
+					tasks: [
+						{ id: 'first', name: 'First', run: 'work' },
+						{ id: 'second', name: 'Second', run: 'work' },
+					],
+				},
+			],
+		}).snapshot()
+		let reads = 0
+		const functions: WorkflowFunctions = {}
+		Object.defineProperty(functions, 'work', {
+			configurable: true,
+			get: () => {
+				reads += 1
+				return () => null
+			},
+		})
+
+		expect(hasWorkflowHandlers(named, functions)).toBe(true)
+		expect(reads).toBe(1)
+
+		Object.defineProperty(functions, 'work', { configurable: true, value: 'not callable' })
+		expect(hasWorkflowHandlers(named, functions)).toBe(false)
+	})
+
+	it('validates the callable handlers already resolved on a live workflow', () => {
+		const definition = {
+			id: 'live-handlers',
+			name: 'Live handlers',
+			phases: [
+				{
+					id: 'phase',
+					name: 'Phase',
+					tasks: [{ id: 'task', name: 'Task', run: 'work' }],
+				},
+			],
+		}
+		expect(
+			hasWorkflowHandlers(createWorkflow(definition, { functions: { work: () => null } })),
+		).toBe(true)
+		expect(hasWorkflowHandlers(createWorkflow(definition))).toBe(false)
 	})
 
 	it('locates the nearest identifiable invalid phase or task', () => {
