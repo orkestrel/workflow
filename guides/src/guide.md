@@ -306,7 +306,7 @@ missingSymbols(guide.surface(), source.exports()) // [] — every documented sym
 ## See also
 
 - `AGENTS.md` (workspace root) — the rules; §22 documentation-as-contracts.
-- [The check catalog](#the-check-catalog), [the pure file-inventory model](#the-pure-file-inventory-model), and [tests](#tests) document the checks, source scanning, and consumer drop-in.
+- `PROPOSAL.md` (workspace root) — the design proposal this package implements; §5 the check catalog, §6 the drop-in, §7 source-scanning fidelity.
 - [`README.md`](../README.md) — the guides index.
 - [`markdown.md`](markdown.md) — the dependency mirror for `@orkestrel/markdown`, the AST/parse layer `Guide` and `Source` are built on.
 </content>

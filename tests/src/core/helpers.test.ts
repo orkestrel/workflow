@@ -7,6 +7,7 @@ import type {
 	WorkflowDefinition,
 	WorkflowOptions,
 } from '@src/core'
+import { ContractError } from '@orkestrel/contract'
 import {
 	buildPhaseContext,
 	buildTaskContext,
@@ -716,7 +717,15 @@ describe('scheduleHost — centralized host settlement lifecycle', () => {
 		])
 		if (!(pending instanceof Promise)) throw new Error('expected rejected scheduling promise')
 
-		await expect(pending).rejects.toBeInstanceOf(TypeError)
+		await expect(pending).rejects.toBeInstanceOf(ContractError)
+		await expect(pending).rejects.toMatchObject({
+			code: 'placement',
+			context: {
+				path: ['parent'],
+				limit: 'native AbortSignal or undefined',
+				received: 'object',
+			},
+		})
 		expect(starts).toBe(0)
 	})
 
