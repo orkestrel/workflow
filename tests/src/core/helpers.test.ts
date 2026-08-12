@@ -736,10 +736,14 @@ describe('scheduleHost — centralized host settlement lifecycle', () => {
 		// the prototype, so it never fires and this test measured a schedule that simply
 		// never settled rather than the containment it names.
 		let starts = 0
+		let sprung = 0
 		const trap = new Error('proxy trap must not escape synchronously')
 		const hostile = new Proxy(new AbortController().signal, {
 			get(target, property) {
-				if (property === 'aborted') throw trap
+				if (property === 'aborted') {
+					sprung += 1
+					throw trap
+				}
 				const member: unknown = Reflect.get(target, property, target)
 				return typeof member === 'function' ? member.bind(target) : member
 			},
@@ -761,6 +765,11 @@ describe('scheduleHost — centralized host settlement lifecycle', () => {
 		})
 		await expect(pending).rejects.not.toBe(trap)
 		expect(starts).toBe(0)
+		// The instrument reports on itself: a trap that never springs means linking
+		// stopped reading the member this vector attacks, and the assertions above
+		// would then be measuring a schedule that never settled rather than the
+		// containment they name.
+		expect(sprung).toBeGreaterThan(0)
 	})
 
 	it('schedules safely when the caller addEventListener method is patched to throw', async () => {
