@@ -95,9 +95,9 @@ export class TaskController implements TaskControllerInterface {
 		return this.#results()
 	}
 
-	#gates(): readonly Promise<void>[] {
+	#gates(): ReadonlyArray<Promise<void>> {
 		if (this.#ancestorTerminal()) return []
-		const gates: Promise<void>[] = []
+		const gates: Array<Promise<void>> = []
 		if (this.#entity.workflow.paused) gates.push(this.#entity.workflow.wait())
 		if (this.#entity.phase.paused) gates.push(this.#entity.phase.wait())
 		if (!isTerminalStatus(this.#entity.status) && this.#entity.paused) {
@@ -106,7 +106,7 @@ export class TaskController implements TaskControllerInterface {
 		return gates
 	}
 
-	async #race(gates: readonly Promise<void>[]): Promise<void> {
+	async #race(gates: ReadonlyArray<Promise<void>>): Promise<void> {
 		if (this.signal.aborted || gates.length === 0) return
 		const deferred = Promise.withResolvers<void>()
 		const onAbort = this.#resolve.bind(this, deferred)

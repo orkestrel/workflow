@@ -15,7 +15,7 @@ import type {
 import { createScheduler, createWorkflowRunner, TaskController } from '@src/core'
 
 /** Shared invalid task activity frames used by cloner and guard boundary tests. */
-export const INVALID_TASK_ACTIVITIES: readonly (readonly [input: unknown])[] = Object.freeze([
+export const INVALID_TASK_ACTIVITIES: ReadonlyArray<readonly [input: unknown]> = Object.freeze([
 	[{ note: '' }],
 	[{ progress: { current: Number.NaN } }],
 	[{ progress: { current: -1 } }],
@@ -163,15 +163,15 @@ export function createGate<T = void>(): TestGateInterface<T> {
  * settlement while its readonly histories expose the exact durable calls made by a test.
  */
 export class WorkflowStoreBoundary implements WorkflowStoreInterface {
-	readonly #reads: TestGateInterface<WorkflowSnapshot | undefined>[]
-	readonly #writes: TestGateInterface<void>[]
+	readonly #reads: Array<TestGateInterface<WorkflowSnapshot | undefined>>
+	readonly #writes: Array<TestGateInterface<void>>
 	readonly #gets: string[] = []
 	readonly #sets: WorkflowSnapshot[] = []
 	readonly #deletes: string[] = []
 
 	constructor(
-		reads: readonly TestGateInterface<WorkflowSnapshot | undefined>[] = [],
-		writes: readonly TestGateInterface<void>[] = [],
+		reads: ReadonlyArray<TestGateInterface<WorkflowSnapshot | undefined>> = [],
+		writes: ReadonlyArray<TestGateInterface<void>> = [],
 	) {
 		this.#reads = [...reads]
 		this.#writes = [...writes]

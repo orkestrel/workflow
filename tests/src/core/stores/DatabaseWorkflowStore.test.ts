@@ -56,7 +56,7 @@ describe('DatabaseWorkflowStore — set → get round-trip (one opaque JSON colu
 	// Exercise BOTH the all-pending snapshot and the SETTLED one, proving the store persists each
 	// faithfully through the JSON column and a restore from the retrieved snapshot rebuilds an
 	// IDENTICAL live tree. A genuine driver round-trip (through `databases`), not a Map shortcut.
-	const cases: readonly (readonly [string, () => Promise<WorkflowSnapshot>])[] = [
+	const cases: ReadonlyArray<readonly [string, () => Promise<WorkflowSnapshot>]> = [
 		[
 			'all-pending (createWorkflow)',
 			async () => createWorkflow(buildReleaseDefinition()).snapshot(),

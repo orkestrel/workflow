@@ -21,7 +21,8 @@ The non-negotiables and design laws in `AGENTS.md` apply without exception and a
 ## Types
 
 - Put every reusable or public interface/type alias in the nearest authoritative `*/types.ts`.
-- Public collection properties and return types use `readonly T[]`, `ReadonlyMap<K, V>`, or `ReadonlySet<T>`.
+- Public collection properties and return types are immutable: an array form, `ReadonlyMap<K, V>`, or `ReadonlySet<T>`.
+- `.oxlintrc.json` fixes which array form, through `typescript/array-type` set to `array-simple`, and it is the authority: `readonly T[]` for a simple element type, `ReadonlyArray<T>` for any other. The two spell one type, so this is a spelling rule the linter settles, never a semantic choice.
 - Optional state is `T | undefined`; an optional lookup failure returns `undefined`.
 
 ## Immutability

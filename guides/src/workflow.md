@@ -121,7 +121,7 @@ await scheduleHost((complete) => {
 
 ### Environment backends
 
-Beyond the cross-environment default, each host has a native cooperative-yield primitive a `yield()` should reach for. The backends are standalone `SchedulerInterface` implementations that retain only feature detection and native start/cancel boundaries; `scheduleHost` is the one shared lifecycle. A pending `yield` / `delay` rejects with `signal.reason` _verbatim_, an already-aborted or invalid signal rejects before arming, caller signal method mutation is harmless, cancellation clears the returned handle once, cancellation-closure failure is contained after the winner is captured, and native composite arbitration prevents late completion, abort, or failure from resettling. Each backend's `delay(ms)` is a real `setTimeout`; only the `yield` primitive differs.
+Beyond the cross-environment default, each host has a native cooperative-yield primitive a `yield()` should reach for. The backends are standalone `SchedulerInterface` implementations that retain only feature detection and native start/cancel boundaries; `scheduleHost` is the one shared lifecycle. A pending `yield` / `delay` rejects with `signal.reason` _verbatim_, an already-aborted signal rejects with that same reason before arming, a signal that is not a native `AbortSignal` rejects before arming with a `WorkflowError` carrying the `SCHEDULE` code, caller signal method mutation is harmless, cancellation clears the returned handle once, cancellation-closure failure is contained after the winner is captured, and native composite arbitration prevents late completion, abort, or failure from resettling. Each backend's `delay(ms)` is a real `setTimeout`; only the `yield` primitive differs.
 
 The **Node** backend ships in [`src/server`](../../src/server), published through `@orkestrel/workflow/server`. `NodeScheduler.yield()` waits on `setImmediate` — the canonical Node "give the event loop a turn", running after the current operation and pending I/O. It deliberately does **not** use `node:timers/promises` (whose `{ signal }` option rejects with a Node `AbortError`, `code: 'ABORT_ERR'`, _not_ the caller's `reason`); its `setImmediate` / `setTimeout` boundaries compose `scheduleHost` to preserve the caller reason. `priority` is accepted but a no-op — Node has no priority primitive.
 
@@ -176,10 +176,14 @@ The additive manager tier (§9 + the `@orkestrel/agent` line's store standard): 
 
 ### Errors
 
-| API               | Kind     | Summary                                                                                                        |
-| ----------------- | -------- | -------------------------------------------------------------------------------------------------------------- |
-| `WorkflowError`   | class    | Carries a `WorkflowErrorCode` (`TRANSITION` / `RESTORE` / `MUTATION`) + an optional `context` naming the node. |
-| `isWorkflowError` | function | Narrow an unknown caught value to a `WorkflowError`.                                                           |
+| API               | Kind     | Summary                                                                                                                                  |
+| ----------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `WorkflowError`   | class    | Carries a `WorkflowErrorCode` (`TRANSITION` / `RESTORE` / `MUTATION` / `SCHEDULE`) + an optional `context` naming the node or parameter. |
+| `isWorkflowError` | function | Narrow an unknown caught value to a `WorkflowError`.                                                                                     |
+
+Every error this package raises for a refused operation of its own is a `WorkflowError`, narrowable with `isWorkflowError`. Four values are deliberately NOT translated and reach the caller unchanged: a value thrown by a consumer-supplied `WorkflowFunction`, a value thrown or rejected by a consumer-supplied `WorkflowStoreInterface`, a value thrown by the `start` closure a caller hands `scheduleHost` or reported through its `failure` callback, and the `reason` an `AbortSignal` carries — a pending wait rejects with that reason verbatim, which is what makes cancellation identity-preserving. Those four are caller-owned values the package passes through on purpose, not package faults it failed to wrap.
+
+Two dependency-owned errors still reach callers untranslated. These are known gaps, not intended pass-throughs: `createRunner` surfaces `@orkestrel/queue`'s `QueueError` for an invalid `concurrency` / `retries` / `timeout`, and `createDatabaseWorkflowStore`'s `get` / `set` / `delete` surface `@orkestrel/database`'s `DatabaseError`. Until they are folded into `WorkflowError`, narrow them with the owning package's own guard rather than `isWorkflowError`.
 
 ### Helpers & guards
 
@@ -211,7 +215,7 @@ workflow-specific validation and translate ownership failures into `WorkflowErro
 | `isTaskActivityInput`       | function | Total guard for a reporter frame, including progress bounds, unique ids, hostile getters, and proxies.                                       |
 | `isTaskActivity`            | function | Total guard for persisted activity, including finite non-negative `updated`; never throws on hostile input.                                  |
 | `captureWorkflowOptions`    | function | Capture every root `WorkflowOptions` property once into an owned plain bag while retaining nested bag and function-registry identities.      |
-| `scheduleHost`              | function | Link an owned settlement composite before host setup; preserve exact first completion/failure/abort while containing cancellation cleanup.   |
+| `scheduleHost`              | function | Reject an invalid `signal` (`SCHEDULE`); link an owned settlement composite before host setup; keep the exact winner; contain cleanup.       |
 | `success`                   | function | Box a value as a `Success` — the graceful outcome half of a `Result` (`{ success: true, value }`).                                           |
 | `failure`                   | function | Box an error as a `Failure` — the graceful outcome half of a `Result` (`{ success: false, error }`).                                         |
 | `errorToMessage`            | function | Normalize an unknown thrown value to a non-empty persistence-safe message.                                                                   |
@@ -342,7 +346,7 @@ The shape VALUES `createWorkflowContract` compiles into the four lockstep output
 | `TaskActivity`                 | interface | `TaskActivityInput` normalized to required readonly collections plus `{ updated }`; the last accepted reporter claim.                                                                                                                   |
 | `TaskUpdate`                   | interface | `{ name?, description? }` — a declarative partial edit to a `pending` task, accepted by `TaskInterface.patch` / `TaskManagerInterface.update`.                                                                                          |
 | `PhaseUpdate`                  | interface | `{ name?, description?, concurrency?, bail? }` — a declarative partial edit to a `pending` phase, accepted by `PhaseInterface.patch` / `PhaseManagerInterface.update`.                                                                  |
-| `WorkflowErrorCode`            | type      | `'TRANSITION' \| 'RESTORE' \| 'MUTATION'` — the machine-readable code of a `WorkflowError` (`MUTATION` = a refused structural/patch edit).                                                                                              |
+| `WorkflowErrorCode`            | type      | `'TRANSITION' \| 'RESTORE' \| 'MUTATION' \| 'SCHEDULE'` — the machine-readable code of a `WorkflowError` (`MUTATION` = a refused structural/patch edit; `SCHEDULE` = an invalid-signal host schedule refusal).                          |
 | `LifecycleStatus`              | type      | `'pending' \| 'running' \| 'completed' \| 'failed' \| 'skipped' \| 'stopped'` — the ONE vocabulary the three tiers alias.                                                                                                               |
 | `TaskStatus`                   | type      | A semantic tier of `LifecycleStatus` — a task's lifecycle status.                                                                                                                                                                       |
 | `PhaseStatus`                  | type      | A semantic tier of `LifecycleStatus` — a phase's status, derived from its tasks.                                                                                                                                                        |

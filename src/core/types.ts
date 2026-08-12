@@ -302,8 +302,13 @@ export interface PhaseUpdate {
  *   {@link TaskManagerInterface.append} / {@link PhaseManagerInterface.append} duplicate-id
  *   guard (both genuine programmer-error paths, AGENTS §12). The error `context` names
  *   the offending id / index / status.
+ * - `SCHEDULE` — {@link import('./helpers.js').scheduleHost} refused to arm host work
+ *   because the caller passed a `signal` that is not a native `AbortSignal`. The refusal
+ *   is a REJECTED promise, never a synchronous throw, so every scheduler backend settles
+ *   the same way whatever the caller passed. The error `context` names the offending
+ *   parameter (`signal`) and the `typeof` the caller supplied.
  */
-export type WorkflowErrorCode = 'TRANSITION' | 'RESTORE' | 'MUTATION'
+export type WorkflowErrorCode = 'TRANSITION' | 'RESTORE' | 'MUTATION' | 'SCHEDULE'
 
 // === Status unions (AGENTS §10 lifecycle vocabulary)
 
@@ -318,8 +323,9 @@ export type WorkflowErrorCode = 'TRANSITION' | 'RESTORE' | 'MUTATION'
  * name + doc while the vocabulary lives in one place (AGENTS §4.4 "one concept = one
  * word"). It also types the single runtime terminal check
  * {@link import('./helpers.js').isTerminalStatus} — every tier's value is a
- * `LifecycleStatus`, so the one predicate accepts them all. The tiers stay distinct
- * types (a phase status is not a task status) even though they currently share a body.
+ * `LifecycleStatus`, so the one predicate accepts them all. The three tiers are direct
+ * aliases, not branded types, so TypeScript accepts any one of them wherever another is
+ * expected. Each name documents which tier a value came from; it does not enforce it.
  */
 export type LifecycleStatus = 'pending' | 'running' | 'completed' | 'failed' | 'skipped' | 'stopped'
 

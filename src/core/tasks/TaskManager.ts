@@ -109,7 +109,7 @@ export class TaskManager implements TaskManagerInterface {
 	// Rebuild the positional store from `entries` — the shared reorder step behind
 	// `add` (insert) and `move` (reposition), keeping the `Map`'s insertion order the
 	// single source of positional truth.
-	#reorder(entries: readonly (readonly [string, TaskInterface])[]): void {
+	#reorder(entries: ReadonlyArray<readonly [string, TaskInterface]>): void {
 		this.#tasks.clear()
 		for (const [key, value] of entries) this.#tasks.set(key, value)
 	}

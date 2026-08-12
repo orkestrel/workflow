@@ -378,7 +378,7 @@ describe('WorkflowManager — coordinated durable access', () => {
 		const store = new WorkflowStoreBoundary([...staleReads, freshRead])
 		const manager = createWorkflowManager({ store })
 		const snapshot = createWorkflowManager().add(buildReleaseDefinition('churn')).snapshot()
-		const stale: Promise<WorkflowInterface | undefined>[] = []
+		const stale: Array<Promise<WorkflowInterface | undefined>> = []
 
 		for (const read of staleReads) {
 			stale.push(manager.open('churn'))
@@ -534,10 +534,11 @@ describe('WorkflowManager — coordinated durable access', () => {
 
 // The open/save store seam, parametrized over BOTH the Memory and the Database twins (AGENTS
 // §16.1 — one shared assertion suite driven over each real backend, no mocks).
-const stores: readonly (readonly [string, () => ReturnType<typeof createMemoryWorkflowStore>])[] = [
-	['MemoryWorkflowStore', () => createMemoryWorkflowStore()],
-	['DatabaseWorkflowStore', () => createDatabaseWorkflowStore(createMemoryDriver())],
-]
+const stores: ReadonlyArray<readonly [string, () => ReturnType<typeof createMemoryWorkflowStore>]> =
+	[
+		['MemoryWorkflowStore', () => createMemoryWorkflowStore()],
+		['DatabaseWorkflowStore', () => createDatabaseWorkflowStore(createMemoryDriver())],
+	]
 
 for (const [label, makeStore] of stores) {
 	describe(`WorkflowManager — durable open / save over ${label}`, () => {

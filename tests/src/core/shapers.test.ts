@@ -25,7 +25,7 @@ describe('taskShape', () => {
 	})
 
 	it('carries optional non-negative-integer retries / timeout reliability settings', () => {
-		const keys: readonly ('retries' | 'timeout')[] = ['retries', 'timeout']
+		const keys: ReadonlyArray<'retries' | 'timeout'> = ['retries', 'timeout']
 		for (const key of keys) {
 			const field = taskShape.properties[key]
 			expect(field.type).toBe('optional')

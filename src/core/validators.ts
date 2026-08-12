@@ -200,7 +200,7 @@ export function isOwnedWorkflowSnapshot(value: unknown): value is WorkflowSnapsh
 			return false
 		}
 		const phaseIds = new Set<string>()
-		const derivations: { status: LifecycleStatus; bail: boolean }[] = []
+		const derivations: Array<{ status: LifecycleStatus; bail: boolean }> = []
 		let frontier = false
 		let running = false
 		let vacuous = true

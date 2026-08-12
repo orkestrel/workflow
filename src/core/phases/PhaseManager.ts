@@ -108,7 +108,7 @@ export class PhaseManager implements PhaseManagerInterface {
 	// Rebuild the positional store from `entries` — the shared reorder step behind
 	// `add` (insert) and `move` (reposition), keeping the `Map`'s insertion order the
 	// single source of positional truth.
-	#reorder(entries: readonly (readonly [string, PhaseInterface])[]): void {
+	#reorder(entries: ReadonlyArray<readonly [string, PhaseInterface]>): void {
 		this.#phases.clear()
 		for (const [key, value] of entries) this.#phases.set(key, value)
 	}

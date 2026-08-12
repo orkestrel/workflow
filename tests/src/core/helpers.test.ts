@@ -7,8 +7,8 @@ import type {
 	WorkflowDefinition,
 	WorkflowOptions,
 } from '@src/core'
-import { ContractError } from '@orkestrel/contract'
 import {
+	WorkflowError,
 	buildPhaseContext,
 	buildTaskContext,
 	buildWorkflowContext,
@@ -413,7 +413,7 @@ describe('deriveWorkflowStatus — exhaustive truth table under BOTH bail modes'
 	})
 
 	it('a failed-free graph is identical under both modes (no divergence without a failure)', () => {
-		const graphs: readonly (readonly PhaseStatus[])[] = [
+		const graphs: ReadonlyArray<readonly PhaseStatus[]> = [
 			[],
 			['running', 'pending'],
 			['completed', 'skipped'],
@@ -489,7 +489,7 @@ describe('deriveWorkflowStatus — exhaustive truth table under BOTH bail modes'
 
 // Every permutation of a small status list — the order-independence prover (a real generator,
 // not a mock). Kept local: order-permutation is specific to these derivation tests.
-function permutations<T>(items: readonly T[]): readonly (readonly T[])[] {
+function permutations<T>(items: readonly T[]): ReadonlyArray<readonly T[]> {
 	if (items.length <= 1) return [items]
 	const out: T[][] = []
 	for (const [index, item] of items.entries()) {
@@ -717,15 +717,42 @@ describe('scheduleHost — centralized host settlement lifecycle', () => {
 		])
 		if (!(pending instanceof Promise)) throw new Error('expected rejected scheduling promise')
 
-		await expect(pending).rejects.toBeInstanceOf(ContractError)
+		await expect(pending).rejects.toBeInstanceOf(WorkflowError)
 		await expect(pending).rejects.toMatchObject({
-			code: 'placement',
-			context: {
-				path: ['parent'],
-				limit: 'native AbortSignal or undefined',
-				received: 'object',
+			code: 'SCHEDULE',
+			context: { signal: 'object' },
+		})
+		expect(starts).toBe(0)
+	})
+
+	it('rejects rather than throwing when a proxied signal traps during linking', async () => {
+		// A Proxy over a NATIVE signal passes `isAbortSignal`, so the pre-guard cannot catch it, and
+		// the trap then fires inside linking. Without containment that escape is SYNCHRONOUS — the
+		// one shape no scheduler backend expects, since each returns the call directly to a caller
+		// that only awaits. Setup must present one failure shape regardless of how hostile the input.
+		let starts = 0
+		const trap = new Error('proxy trap must not escape synchronously')
+		const hostile = new Proxy(new AbortController().signal, {
+			getPrototypeOf() {
+				throw trap
 			},
 		})
+
+		let pending: unknown
+		expect(() => {
+			pending = scheduleHost(() => {
+				starts += 1
+				return () => undefined
+			}, hostile)
+		}).not.toThrow()
+		if (!(pending instanceof Promise)) throw new Error('expected rejected scheduling promise')
+
+		await expect(pending).rejects.toBeInstanceOf(WorkflowError)
+		await expect(pending).rejects.toMatchObject({
+			code: 'SCHEDULE',
+			context: { signal: 'object' },
+		})
+		await expect(pending).rejects.not.toBe(trap)
 		expect(starts).toBe(0)
 	})
 

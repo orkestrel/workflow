@@ -16,8 +16,9 @@ import type {
 	WorkflowStatus,
 } from './types.js'
 import type { Failure, Success } from '@orkestrel/contract'
-import { linkSignal } from '@orkestrel/abort'
+import { isAbortSignal, linkSignal } from '@orkestrel/abort'
 import { DEFAULT_BAIL, MAX_TIMER_MS, TASK_TRANSITIONS } from './constants.js'
+import { WorkflowError } from './errors.js'
 
 /**
  * Capture every top-level {@link WorkflowOptions} value exactly once into an owned plain bag.
@@ -556,7 +557,9 @@ export function recoverWorkflowSnapshot(snapshot: WorkflowSnapshot): WorkflowSna
  * @param phases - The per-phase result lists, in phase order
  * @returns One flattened {@link TaskResult} list, in positional order
  */
-export function collectResults(phases: readonly (readonly TaskResult[])[]): readonly TaskResult[] {
+export function collectResults(
+	phases: ReadonlyArray<readonly TaskResult[]>,
+): readonly TaskResult[] {
 	return phases.flat()
 }
 
@@ -587,11 +590,11 @@ export function collectResults(phases: readonly (readonly TaskResult[])[]): read
  * ```
  */
 export function insertEntry<T>(
-	entries: readonly (readonly [string, T])[],
+	entries: ReadonlyArray<readonly [string, T]>,
 	index: number,
 	key: string,
 	value: T,
-): readonly (readonly [string, T])[] {
+): ReadonlyArray<readonly [string, T]> {
 	const next = [...entries]
 	next.splice(index, 0, [key, value])
 	return next
@@ -621,10 +624,10 @@ export function insertEntry<T>(
  * ```
  */
 export function moveEntry<T>(
-	entries: readonly (readonly [string, T])[],
+	entries: ReadonlyArray<readonly [string, T]>,
 	key: string,
 	index: number,
-): readonly (readonly [string, T])[] {
+): ReadonlyArray<readonly [string, T]> {
 	const next = [...entries]
 	const at = next.findIndex(([entryKey]) => entryKey === key)
 	if (at === -1) return next
@@ -648,6 +651,16 @@ export function createDeferred<T>(): DeferredInterface<T> {
  * Schedule one cancellable host operation behind an owned settlement signal.
  *
  * @remarks
+ * A defined `signal` that is not a native `AbortSignal` is refused before anything is armed, as a
+ * rejected promise carrying a {@link import('./errors.js').WorkflowError} with the `SCHEDULE` code.
+ * Rejecting rather than throwing keeps every caller on one settlement path, so a backend never has
+ * to guard the call itself.
+ *
+ * The guard is necessary but not sufficient, so linking stays contained. A `Proxy` over a native
+ * signal passes the guard and can still make linking throw from a trap, and that escape would be
+ * synchronous — the one shape every caller here is built not to expect. Containment turns it into
+ * the same `SCHEDULE` rejection, so setup has exactly one failure shape however hostile the input.
+ *
  * The completion and failure paths each own an {@link AbortController}; their native composite is
  * linked to the optional caller signal before `start` can arm host work. Scheduler backends attach
  * only to that safe composite, so caller mutation of `addEventListener` or `removeEventListener`
@@ -659,19 +672,31 @@ export function createDeferred<T>(): DeferredInterface<T> {
  *
  * @param start - Arm host work and return its cancellation closure
  * @param signal - Optional caller cancellation signal
- * @returns A promise settled exactly once by completion, host failure, or caller abort
+ * @returns A promise settled exactly once by an invalid-signal refusal, completion, host failure,
+ *   or caller abort
  */
 export function scheduleHost(
 	start: (complete: () => void, failure: (error: unknown) => void) => () => void,
 	signal?: AbortSignal,
 ): Promise<void> {
+	if (signal !== undefined && !isAbortSignal(signal)) {
+		return Promise.reject(
+			new WorkflowError('SCHEDULE', 'scheduleHost signal must be an AbortSignal', {
+				signal: typeof signal,
+			}),
+		)
+	}
 	const completion = new AbortController()
 	const failed = new AbortController()
 	let settled: AbortSignal
 	try {
 		settled = linkSignal(AbortSignal.any([completion.signal, failed.signal]), signal)
-	} catch (error) {
-		return Promise.reject(error)
+	} catch {
+		return Promise.reject(
+			new WorkflowError('SCHEDULE', 'scheduleHost could not link the caller signal', {
+				signal: typeof signal,
+			}),
+		)
 	}
 	if (settled.aborted) return Promise.reject(settled.reason)
 	return new Promise<void>((resolve, reject) => {

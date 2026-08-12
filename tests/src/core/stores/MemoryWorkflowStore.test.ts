@@ -52,7 +52,7 @@ describe('MemoryWorkflowStore — round-trip → identical live tree', () => {
 	// Exercise BOTH the all-pending snapshot (createWorkflow(...).snapshot()) and the SETTLED one
 	// (driven through the runner), proving the store persists each faithfully and a restore from
 	// the retrieved snapshot rebuilds an IDENTICAL live tree.
-	const cases: readonly (readonly [string, () => Promise<WorkflowSnapshot>])[] = [
+	const cases: ReadonlyArray<readonly [string, () => Promise<WorkflowSnapshot>]> = [
 		[
 			'all-pending (createWorkflow)',
 			async () => createWorkflow(buildReleaseDefinition()).snapshot(),

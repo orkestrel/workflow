@@ -1,6 +1,7 @@
 import type {
 	SchedulerInterface,
 	TaskControllerInterface,
+	TaskDefinition,
 	WorkflowDefinition,
 	WorkflowFunction,
 	WorkflowFunctions,
@@ -85,21 +86,18 @@ describe('recording scheduler — production delegation', () => {
 // ── Local scenario builders (definitions + scripted handlers) ──
 
 /** A function task on task `id`, dispatched by NAME to the registered function `fn`. */
-function functionTask(
-	id: string,
-	fn: string,
-): WorkflowDefinition['phases'][number]['tasks'][number] {
+function functionTask(id: string, fn: string): TaskDefinition {
 	return { id, name: id, run: fn }
 }
 
 /** Build a definition from a compact phase spec — each phase its tasks + optional concurrency / bail. */
 function buildDefinition(
-	phases: readonly {
+	phases: ReadonlyArray<{
 		readonly id: string
-		readonly tasks: readonly WorkflowDefinition['phases'][number]['tasks'][number][]
+		readonly tasks: readonly TaskDefinition[]
 		readonly concurrency?: number
 		readonly bail?: boolean
-	}[],
+	}>,
 	bail = false,
 ): WorkflowDefinition {
 	return {
@@ -129,7 +127,7 @@ function reliableTask(
 	id: string,
 	fn: string,
 	reliability: { readonly retries?: number; readonly timeout?: number },
-): WorkflowDefinition['phases'][number]['tasks'][number] {
+): TaskDefinition {
 	return {
 		id,
 		name: id,

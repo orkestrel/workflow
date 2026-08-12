@@ -1540,7 +1540,7 @@ describe('Runner — lifecycle and hostile option boundaries', () => {
 	})
 
 	it('classifies a resolver-triggered graceful stop as never-dispatched work', async () => {
-		const runners: RunnerInterface<number, number>[] = []
+		const runners: Array<RunnerInterface<number, number>> = []
 		const ran: number[] = []
 		let stopping: Promise<void> | undefined
 		const runner = createRunner<number, number>({
