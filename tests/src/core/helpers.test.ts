@@ -730,11 +730,18 @@ describe('scheduleHost — centralized host settlement lifecycle', () => {
 		// the trap then fires inside linking. Without containment that escape is SYNCHRONOUS — the
 		// one shape no scheduler backend expects, since each returns the call directly to a caller
 		// that only awaits. Setup must present one failure shape regardless of how hostile the input.
+		//
+		// The trap is on `aborted` because that is a member linking actually reads. A
+		// `getPrototypeOf` trap also passes `isAbortSignal`, but nothing in linking asks for
+		// the prototype, so it never fires and this test measured a schedule that simply
+		// never settled rather than the containment it names.
 		let starts = 0
 		const trap = new Error('proxy trap must not escape synchronously')
 		const hostile = new Proxy(new AbortController().signal, {
-			getPrototypeOf() {
-				throw trap
+			get(target, property) {
+				if (property === 'aborted') throw trap
+				const member: unknown = Reflect.get(target, property, target)
+				return typeof member === 'function' ? member.bind(target) : member
 			},
 		})
 
