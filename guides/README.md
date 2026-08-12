@@ -4,14 +4,14 @@ A dual-axis index into this repository's guides — by concept, and by directory
 
 ## By concept
 
-| Concept  | Spec                                 | Source                                                                                    | Tests                                                                                                                         |
-| -------- | ------------------------------------ | ----------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| Concept  | Spec                         | Source                                                                                    | Tests                                                                                                                         |
+| -------- | ---------------------------- | ----------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
 | Workflow | [`workflow.md`](workflow.md) | [`src/core`](../src/core), [`src/browser`](../src/browser), [`src/server`](../src/server) | [`tests/src/core`](../tests/src/core), [`tests/src/browser`](../tests/src/browser), [`tests/src/server`](../tests/src/server) |
 
 ## By directory
 
-| Directory     | Guide                                |
-| ------------- | ------------------------------------ |
+| Directory     | Guide                        |
+| ------------- | ---------------------------- |
 | `src/core`    | [`workflow.md`](workflow.md) |
 | `src/browser` | [`workflow.md`](workflow.md) |
 | `src/server`  | [`workflow.md`](workflow.md) |
