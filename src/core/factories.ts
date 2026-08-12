@@ -16,7 +16,14 @@ import type {
 import { createContract, rawShape, stringShape } from '@orkestrel/contract'
 import { createDatabase, createMemoryDriver } from '@orkestrel/database'
 import { DEFAULT_BAIL } from './constants.js'
-import { captureWorkflowOptions, definitionToSnapshot } from './helpers.js'
+import { cloneWorkflowSnapshot } from './cloners.js'
+import { WorkflowError } from './errors.js'
+import {
+	captureWorkflowOptions,
+	definitionToSnapshot,
+	hasWorkflowHandlers,
+	recoverWorkflowSnapshot,
+} from './helpers.js'
 import { workflowShape } from './shapers.js'
 import { DatabaseWorkflowStore } from './stores/DatabaseWorkflowStore.js'
 import { MemoryWorkflowStore } from './stores/MemoryWorkflowStore.js'
@@ -131,6 +138,88 @@ export function createWorkflow(
 }
 
 /**
+ * Build an equivalent live W-b entity tree from a {@link WorkflowSnapshot} — the
+ * inverse of {@link WorkflowInterface.snapshot}, restoring structure + each node's status
+ * + recorded results + positional order + the persisted `#override`.
+ *
+ * @remarks
+ * Round-trip fidelity is paramount: a `snapshot()` → `createRestoredWorkflow()` reproduces the
+ * same status at every node (each `#override` restored DIRECTLY from the snapshot's own
+ * `override` field, not guessed from a status divergence), the same recorded
+ * {@link import('./types.js').TaskResult}s, and the same positional order (an interior
+ * `skip` / `remove` survives). The snapshot is SELF-CONTAINED — it persists the `bail`
+ * policy it ran under, so the restore re-derives status IDENTICALLY without a silent
+ * default; the snapshot's `bail` is the source of truth, while an explicit `options.bail`
+ * still wins when supplied (to deliberately re-run under a different policy). A structurally
+ * invalid snapshot (a status — or override — outside the lifecycle vocabulary, or a
+ * non-boolean `bail`) throws a `RESTORE` {@link WorkflowError}.
+ * Runtime handlers are optional: without a matching `functions` entry, a persisted `run`
+ * remains visible with an undefined `handler` so the exact state is inspectable. The runner
+ * rejects that unresolved tree if execution is attempted.
+ *
+ * @param snapshot - The snapshot to restore (carries its own `bail` + `override`)
+ * @param options - Runtime options (initial listeners, an optional `bail` override, per-node options)
+ * @returns The restored live {@link WorkflowInterface} root
+ *
+ * @example
+ * ```ts
+ * import { createRestoredWorkflow } from '@orkestrel/workflow'
+ *
+ * const restored = createRestoredWorkflow(workflow.snapshot()) // bail comes from the snapshot
+ * restored.status === workflow.status // true
+ * ```
+ */
+export function createRestoredWorkflow(
+	snapshot: unknown,
+	options?: WorkflowOptions,
+): WorkflowInterface {
+	const captured = captureWorkflowOptions(options)
+	const owned = cloneWorkflowSnapshot(snapshot)
+	return new Workflow(owned, captured)
+}
+
+/**
+ * Build an interrupted workflow back to life at its remaining retry budget.
+ *
+ * @remarks
+ * Each phase captures every unique initial `run` binding once before constructing tasks. Recovery
+ * validates those live tasks' captured callable handlers without rereading the registry, while the
+ * retained registry identity remains available to resolve future live additions at their mint time.
+ *
+ * @param snapshot - The hostile persisted snapshot
+ * @param options - Runtime handlers and entity options
+ * @returns A recoverable live {@link WorkflowInterface} root
+ *
+ * @example
+ * ```ts
+ * import { createRecoveredWorkflow } from '@orkestrel/workflow'
+ *
+ * const recovered = createRecoveredWorkflow(snapshot, { functions })
+ * recovered.status // 'pending' — interrupted running work returned to its remaining budget
+ * ```
+ */
+export function createRecoveredWorkflow(
+	snapshot: unknown,
+	options?: WorkflowOptions,
+): WorkflowInterface {
+	const captured = captureWorkflowOptions(options)
+	const owned = cloneWorkflowSnapshot(snapshot)
+	if (owned.override !== undefined || owned.phases.some((phase) => phase.override !== undefined)) {
+		throw new WorkflowError('RESTORE', `workflow '${owned.id}' has a terminal override`, {
+			workflow: owned.id,
+		})
+	}
+	const recovered = cloneWorkflowSnapshot(recoverWorkflowSnapshot(owned))
+	const workflow = new Workflow(recovered, captured)
+	if (!hasWorkflowHandlers(workflow)) {
+		throw new WorkflowError('RESTORE', `workflow '${owned.id}' has an unresolved run`, {
+			workflow: owned.id,
+		})
+	}
+	return workflow
+}
+
+/**
  * Create the in-memory durable {@link WorkflowStoreInterface} — a process-lifetime
  * {@link MemoryWorkflowStore} persisting {@link WorkflowSnapshot}s by workflow id, the DEFAULT
  * backend behind the W-d persistence seam.
@@ -143,19 +232,19 @@ export function createWorkflow(
  * {@link createDatabaseWorkflowStore} (the snapshot as one opaque JSON column over a `databases`
  * table) — for a DURABLE store (run-state surviving a restart) pass it a JSON / SQLite / IndexedDB
  * driver, and it swaps in WITHOUT touching the runner or the entity tree. Restore stays a caller
- * concern: read a snapshot back and rebuild the live tree with {@link restoreWorkflow}.
+ * concern: read a snapshot back and rebuild the live tree with {@link createRestoredWorkflow}.
  *
  * @returns A memory-backed {@link WorkflowStoreInterface}
  *
  * @example
  * ```ts
- * import { createMemoryWorkflowStore, createWorkflow, restoreWorkflow } from '@orkestrel/workflow'
+ * import { createMemoryWorkflowStore, createWorkflow, createRestoredWorkflow } from '@orkestrel/workflow'
  *
  * const store = createMemoryWorkflowStore()
  * const workflow = createWorkflow(definition)
  * await store.set(workflow.snapshot())          // persist the run state
  * const snapshot = await store.get(definition.id)
- * const restored = snapshot && restoreWorkflow(snapshot)       // an identical live tree
+ * const restored = snapshot && createRestoredWorkflow(snapshot)       // an identical live tree
  * ```
  */
 export function createMemoryWorkflowStore(): WorkflowStoreInterface {
@@ -187,13 +276,13 @@ export function createMemoryWorkflowStore(): WorkflowStoreInterface {
  * @example
  * ```ts
  * import { createMemoryDriver } from '@orkestrel/database'
- * import { createDatabaseWorkflowStore, createWorkflow, restoreWorkflow } from '@orkestrel/workflow'
+ * import { createDatabaseWorkflowStore, createWorkflow, createRestoredWorkflow } from '@orkestrel/workflow'
  *
  * const store = createDatabaseWorkflowStore(createMemoryDriver()) // a durable driver swaps in here
  * const workflow = createWorkflow(definition)
  * await store.set(workflow.snapshot())          // persist the run state (one JSON column)
  * const snapshot = await store.get(definition.id)
- * const restored = snapshot && restoreWorkflow(snapshot)       // an identical live tree
+ * const restored = snapshot && createRestoredWorkflow(snapshot)       // an identical live tree
  * ```
  */
 export function createDatabaseWorkflowStore(
@@ -265,11 +354,11 @@ export function createWorkflowRunner(options?: WorkflowRunnerOptions): WorkflowR
  * @remarks
  * `options.functions` flows into every workflow the manager mints (`add`, via
  * {@link createWorkflow}) or hydrates (`open`'s registry-miss path, via
- * {@link restoreWorkflow}), so a hydrated workflow is RUNNABLE rather than a dead snapshot
+ * {@link createRestoredWorkflow}), so a hydrated workflow is RUNNABLE rather than a dead snapshot
  * mirror. `options.store` is the EXACT analogue of the twins' `store` seam — omitted ⇒ the
  * manager is registry-only (`open` resolves only what is registered, `save` is a no-op). This
  * is PURELY ADDITIVE: direct {@link WorkflowStoreInterface} use and
- * {@link restoreWorkflow} remain valid — the manager is one more caller-driven persistence
+ * {@link createRestoredWorkflow} remain valid — the manager is one more caller-driven persistence
  * seam, not a replacement.
  *
  * @param options - The optional `store` seam and the `functions` registry threaded into every mint/hydrate

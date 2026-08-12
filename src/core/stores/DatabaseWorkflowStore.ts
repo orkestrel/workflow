@@ -37,18 +37,18 @@ import { cloneWorkflowSnapshot } from '../cloners.js'
  * idle-TTL / eviction — a persisted run-state is durable orchestration state that lives until an
  * explicit `delete`. The public surface is EXACTLY `get` / `set` / `delete` — no extra members (the
  * §22 method bijection with {@link WorkflowStoreInterface}). Restore stays a caller concern: read a
- * snapshot back and rebuild the live tree with {@link import('../factories.js').restoreWorkflow}.
+ * snapshot back and rebuild the live tree with {@link import('../factories.js').createRestoredWorkflow}.
  *
  * @example
  * ```ts
  * import { createMemoryDriver } from '@orkestrel/database'
- * import { createDatabaseWorkflowStore, createWorkflow, restoreWorkflow } from '@orkestrel/workflow'
+ * import { createDatabaseWorkflowStore, createWorkflow, createRestoredWorkflow } from '@orkestrel/workflow'
  *
  * const store = createDatabaseWorkflowStore(createMemoryDriver()) // a durable driver swaps in here
  * const workflow = createWorkflow(definition)
  * await store.set(workflow.snapshot())            // persist the run state (one JSON column)
  * const snapshot = await store.get(definition.id)
- * const restored = snapshot && restoreWorkflow(snapshot) // an identical live tree
+ * const restored = snapshot && createRestoredWorkflow(snapshot) // an identical live tree
  * await store.delete(definition.id)                // drop it
  * ```
  */

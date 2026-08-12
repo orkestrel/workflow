@@ -31,9 +31,9 @@ import {
 	moveEntry,
 	parkSignal,
 	phaseDefinitionToSnapshot,
-	recoverWorkflow,
+	createRecoveredWorkflow,
 	resolveTaskSilence,
-	restoreWorkflow,
+	createRestoredWorkflow,
 	scheduleHost,
 	success,
 	taskDefinitionToSnapshot,
@@ -1349,7 +1349,7 @@ describe('workflow recovery', () => {
 			},
 		})
 
-		const recovered = recoverWorkflow(source.snapshot(), options)
+		const recovered = createRecoveredWorkflow(source.snapshot(), options)
 
 		expect(reads).toBe(1)
 		expect(recovered.phase('phase')?.task('task')?.handler).toBe(VALIDATED_FUNCTIONS.work)
@@ -1380,7 +1380,7 @@ describe('workflow recovery', () => {
 			},
 		})
 
-		const recovered = recoverWorkflow(snapshot, { functions })
+		const recovered = createRecoveredWorkflow(snapshot, { functions })
 
 		expect(reads).toBe(1)
 		expect(recovered.phase('phase')?.task('first')?.handler).toBe(VALIDATED_FUNCTIONS.work)
@@ -1404,7 +1404,7 @@ describe('workflow recovery', () => {
 			},
 		})
 
-		const error = captureError(() => recoverWorkflow(snapshot, { functions }))
+		const error = captureError(() => createRecoveredWorkflow(snapshot, { functions }))
 
 		expect(reads).toBe(1)
 		expect(isWorkflowError(error) ? error.code : undefined).toBe('RESTORE')
@@ -1440,11 +1440,11 @@ describe('workflow recovery', () => {
 		done.complete('persisted')
 		interrupted.start()
 
-		const exact = restoreWorkflow(source.snapshot(), { functions })
+		const exact = createRestoredWorkflow(source.snapshot(), { functions })
 		expect(() => recoveryRunner().execute(exact)).toThrow(/not drivable/)
 
 		const calls: string[] = []
-		const recovered = recoverWorkflow(source.snapshot(), {
+		const recovered = createRecoveredWorkflow(source.snapshot(), {
 			functions: {
 				first: () => {
 					calls.push('first')
@@ -1480,7 +1480,7 @@ describe('workflow recovery', () => {
 		const stale = reported.value
 
 		const attempts: number[] = []
-		const recovered = recoverWorkflow(source.snapshot(), {
+		const recovered = createRecoveredWorkflow(source.snapshot(), {
 			functions: {
 				work: (controller) => {
 					attempts.push(controller.attempt)
@@ -1515,7 +1515,7 @@ describe('workflow recovery', () => {
 		const snapshot = source.snapshot()
 		const future = Date.now() + 60_000
 
-		const recovered = recoverWorkflow(
+		const recovered = createRecoveredWorkflow(
 			{ ...snapshot, updated: future },
 			{ functions: { work: () => null } },
 		)
@@ -1541,7 +1541,7 @@ describe('workflow recovery', () => {
 		if (interrupted === undefined) throw new Error('expected task')
 		interrupted.start()
 
-		const recovered = recoverWorkflow(source.snapshot(), {
+		const recovered = createRecoveredWorkflow(source.snapshot(), {
 			functions: { work: () => null },
 		})
 		const result = recovered.phase('phase')?.task('task')?.result
@@ -1573,15 +1573,15 @@ describe('workflow recovery', () => {
 		if (first === undefined) throw new Error('expected first attempt')
 		first.start()
 
-		const once = recoverWorkflow(source.snapshot(), { functions: { work: () => null } })
+		const once = createRecoveredWorkflow(source.snapshot(), { functions: { work: () => null } })
 		expect(once.phase('phase')?.task('task')?.attempts).toBe(1)
 		once.phase('phase')?.task('task')?.start()
 
-		const twice = recoverWorkflow(once.snapshot(), { functions: { work: () => null } })
+		const twice = createRecoveredWorkflow(once.snapshot(), { functions: { work: () => null } })
 		expect(twice.phase('phase')?.task('task')?.attempts).toBe(2)
 		twice.phase('phase')?.task('task')?.start()
 
-		const exhausted = recoverWorkflow(twice.snapshot(), { functions: { work: () => null } })
+		const exhausted = createRecoveredWorkflow(twice.snapshot(), { functions: { work: () => null } })
 		expect(exhausted.phase('phase')?.task('task')?.attempts).toBe(3)
 		expect(exhausted.phase('phase')?.task('task')?.status).toBe('failed')
 	})
@@ -1631,7 +1631,7 @@ describe('workflow recovery', () => {
 			exhausted.start()
 			retryable.start()
 
-			const recovered = recoverWorkflow(source.snapshot(), {
+			const recovered = createRecoveredWorkflow(source.snapshot(), {
 				functions: { work: () => null },
 			})
 			expect(
@@ -1678,7 +1678,7 @@ describe('workflow recovery', () => {
 		failed.start()
 		failed.fail({ origin: 'handler', message: 'established' })
 
-		const recovered = recoverWorkflow(source.snapshot(), {
+		const recovered = createRecoveredWorkflow(source.snapshot(), {
 			functions: { work: () => null },
 		})
 		expect(recovered.phase('current')?.task('failed')?.status).toBe('failed')
@@ -1697,7 +1697,7 @@ describe('workflow recovery', () => {
 		const interrupted = source.phase('phase')?.task('task')
 		if (interrupted === undefined) throw new Error('expected task')
 		interrupted.start()
-		const restored = restoreWorkflow(source.snapshot(), {
+		const restored = createRestoredWorkflow(source.snapshot(), {
 			functions: { work: () => null },
 		})
 
@@ -1710,7 +1710,7 @@ describe('workflow recovery', () => {
 		const snapshot = createWorkflow(RECOVERY_DEFINITION, {
 			functions: { work: () => null },
 		}).snapshot()
-		const restored = restoreWorkflow(snapshot)
+		const restored = createRestoredWorkflow(snapshot)
 		expect(restored.phase('phase')?.task('task')?.run).toBe('work')
 		expect(() => recoveryRunner().execute(restored)).toThrow(/not drivable/)
 
@@ -1719,7 +1719,7 @@ describe('workflow recovery', () => {
 				throw new Error('accessor must not run')
 			},
 		}
-		const error = captureError(() => restoreWorkflow(hostile))
+		const error = captureError(() => createRestoredWorkflow(hostile))
 		expect(isWorkflowError(error)).toBe(true)
 		if (!isWorkflowError(error)) throw new Error('expected WorkflowError')
 		expect(error.code).toBe('RESTORE')
@@ -1737,8 +1737,8 @@ describe('workflow recovery', () => {
 				return null
 			},
 		}
-		const first = restoreWorkflow(snapshot, { functions })
-		const second = restoreWorkflow(snapshot, { functions })
+		const first = createRestoredWorkflow(snapshot, { functions })
+		const second = createRestoredWorkflow(snapshot, { functions })
 		expect(first).not.toBe(second)
 
 		const results = await Promise.all([

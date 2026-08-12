@@ -3,9 +3,6 @@ import type {
 	TaskActivity,
 	TaskActivityInput,
 	TaskFailure,
-	TaskResult,
-	WorkflowFunctions,
-	WorkflowInterface,
 	WorkflowSnapshot,
 } from './types.js'
 import {
@@ -14,15 +11,13 @@ import {
 	isArray,
 	isBoolean,
 	isFiniteNumber,
-	isFunction,
 	isInteger,
 	isJSONValue,
 	isNonEmptyString,
 	isRecord,
 } from '@orkestrel/contract'
 import { MAX_TIMER_MS } from './constants.js'
-import { cloneWorkflowSnapshot } from './cloners.js'
-import { derivePhaseStatus, deriveWorkflowStatus } from './helpers.js'
+import { derivePhaseStatus, deriveWorkflowStatus, isTaskResult } from './helpers.js'
 
 /** Test the workflow lifecycle vocabulary. */
 export function isLifecycleStatus(value: unknown): value is LifecycleStatus {
@@ -45,116 +40,6 @@ export function isTaskFailure(value: unknown): value is TaskFailure {
 			(value.origin === 'handler' || value.origin === 'timeout' || value.origin === 'recovery') &&
 			isNonEmptyString(value.message)
 		)
-	} catch {
-		return false
-	}
-}
-
-/** Compare two optional description values. */
-export function matchesDescription(left: unknown, right: unknown): boolean {
-	return left === right && (left === undefined || typeof left === 'string')
-}
-
-/** Test a result's lineage against its containing snapshot nodes. */
-export function isTaskResult(
-	value: unknown,
-	workflow: unknown,
-	phase: unknown,
-	task: unknown,
-): value is TaskResult {
-	try {
-		if (
-			!isRecord(value) ||
-			!isRecord(workflow) ||
-			!isRecord(phase) ||
-			!isRecord(task) ||
-			!Object.keys(value).every(
-				(key) =>
-					key === 'task' ||
-					key === 'phase' ||
-					key === 'workflow' ||
-					key === 'status' ||
-					key === 'result' ||
-					key === 'timestamp',
-			) ||
-			!isLifecycleStatus(value.status) ||
-			value.status !== task.status ||
-			!isFiniteNumber(value.timestamp) ||
-			value.timestamp < 0 ||
-			!isRecord(value.task) ||
-			!isRecord(value.phase) ||
-			!isRecord(value.workflow) ||
-			!Object.keys(value.workflow).every(
-				(key) => key === 'id' || key === 'name' || key === 'description',
-			) ||
-			!Object.keys(value.phase).every(
-				(key) => key === 'id' || key === 'name' || key === 'description' || key === 'workflow',
-			) ||
-			!Object.keys(value.task).every(
-				(key) => key === 'id' || key === 'name' || key === 'description' || key === 'phase',
-			)
-		) {
-			return false
-		}
-		if (
-			value.task.id !== task.id ||
-			value.task.name !== task.name ||
-			!matchesDescription(value.task.description, task.description) ||
-			value.phase.id !== phase.id ||
-			value.phase.name !== phase.name ||
-			!matchesDescription(value.phase.description, phase.description) ||
-			value.workflow.id !== workflow.id ||
-			value.workflow.name !== workflow.name ||
-			!matchesDescription(value.workflow.description, workflow.description)
-		) {
-			return false
-		}
-		if (
-			!isRecord(value.task.phase) ||
-			!isRecord(value.task.phase.workflow) ||
-			!isRecord(value.phase.workflow) ||
-			!Object.keys(value.task.phase).every(
-				(key) => key === 'id' || key === 'name' || key === 'description' || key === 'workflow',
-			) ||
-			!Object.keys(value.task.phase.workflow).every(
-				(key) => key === 'id' || key === 'name' || key === 'description',
-			) ||
-			!Object.keys(value.phase.workflow).every(
-				(key) => key === 'id' || key === 'name' || key === 'description',
-			)
-		) {
-			return false
-		}
-		if (
-			value.task.phase.id !== phase.id ||
-			value.task.phase.name !== phase.name ||
-			!matchesDescription(value.task.phase.description, phase.description) ||
-			value.phase.workflow.id !== workflow.id ||
-			value.phase.workflow.name !== workflow.name ||
-			!matchesDescription(value.phase.workflow.description, workflow.description) ||
-			value.task.phase.workflow.id !== workflow.id ||
-			value.task.phase.workflow.name !== workflow.name ||
-			!matchesDescription(value.task.phase.workflow.description, workflow.description)
-		) {
-			return false
-		}
-		if (value.status === 'completed') {
-			return (
-				isRecord(value.result) &&
-				value.result.success === true &&
-				Object.keys(value.result).every((key) => key === 'success' || key === 'value') &&
-				isJSONValue(value.result.value)
-			)
-		}
-		if (value.status === 'failed') {
-			return (
-				isRecord(value.result) &&
-				value.result.success === false &&
-				Object.keys(value.result).every((key) => key === 'success' || key === 'error') &&
-				isTaskFailure(value.result.error)
-			)
-		}
-		return false
 	} catch {
 		return false
 	}
@@ -329,104 +214,6 @@ export function isOwnedWorkflowSnapshot(value: unknown): value is WorkflowSnapsh
 export function isWorkflowSnapshot(value: unknown): value is WorkflowSnapshot {
 	const cloned = attempt(() => cloneJSONValue(value))
 	return cloned.success && isOwnedWorkflowSnapshot(cloned.value)
-}
-
-/**
- * Assert that a {@link WorkflowSnapshot} carries a `boolean` `bail` — at the workflow tier AND
- * on every phase — and that its every node's status (and its `override`, when present) is drawn
- * from the lifecycle vocabulary, throwing a `RESTORE` {@link WorkflowError} otherwise.
- *
- * @remarks
- * The boundary-narrowing guard (AGENTS §14) for {@link restoreWorkflow}: a snapshot is
- * untrusted JSON, so a status (or an override) outside
- * {@link import('./constants.js').WORKFLOW_STATUSES} /
- * {@link import('./constants.js').PHASE_STATUSES} / {@link import('./constants.js').TASK_STATUSES},
- * a non-boolean `bail` (the workflow's OR any phase's — both are REQUIRED persisted policy), a
- * present-but-invalid phase `concurrency` (not a positive integer), or a present-but-invalid task
- * `run` (an empty string) / `retries` / `timeout` (not a non-negative integer),
- * is rejected loudly (naming the offending node) rather than silently producing a broken tree.
- * The `override` / `concurrency` / `run` / `retries` / `timeout` are optional, so each is only
- * checked WHEN present. Structural shape beyond these fields is the contract's concern; this
- * guards exactly the fields the live state machine reads back.
- *
- * @param snapshot - The snapshot to validate
- */
-export function assertSnapshot(snapshot: unknown): void {
-	cloneWorkflowSnapshot(snapshot)
-}
-
-/**
- * Test that every named task has a callable runtime handler before dispatch.
- *
- * @remarks
- * A snapshot lookup reads each unique `run` binding at most once from `functions`. A live workflow
- * validates its tasks' already-resolved handlers without consulting the retained registry again.
- *
- * @param workflow - The persisted snapshot or constructed live workflow to validate
- * @returns Whether every named task resolves to a callable handler
- */
-export function hasWorkflowHandlers(workflow: WorkflowInterface): boolean
-export function hasWorkflowHandlers(
-	workflow: WorkflowSnapshot,
-	functions: WorkflowFunctions | undefined,
-): boolean
-export function hasWorkflowHandlers(
-	workflow: WorkflowInterface | WorkflowSnapshot,
-	functions?: WorkflowFunctions,
-): boolean {
-	if ('destroyed' in workflow) {
-		for (const phase of workflow.phases.phases()) {
-			for (const task of phase.tasks.tasks()) {
-				if (task.run !== undefined && !isFunction(task.handler)) return false
-			}
-		}
-		return true
-	}
-	const runs = new Set<string>()
-	for (const phase of workflow.phases) {
-		for (const task of phase.tasks) {
-			if (task.run === undefined || runs.has(task.run)) continue
-			runs.add(task.run)
-			if (!isFunction(functions?.[task.run])) return false
-		}
-	}
-	return true
-}
-
-/** Locate the nearest identifiable node for an inconsistent owned snapshot. */
-export function workflowSnapshotContext(
-	value: unknown,
-): Readonly<Record<string, unknown>> | undefined {
-	if (!isRecord(value) || !isArray(value.phases)) return undefined
-	for (const phase of value.phases) {
-		if (!isRecord(phase)) continue
-		const phaseContext = isNonEmptyString(phase.id) ? { phase: phase.id } : undefined
-		if (
-			!isBoolean(phase.bail) ||
-			(phase.concurrency !== undefined &&
-				(!isInteger(phase.concurrency) || phase.concurrency < 1)) ||
-			!isArray(phase.tasks)
-		) {
-			return phaseContext
-		}
-		for (const task of phase.tasks) {
-			if (!isRecord(task)) continue
-			if (
-				(task.run !== undefined && !isNonEmptyString(task.run)) ||
-				(task.retries !== undefined && (!isInteger(task.retries) || task.retries < 0)) ||
-				(task.timeout !== undefined &&
-					(!isInteger(task.timeout) || task.timeout < 0 || task.timeout > MAX_TIMER_MS)) ||
-				!isInteger(task.attempts) ||
-				task.attempts < 0
-			) {
-				return {
-					...(phaseContext ?? {}),
-					...(isNonEmptyString(task.id) ? { task: task.id } : {}),
-				}
-			}
-		}
-	}
-	return undefined
 }
 
 /**

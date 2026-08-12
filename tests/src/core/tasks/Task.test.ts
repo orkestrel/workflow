@@ -1,5 +1,11 @@
 import type { TaskInterface, TaskOptions, WorkflowDefinition, WorkflowInterface } from '@src/core'
-import { MAX_TIMER_MS, createWorkflow, isWorkflowError, restoreWorkflow, Task } from '@src/core'
+import {
+	MAX_TIMER_MS,
+	createWorkflow,
+	isWorkflowError,
+	createRestoredWorkflow,
+	Task,
+} from '@src/core'
 import { describe, expect, it } from 'vitest'
 import {
 	captureError,
@@ -278,7 +284,7 @@ describe('Task — activity, liveness, and cooperative control', () => {
 			throw new Error('expected running activity')
 		}
 		const future = Date.now() + 60_000
-		const restored = restoreWorkflow(
+		const restored = createRestoredWorkflow(
 			{
 				...snapshot,
 				phases: [
@@ -843,7 +849,7 @@ describe('Task — declarative run/retries/timeout PERSIST (AGENTS §12), handle
 				},
 			],
 		})
-		const restored = restoreWorkflow(original.snapshot(), { functions: { x: () => null } })
+		const restored = createRestoredWorkflow(original.snapshot(), { functions: { x: () => null } })
 		const task = loneTask(restored)
 		expect(task.run).toBe('x')
 		expect(task.retries).toBe(2)
@@ -897,10 +903,10 @@ describe('Task — declarative run/retries/timeout PERSIST (AGENTS §12), handle
 	it('restore keeps unresolved behavior inspectable while a supplied registry re-resolves it', () => {
 		const handler = () => 'value'
 		const original = createWorkflow(buildSingleTaskWorkflow(), { functions: { f: handler } })
-		const inspected = restoreWorkflow(original.snapshot())
+		const inspected = createRestoredWorkflow(original.snapshot())
 		expect(loneTask(inspected).run).toBe('f')
 		expect(loneTask(inspected).handler).toBeUndefined()
-		const reResolved = restoreWorkflow(original.snapshot(), { functions: { f: handler } })
+		const reResolved = createRestoredWorkflow(original.snapshot(), { functions: { f: handler } })
 		expect(loneTask(reResolved).handler).toBe(handler)
 	})
 })

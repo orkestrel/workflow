@@ -9,8 +9,7 @@ import type {
 } from './types.js'
 import { isArray } from '@orkestrel/contract'
 import { cloneWorkflowSnapshot } from './cloners.js'
-import { createWorkflow } from './factories.js'
-import { restoreWorkflow } from './helpers.js'
+import { createRestoredWorkflow, createWorkflow } from './factories.js'
 
 /**
  * The store-backed registry of {@link WorkflowInterface}s keyed by `id`, in insertion order —
@@ -183,7 +182,7 @@ export class WorkflowManager implements WorkflowManagerInterface {
 			if (!this.#owns(id, mutation, generation)) return this.#resolve(id, generation)
 			let workflow: WorkflowInterface
 			try {
-				workflow = restoreWorkflow(owned, {
+				workflow = createRestoredWorkflow(owned, {
 					...(this.#functions === undefined ? {} : { functions: this.#functions }),
 				})
 			} catch (error) {

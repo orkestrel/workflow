@@ -1,5 +1,5 @@
 import type { PhaseInterface, PhaseOptions, WorkflowDefinition, WorkflowInterface } from '@src/core'
-import { createWorkflow, Phase, restoreWorkflow } from '@src/core'
+import { createWorkflow, Phase, createRestoredWorkflow } from '@src/core'
 import { describe, expect, it } from 'vitest'
 import { createErrorRecorder, createRecorder, recordEmitterEvents } from '../../../setup.js'
 
@@ -369,7 +369,7 @@ describe('Phase — the effective bail (per-phase override) round-trips', () => 
 		leaf?.start()
 		leaf?.complete('ok')
 		const original = workflow.phase('strict')
-		const restored = restoreWorkflow(workflow.snapshot(), {
+		const restored = createRestoredWorkflow(workflow.snapshot(), {
 			functions: { f: () => null },
 		}).phase('strict')
 		// The restored phase's status matches the original's…
@@ -377,7 +377,8 @@ describe('Phase — the effective bail (per-phase override) round-trips', () => 
 		// …and its effective bail survives (the snapshot persisted it).
 		expect(restored?.bail).toBe(true)
 		expect(
-			restoreWorkflow(workflow.snapshot(), { functions: { f: () => null } }).phase('inherit')?.bail,
+			createRestoredWorkflow(workflow.snapshot(), { functions: { f: () => null } }).phase('inherit')
+				?.bail,
 		).toBe(false)
 	})
 })

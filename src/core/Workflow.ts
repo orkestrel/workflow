@@ -46,7 +46,7 @@ import { PhaseManager } from './phases/PhaseManager.js'
  * @remarks
  * - **Construction.** Built from a {@link WorkflowSnapshot} (the unified input —
  *   {@link import('./factories.js').createWorkflow} seeds an initial snapshot from a
- *   {@link import('./types.js').WorkflowDefinition}, {@link import('./factories.js').restoreWorkflow}
+ *   {@link import('./types.js').WorkflowDefinition}, {@link import('./factories.js').createRestoredWorkflow}
  *   passes a persisted one). Each child {@link Phase} is wired to escalate to `#recompute`.
  * - **Derived status.** `status` is `#override` when forced, else
  *   {@link deriveWorkflowStatus} over the live phases' statuses feeding `bail`. `failed` is
@@ -61,7 +61,7 @@ import { PhaseManager } from './phases/PhaseManager.js'
  *   workflow tier; `phase(id)` + each `phase.task(id)` navigate DOWN, a task's `phase` / `workflow`
  *   navigate UP.
  * - **Snapshot.** `snapshot()` serializes the whole live tree to a {@link WorkflowSnapshot} (pure
- *   JSON); {@link import('./factories.js').restoreWorkflow} rebuilds an equivalent live tree.
+ *   JSON); {@link import('./factories.js').createRestoredWorkflow} rebuilds an equivalent live tree.
  * - **Observable (AGENTS §13).** The owned {@link emitter} ({@link WorkflowEventMap}) fires
  *   `start` / `complete` / `fail` / `pause` / `resume` / `skip` / `stop` after the
  *   corresponding status or runtime-gate change; the emitter isolates a listener throw and

@@ -1,7 +1,8 @@
 import type { TaskActivity, WorkflowSnapshot } from './types.js'
 import { cloneJSONValue, isArray, isContractError, isRecord } from '@orkestrel/contract'
 import { WorkflowError, isWorkflowError } from './errors.js'
-import { isOwnedWorkflowSnapshot, isTaskActivity, workflowSnapshotContext } from './validators.js'
+import { workflowSnapshotContext } from './helpers.js'
+import { isOwnedWorkflowSnapshot, isTaskActivity } from './validators.js'
 
 /**
  * Validate and own a workflow snapshot before live construction.

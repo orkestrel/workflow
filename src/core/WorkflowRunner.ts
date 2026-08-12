@@ -22,11 +22,11 @@ import {
 	definitionToSnapshot,
 	errorToMessage,
 	failure,
+	hasWorkflowHandlers,
 	isTerminalStatus,
 } from './helpers.js'
 import { Runner } from './Runner.js'
 import { TaskController } from './tasks/TaskController.js'
-import { hasWorkflowHandlers } from './validators.js'
 import { Workflow } from './Workflow.js'
 import { WorkflowPersistence } from './WorkflowPersistence.js'
 

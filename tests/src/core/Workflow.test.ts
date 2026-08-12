@@ -3,7 +3,7 @@ import {
 	createWorkflow,
 	definitionToSnapshot,
 	isWorkflowError,
-	restoreWorkflow,
+	createRestoredWorkflow,
 	Workflow,
 } from '@src/core'
 import { describe, expect, it } from 'vitest'
@@ -206,7 +206,7 @@ describe('Workflow — degenerate trees (zero phases, empty round-trip)', () => 
 		const snapshot = workflow.snapshot()
 		expect(snapshot.phases).toEqual([])
 		expect(snapshot.bail).toBe(true)
-		const restored = restoreWorkflow(snapshot) // bail comes from the snapshot, no options
+		const restored = createRestoredWorkflow(snapshot) // bail comes from the snapshot, no options
 		expect(restored.bail).toBe(true)
 		expect(restored.status).toBe('pending')
 		expect(restored.snapshot()).toEqual(snapshot)
@@ -216,7 +216,7 @@ describe('Workflow — degenerate trees (zero phases, empty round-trip)', () => 
 		const workflow = createWorkflow(buildEmptyWorkflow(false))
 		workflow.stop()
 		expect(workflow.status).toBe('stopped')
-		const restored = restoreWorkflow(workflow.snapshot())
+		const restored = createRestoredWorkflow(workflow.snapshot())
 		expect(restored.status).toBe('stopped')
 		expect(restored.snapshot().override).toBe('stopped')
 	})
@@ -233,7 +233,7 @@ describe('Workflow — degenerate trees (zero phases, empty round-trip)', () => 
 		expect(workflow.phase('a')?.status).toBe('pending')
 		expect(workflow.status).toBe('pending')
 		// And it round-trips.
-		const restored = restoreWorkflow(workflow.snapshot())
+		const restored = createRestoredWorkflow(workflow.snapshot())
 		expect(restored.snapshot()).toEqual(workflow.snapshot())
 	})
 })
@@ -332,7 +332,7 @@ describe('Workflow — the #override (skip / stop the whole workflow)', () => {
 		const source = createWorkflow(buildTwoPhaseWorkflow(false))
 		const snapshot = source.snapshot()
 		const future = Date.now() + 60_000
-		const workflow = restoreWorkflow(
+		const workflow = createRestoredWorkflow(
 			{ ...snapshot, updated: future },
 			{ functions: RESTORE_FUNCTIONS },
 		)
@@ -540,7 +540,7 @@ describe('Workflow — snapshot → restore round-trip', () => {
 		const t1 = workflow.phase('a')?.task('t1')
 		t1?.start()
 		t1?.fail({ origin: 'handler', message: 'halt' })
-		const restored = restoreWorkflow(workflow.snapshot(), {
+		const restored = createRestoredWorkflow(workflow.snapshot(), {
 			bail: workflow.bail,
 			functions: RESTORE_FUNCTIONS,
 		})
@@ -565,7 +565,7 @@ describe('Workflow — snapshot → restore round-trip', () => {
 		workflow.phase('a')?.task('t0')?.skip()
 		completeTask(workflow, 'a', 't1')
 		completeTask(workflow, 'b', 't2')
-		const restored = restoreWorkflow(workflow.snapshot(), {
+		const restored = createRestoredWorkflow(workflow.snapshot(), {
 			bail: false,
 			functions: RESTORE_FUNCTIONS,
 		})
@@ -585,7 +585,7 @@ describe('Workflow — snapshot → restore round-trip', () => {
 		workflow.phase('a')?.task('t0')?.start()
 		workflow.phase('a')?.skip()
 		expect(workflow.phase('a')?.status).toBe('skipped')
-		const restored = restoreWorkflow(workflow.snapshot(), {
+		const restored = createRestoredWorkflow(workflow.snapshot(), {
 			bail: false,
 			functions: RESTORE_FUNCTIONS,
 		})
@@ -599,7 +599,7 @@ describe('Workflow — snapshot → restore round-trip', () => {
 		const workflow = createWorkflow(buildTwoPhaseWorkflow(false))
 		workflow.phase('a')?.task('t0')?.start() // derived would be running
 		workflow.stop()
-		const restored = restoreWorkflow(workflow.snapshot(), {
+		const restored = createRestoredWorkflow(workflow.snapshot(), {
 			bail: false,
 			functions: RESTORE_FUNCTIONS,
 		})
@@ -619,7 +619,7 @@ describe('Workflow — snapshot → restore round-trip', () => {
 		t1?.fail({ origin: 'handler', message: 'mixed' })
 		workflow.phase('b')?.task('t2')?.skip()
 		const snapshot = workflow.snapshot()
-		const restored = restoreWorkflow(snapshot, { functions: RESTORE_FUNCTIONS })
+		const restored = createRestoredWorkflow(snapshot, { functions: RESTORE_FUNCTIONS })
 		// Whole-snapshot deep equality is the strongest fidelity claim (structure + status + results
 		// + order + bail + overrides all at once).
 		expect(restored.snapshot()).toEqual(snapshot)
@@ -639,7 +639,7 @@ describe('Workflow — snapshot → restore round-trip', () => {
 
 	it('restores an empty tree (zero phases) identically', () => {
 		const workflow = createWorkflow({ id: 'wf', name: 'WF', bail: false, phases: [] })
-		const restored = restoreWorkflow(workflow.snapshot(), { functions: RESTORE_FUNCTIONS })
+		const restored = createRestoredWorkflow(workflow.snapshot(), { functions: RESTORE_FUNCTIONS })
 		expect(restored.status).toBe('pending')
 		expect(restored.phases.count).toBe(0)
 		expect(restored.snapshot()).toEqual(workflow.snapshot())
@@ -648,7 +648,7 @@ describe('Workflow — snapshot → restore round-trip', () => {
 	it('a restored tree keeps transitioning + cascading from where it left off', () => {
 		const workflow = createWorkflow(buildTwoPhaseWorkflow(false))
 		completeTask(workflow, 'a', 't0') // t1, t2 still pending
-		const restored = restoreWorkflow(workflow.snapshot(), {
+		const restored = createRestoredWorkflow(workflow.snapshot(), {
 			bail: false,
 			functions: RESTORE_FUNCTIONS,
 		})
@@ -668,7 +668,7 @@ describe('Workflow — the snapshot is self-contained (bail + override persist)'
 		const snapshot = workflow.snapshot()
 		expect(snapshot.bail).toBe(true)
 		// Restore WITHOUT an options.bail — the policy must come from the snapshot, not default false.
-		const restored = restoreWorkflow(snapshot, { functions: RESTORE_FUNCTIONS })
+		const restored = createRestoredWorkflow(snapshot, { functions: RESTORE_FUNCTIONS })
 		expect(restored.bail).toBe(true)
 	})
 
@@ -710,7 +710,7 @@ describe('Workflow — the snapshot is self-contained (bail + override persist)'
 		expect(snapshot.phases.find((phase) => phase.id === 'a')?.bail).toBe(true) // the override persisted
 		// Restore taking bail FROM THE SNAPSHOT (no options): the per-phase override survives, so the
 		// restored workflow re-derives the SAME `failed`, and the phase bail round-trips.
-		const restored = restoreWorkflow(snapshot, { functions: RESTORE_FUNCTIONS })
+		const restored = createRestoredWorkflow(snapshot, { functions: RESTORE_FUNCTIONS })
 		expect(restored.status).toBe(workflow.status)
 		expect(restored.status).toBe('failed')
 		expect(restored.phase('a')?.bail).toBe(true)
@@ -745,7 +745,7 @@ describe('Workflow — the snapshot is self-contained (bail + override persist)'
 		// Restore taking the policy FROM THE SNAPSHOT (no options) — under the deleted divergence
 		// heuristic + silent bail:false this re-derived `running`, DIVERGED from the stored `failed`,
 		// and FALSELY pinned `failed` as a permanent override, freezing the tree forever.
-		const restored = restoreWorkflow(snapshot, { functions: RESTORE_FUNCTIONS })
+		const restored = createRestoredWorkflow(snapshot, { functions: RESTORE_FUNCTIONS })
 		expect(restored.bail).toBe(true)
 		expect(restored.status).toBe('failed')
 		// No false override pin: the restored tree carries no forced override at any tier — the
@@ -766,7 +766,7 @@ describe('Workflow — the snapshot is self-contained (bail + override persist)'
 		const t1 = workflow.phase('a')?.task('t1')
 		t1?.start()
 		t1?.fail({ origin: 'handler', message: 'halt' })
-		const restored = restoreWorkflow(workflow.snapshot(), {
+		const restored = createRestoredWorkflow(workflow.snapshot(), {
 			bail: false,
 			functions: RESTORE_FUNCTIONS,
 		})
@@ -784,7 +784,7 @@ describe('Workflow — the snapshot is self-contained (bail + override persist)'
 		const snapshot = workflow.snapshot()
 		// The override is persisted in its OWN field (present because one is in force).
 		expect(snapshot.override).toBe('stopped')
-		const restored = restoreWorkflow(snapshot, { functions: RESTORE_FUNCTIONS })
+		const restored = createRestoredWorkflow(snapshot, { functions: RESTORE_FUNCTIONS })
 		// Restored DIRECTLY from the field — the forced status survives and the snapshot round-trips.
 		expect(restored.status).toBe('stopped')
 		expect(restored.snapshot().override).toBe('stopped')
@@ -802,23 +802,27 @@ describe('Workflow — the snapshot is self-contained (bail + override persist)'
 		const snapshot = workflow.snapshot()
 		const phaseSnapshot = snapshot.phases.find((phase) => phase.id === 'a')
 		expect(phaseSnapshot?.override).toBe('skipped')
-		const restored = restoreWorkflow(snapshot, { functions: RESTORE_FUNCTIONS })
+		const restored = createRestoredWorkflow(snapshot, { functions: RESTORE_FUNCTIONS })
 		expect(restored.phase('a')?.status).toBe('skipped')
 		// The child is still mid-flight, but the restored override pins the phase to skipped.
 		expect(restored.phase('a')?.task('t0')?.status).toBe('running')
 		expect(restored.phase('a')?.snapshot().override).toBe('skipped')
 	})
 
-	it('assertSnapshot rejects a non-boolean bail and an out-of-vocabulary override', () => {
+	it('cloneWorkflowSnapshot rejects a non-boolean bail and an out-of-vocabulary override', () => {
 		const snapshot = createWorkflow(buildTwoPhaseWorkflow(false)).snapshot()
 		const badBail = { ...snapshot, bail: 'yes' }
 		expect(
-			isWorkflowError(captureError(() => restoreWorkflow(JSON.parse(JSON.stringify(badBail)))))
+			isWorkflowError(
+				captureError(() => createRestoredWorkflow(JSON.parse(JSON.stringify(badBail)))),
+			)
 				? 'rejected'
 				: 'accepted',
 		).toBe('rejected')
 		const badOverride = { ...snapshot, override: 'bogus' }
-		const error = captureError(() => restoreWorkflow(JSON.parse(JSON.stringify(badOverride))))
+		const error = captureError(() =>
+			createRestoredWorkflow(JSON.parse(JSON.stringify(badOverride))),
+		)
 		expect(isWorkflowError(error) ? error.code : undefined).toBe('RESTORE')
 	})
 })
@@ -833,7 +837,7 @@ describe('Workflow — restore rejects a malformed snapshot', () => {
 				{ ...snapshot.phases[0], tasks: [{ ...snapshot.phases[0]?.tasks[0], status: 'bogus' }] },
 			],
 		}
-		const error = captureError(() => restoreWorkflow(JSON.parse(JSON.stringify(broken))))
+		const error = captureError(() => createRestoredWorkflow(JSON.parse(JSON.stringify(broken))))
 		expect(isWorkflowError(error) ? error.code : undefined).toBe('RESTORE')
 	})
 })

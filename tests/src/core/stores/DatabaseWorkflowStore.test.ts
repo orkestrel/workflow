@@ -6,7 +6,7 @@ import {
 	createDatabaseWorkflowStore,
 	createWorkflow,
 	DatabaseWorkflowStore,
-	restoreWorkflow,
+	createRestoredWorkflow,
 } from '@src/core'
 import { describe, expect, it } from 'vitest'
 import {
@@ -45,7 +45,7 @@ const RESTORE_FUNCTIONS = {
 // WorkflowSnapshot on `get` (the §14 boundary narrow). Exercised over a REAL memory driver, with
 // REAL WorkflowSnapshot values (§16 NO mocks) — a real WorkflowDefinition, a real all-pending
 // snapshot AND a real SETTLED snapshot driven through createWorkflowRunner().execute (so recorded
-// statuses / results / bail are exercised); restore is the shipped restoreWorkflow, never re-rolled.
+// statuses / results / bail are exercised); restore is the shipped createRestoredWorkflow, never re-rolled.
 
 // The real two-phase `release` WorkflowDefinition (`buildReleaseDefinition`), its by-name handler
 // map, and the deterministic `settleSnapshot` driver (paced by an injected recording scheduler so
@@ -83,7 +83,9 @@ describe('DatabaseWorkflowStore — set → get round-trip (one opaque JSON colu
 				// Restoring from the RETRIEVED snapshot yields an IDENTICAL live tree — its own
 				// re-serialization deep-equals the original (structure + every node's status + recorded
 				// results + positional order + bail/override survived the column round-trip).
-				expect(restoreWorkflow(got, { functions: RESTORE_FUNCTIONS }).snapshot()).toEqual(snapshot)
+				expect(createRestoredWorkflow(got, { functions: RESTORE_FUNCTIONS }).snapshot()).toEqual(
+					snapshot,
+				)
 			},
 			ROUND_TRIP_TIMEOUT_MS,
 		)
@@ -122,7 +124,7 @@ describe('DatabaseWorkflowStore — mid-manual-drive + paused round-trips (pause
 			expect(got).toEqual(snapshot)
 			expect(got).toBeDefined()
 			if (got === undefined) return
-			const restored = restoreWorkflow(got, { functions: RESTORE_FUNCTIONS })
+			const restored = createRestoredWorkflow(got, { functions: RESTORE_FUNCTIONS })
 			expect(restored.phase('build')?.task('compile')?.status).toBe('completed')
 			expect(restored.phase('build')?.task('lint')?.status).toBe('pending')
 			expect(restored.status).toBe('running')
@@ -160,7 +162,7 @@ describe('DatabaseWorkflowStore — mid-manual-drive + paused round-trips (pause
 			expect(got).toEqual(snapshot)
 			expect(got).toBeDefined()
 			if (got === undefined) return
-			const restored = restoreWorkflow(got, { functions: RESTORE_FUNCTIONS })
+			const restored = createRestoredWorkflow(got, { functions: RESTORE_FUNCTIONS })
 			expect(restored.paused).toBe(false)
 			expect(restored.destroyed).toBe(false)
 			expect(restored.phase('p')?.snapshot().concurrency).toBe(3)
@@ -189,7 +191,7 @@ describe('DatabaseWorkflowStore — the declarative task trio (run/retries/timeo
 			const got = await store.get(snapshot.id)
 			expect(got).toBeDefined()
 			if (got === undefined) return
-			const restored = restoreWorkflow(got, { functions: RESTORE_FUNCTIONS })
+			const restored = createRestoredWorkflow(got, { functions: RESTORE_FUNCTIONS })
 			const task = restored.phase('p')?.task('t')
 			expect(task?.run).toBe('compile')
 			expect(task?.retries).toBe(2)
@@ -290,7 +292,9 @@ describe('DatabaseWorkflowStore — driver-swap smoke (the memory driver default
 			expect(got).toBeDefined()
 			if (got === undefined) return
 			// And it restores identically — the opaque-column persistence is faithful end-to-end.
-			expect(restoreWorkflow(got, { functions: RESTORE_FUNCTIONS }).snapshot()).toEqual(snapshot)
+			expect(createRestoredWorkflow(got, { functions: RESTORE_FUNCTIONS }).snapshot()).toEqual(
+				snapshot,
+			)
 		},
 		ROUND_TRIP_TIMEOUT_MS,
 	)

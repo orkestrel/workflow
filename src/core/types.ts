@@ -42,7 +42,7 @@ export interface TaskDefinition {
 	 * Extra attempts after the first on failure (a non-negative integer); the runner threads it
 	 * to this task's substrate unit, OVERRIDING the phase Runner's `retries` default. Omitted ⇒
 	 * the default (no extra attempts). PERSISTED in a {@link TaskSnapshot} (like `bail` and
-	 * `concurrency`), so `restoreWorkflow(snapshot, { functions })` resumes with the same
+	 * `concurrency`), so `createRestoredWorkflow(snapshot, { functions })` resumes with the same
 	 * reliability config; only the resolved handler itself is runtime-only.
 	 */
 	readonly retries?: number
@@ -50,7 +50,7 @@ export interface TaskDefinition {
 	 * @remarks
 	 * The workflow-owned per-attempt deadline in milliseconds, an integer from `0` through
 	 * `MAX_TIMER_MS`. Zero or omission means no deadline. PERSISTED in a {@link TaskSnapshot},
-	 * so `restoreWorkflow(snapshot, { functions })` resumes with the same reliability config;
+	 * so `createRestoredWorkflow(snapshot, { functions })` resumes with the same reliability config;
 	 * only the resolved handler itself is runtime-only.
 	 */
 	readonly timeout?: number
@@ -288,7 +288,7 @@ export interface PhaseUpdate {
  * - `TRANSITION` — an illegal state-machine transition (e.g. `start`ing a task that is
  *   not `pending`, or `complete`/`fail`ing one that is not `running`); the guard names
  *   the offending current status + requested transition in the error `context`.
- * - `RESTORE` — a {@link import('./factories.js').restoreWorkflow} given a structurally
+ * - `RESTORE` — a {@link import('./factories.js').createRestoredWorkflow} given a structurally
  *   invalid {@link WorkflowSnapshot} (a status outside the lifecycle vocabulary).
  * - `MUTATION` — a GATED structural or patch edit was refused: a duplicate id on
  *   `append`/`add`, a target that does not exist or is not `pending`, an out-of-bounds
@@ -436,7 +436,7 @@ export interface TaskResult {
  * like a {@link PhaseSnapshot}'s `bail` / `concurrency`, so a restore reinstates the same
  * behavior reference and reliability overrides (`run` re-resolves against the
  * {@link WorkflowOptions.functions} registry supplied to
- * {@link import('./factories.js').restoreWorkflow}); each omitted ⇒ the corresponding
+ * {@link import('./factories.js').createRestoredWorkflow}); each omitted ⇒ the corresponding
  * unset default.
  */
 export interface TaskSnapshot {
@@ -502,7 +502,7 @@ export interface PhaseSnapshot {
  * designed in full at W-a so its shape is fixed from the start. It can be written to disk,
  * sent to a prompt companion, loaded across conversations, or reviewed by an agent. Because
  * it is self-contained, it carries the policy it ran under: `bail` (AGENTS §4.4) is the
- * failure policy, so {@link import('./factories.js').restoreWorkflow} re-derives status
+ * failure policy, so {@link import('./factories.js').createRestoredWorkflow} re-derives status
  * IDENTICALLY without a silent default. `status` is the EFFECTIVE status (override-or-derived)
  * at snapshot time; `override` is the forced status of a whole-workflow `skip` / `stop` or
  * vacuous `completed`. The completed override is valid only for an otherwise-derived pending
@@ -537,7 +537,7 @@ export interface WorkflowSnapshot {
  * {@link import('./stores/MemoryWorkflowStore.js').MemoryWorkflowStore} and its driver-pluggable
  * twin {@link import('./stores/DatabaseWorkflowStore.js').DatabaseWorkflowStore} (the snapshot as
  * one opaque JSON column) share THIS one interface. Restore is NOT a store concern — a caller reads
- * a snapshot back and rebuilds the live tree with the shipped {@link import('./factories.js').restoreWorkflow}.
+ * a snapshot back and rebuilds the live tree with the shipped {@link import('./factories.js').createRestoredWorkflow}.
  *
  * Every primitive is async (a `Promise`), so a durable backend (a database round-trip) fits the
  * same shape as the memory one. The snapshot carries its OWN id, so `set` takes no separate id
@@ -786,7 +786,7 @@ export interface WorkflowOptions {
 	 * The failure policy (AGENTS §4.4) the live tree applies — the same boolean toggle as
 	 * {@link WorkflowDefinition.bail}, fed to {@link import('./helpers.js').deriveWorkflowStatus}.
 	 * {@link import('./factories.js').createWorkflow} defaults it to the definition's `bail`. A
-	 * {@link WorkflowSnapshot} PERSISTS the policy, so {@link import('./factories.js').restoreWorkflow}
+	 * {@link WorkflowSnapshot} PERSISTS the policy, so {@link import('./factories.js').createRestoredWorkflow}
 	 * takes it from the snapshot (the source of truth); an explicit `options.bail` on restore still
 	 * wins when supplied. Omitted on a fresh build ⇒ the graceful {@link import('./constants.js').DEFAULT_BAIL}.
 	 */
@@ -800,7 +800,7 @@ export interface WorkflowOptions {
 	 * {@link TaskDefinition.run} / {@link TaskSnapshot.run} name resolves against ONCE at
 	 * construction into its runtime {@link TaskInterface.handler} — the SAME registry a
 	 * fresh build ({@link import('./factories.js').createWorkflow}) and a restore
-	 * ({@link import('./factories.js').restoreWorkflow}) both consume, and the same shape a
+	 * ({@link import('./factories.js').createRestoredWorkflow}) both consume, and the same shape a
 	 * live {@link WorkflowInterface.add} / {@link PhaseInterface.add} mint resolves a newly
 	 * minted task against. An omitted `run` resolves to no handler and is the deliberate
 	 * no-op form. A present name absent from `functions` also has no handler so exact restore
@@ -1163,7 +1163,7 @@ export interface PhaseInterface {
  *   may force only a task-free, otherwise-pending tree. The override survives a snapshot.
  * - **Snapshot.** `snapshot()` serializes the whole live tree to a {@link WorkflowSnapshot}
  *   (pure JSON — structure + each node's status + recorded results + positional order);
- *   {@link restoreWorkflow} rebuilds an equivalent live tree.
+ *   {@link createRestoredWorkflow} rebuilds an equivalent live tree.
  * - **Observable (AGENTS §13).** The owned {@link emitter} ({@link WorkflowEventMap}) fires
  *   `start` / `complete` / `fail` / `pause` / `resume` / `stop` after the corresponding
  *   status or runtime-gate change; the emitter isolates a listener throw and routes it to
@@ -1801,7 +1801,7 @@ export interface WorkflowRunnerInterface {
 	 * does not apply, since the tree already exists.
 	 *
 	 * **Run round-trips through the snapshot.** Driving a tree rebuilt by
-	 * {@link import('./factories.js').restoreWorkflow} behaves according to whether a
+	 * {@link import('./factories.js').createRestoredWorkflow} behaves according to whether a
 	 * {@link WorkflowFunctions} registry was supplied at that build: WITH a registry,
 	 * each task's `run` name is re-resolved against it, so a matched task carries a real
 	 * handler and this overload actually DISPATCHES it, resuming real work. Without a registry,
@@ -1845,7 +1845,7 @@ export interface WorkflowRunnerInterface {
  * already registered, and {@link WorkflowManagerInterface.save} is a no-op (`false`). `functions`
  * is the workflow-specific addition: the SAME {@link WorkflowFunctions} registry threaded into
  * every {@link import('./factories.js').createWorkflow} ({@link WorkflowManagerInterface.add})
- * and every {@link import('./factories.js').restoreWorkflow}
+ * and every {@link import('./factories.js').createRestoredWorkflow}
  * ({@link WorkflowManagerInterface.open}'s hydration path) the manager performs — so a
  * hydrated workflow carries real resolved `handler`s and is RUNNABLE. Omitted ⇒ named work
  * remains inspectable but cannot be driven; omitted-`run` tasks remain deliberate no-ops.
@@ -1862,7 +1862,7 @@ export interface WorkflowManagerOptions {
 	/**
 	 * The {@link WorkflowFunctions} registry threaded into every workflow this manager mints
 	 * (`add`, via {@link import('./factories.js').createWorkflow}) or hydrates (`open`'s
-	 * registry-miss path, via {@link import('./factories.js').restoreWorkflow}) — so a
+	 * registry-miss path, via {@link import('./factories.js').createRestoredWorkflow}) — so a
 	 * hydrated workflow is RUNNABLE, its tasks carrying real resolved `handler`s. Omitted ⇒
 	 * named tasks remain inspectable but execution rejects them.
 	 */
@@ -1891,7 +1891,7 @@ export interface WorkflowManagerOptions {
  *   is supplied (the `store` option), `open(id)` resolves an already-registered workflow
  *   directly (no store hit); same-id registry misses share one in-flight hydration. On a MISS
  *   it HYDRATES one from `store.get(id)` through
- *   {@link import('./factories.js').restoreWorkflow} — flowing this manager's `functions`
+ *   {@link import('./factories.js').createRestoredWorkflow} — flowing this manager's `functions`
  *   registry in so the rehydrated tree is RUNNABLE — registers it, and returns it. Registry
  *   mutation wins over an earlier pending hydration: `add` supplies the live result, while
  *   `remove` (even for an absent id) and `clear` invalidate the earlier read. Missed and failed
@@ -1905,7 +1905,7 @@ export interface WorkflowManagerOptions {
  *   `ConversationManagerInterface.open` / `.save` and `WorkspaceManagerInterface.open` /
  *   `.save` — this is the workflow line's caller-driven persistence gaining the standard
  *   open/save seam, ADDITIVE alongside direct {@link WorkflowStoreInterface} use and
- *   {@link import('./factories.js').restoreWorkflow} (both remain valid).
+ *   {@link import('./factories.js').createRestoredWorkflow} (both remain valid).
  * - **Removal.** `remove` drops one by id, or a batch (§9.2, array overload FIRST) — `true`
  *   when any was removed. `clear` empties the registry.
  * - **Event-free.** A purely registry store — no `Emitter`, no events (each
@@ -1950,7 +1950,7 @@ export interface WorkflowManagerInterface {
 	 * - Same-id registry misses share one in-flight `store.get(id)` and resolve to the same live
 	 *   object. On a HIT the snapshot is
 	 *   rehydrated into a fresh {@link WorkflowInterface} via
-	 *   {@link import('./factories.js').restoreWorkflow}, flowing this manager's `functions`
+	 *   {@link import('./factories.js').createRestoredWorkflow}, flowing this manager's `functions`
 	 *   registry in (so the rehydrated tree carries real resolved `handler`s and can RESUME
 	 *   real work), registers it, and returns it. A payload whose own id differs from `id` rejects
 	 *   with a normalized `RESTORE` error carrying the requested and payload ids.

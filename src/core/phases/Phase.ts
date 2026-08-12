@@ -157,7 +157,7 @@ export class Phase implements PhaseInterface {
 		}
 		// The effective per-phase policy: the explicit workflow `bail` OVERRIDE when supplied (a
 		// deliberate "re-run the whole tree under THIS uniform policy" knob — `createWorkflow` /
-		// `restoreWorkflow` thread `options.bail` here), else the snapshot's persisted per-phase `bail`
+		// `createRestoredWorkflow` thread `options.bail` here), else the snapshot's persisted per-phase `bail`
 		// (so an option-less restore is IDENTICAL — each phase's own persisted policy governs). The
 		// snapshot already resolved `phase.bail ?? workflowBail` at seed time, mirroring how Workflow
 		// reads its own `#bail`.

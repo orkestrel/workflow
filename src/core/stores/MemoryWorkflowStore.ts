@@ -25,17 +25,17 @@ import { cloneWorkflowSnapshot } from '../cloners.js'
  *
  * The public surface is EXACTLY `get` / `set` / `delete` — no extra members (the §22 method
  * bijection with {@link WorkflowStoreInterface}). Restore is a caller concern: read a snapshot
- * back and rebuild the live tree with {@link import('../factories.js').restoreWorkflow}.
+ * back and rebuild the live tree with {@link import('../factories.js').createRestoredWorkflow}.
  *
  * @example
  * ```ts
- * import { createMemoryWorkflowStore, createWorkflow, restoreWorkflow } from '@orkestrel/workflow'
+ * import { createMemoryWorkflowStore, createWorkflow, createRestoredWorkflow } from '@orkestrel/workflow'
  *
  * const store = createMemoryWorkflowStore()
  * const workflow = createWorkflow(definition)
  * await store.set(workflow.snapshot())      // persist the run state
  * const snapshot = await store.get(definition.id)
- * const restored = snapshot && restoreWorkflow(snapshot) // an identical live tree
+ * const restored = snapshot && createRestoredWorkflow(snapshot) // an identical live tree
  * await store.delete(definition.id)          // drop it
  * ```
  */
