@@ -9,7 +9,8 @@ import type {
 } from './types.js'
 import { isArray } from '@orkestrel/contract'
 import { cloneWorkflowSnapshot } from './cloners.js'
-import { createWorkflow, restoreWorkflow } from './factories.js'
+import { createWorkflow } from './factories.js'
+import { restoreWorkflow } from './helpers.js'
 
 /**
  * The store-backed registry of {@link WorkflowInterface}s keyed by `id`, in insertion order —

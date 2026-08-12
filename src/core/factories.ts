@@ -16,10 +16,7 @@ import type {
 import { createContract, rawShape, stringShape } from '@orkestrel/contract'
 import { createDatabase, createMemoryDriver } from '@orkestrel/database'
 import { DEFAULT_BAIL } from './constants.js'
-import { cloneWorkflowSnapshot } from './cloners.js'
-import { WorkflowError } from './errors.js'
-import { captureWorkflowOptions, definitionToSnapshot, recoverWorkflowSnapshot } from './helpers.js'
-import { hasWorkflowHandlers } from './validators.js'
+import { captureWorkflowOptions, definitionToSnapshot } from './helpers.js'
 import { workflowShape } from './shapers.js'
 import { DatabaseWorkflowStore } from './stores/DatabaseWorkflowStore.js'
 import { MemoryWorkflowStore } from './stores/MemoryWorkflowStore.js'
@@ -131,98 +128,6 @@ export function createWorkflow(
 	// over onto the snapshot (definitionToSnapshot's per-task step), so `options.functions` (forwarded
 	// unchanged) resolves every task's handler identically whether built fresh or restored.
 	return new Workflow(definitionToSnapshot(definition, bail), captured)
-}
-
-/**
- * Rebuild an equivalent live W-b entity tree from a {@link WorkflowSnapshot} — the
- * inverse of {@link WorkflowInterface.snapshot}, restoring structure + each node's status
- * + recorded results + positional order + the persisted `#override`.
- *
- * @remarks
- * Round-trip fidelity is paramount: a `snapshot()` → `restoreWorkflow()` reproduces the
- * same status at every node (each `#override` restored DIRECTLY from the snapshot's own
- * `override` field, not guessed from a status divergence), the same recorded
- * {@link import('./types.js').TaskResult}s, and the same positional order (an interior
- * `skip` / `remove` survives). The snapshot is SELF-CONTAINED — it persists the `bail`
- * policy it ran under, so the restore re-derives status IDENTICALLY without a silent
- * default; the snapshot's `bail` is the source of truth, while an explicit `options.bail`
- * still wins when supplied (to deliberately re-run under a different policy). A structurally
- * invalid snapshot (a status — or override — outside the lifecycle vocabulary, or a
- * non-boolean `bail`) throws a `RESTORE` {@link WorkflowError}.
- * Runtime handlers are optional: without a matching `functions` entry, a persisted `run`
- * remains visible with an undefined `handler` so the exact state is inspectable. The runner
- * rejects that unresolved tree if execution is attempted.
- *
- * @param snapshot - The snapshot to restore (carries its own `bail` + `override`)
- * @param options - Runtime options (initial listeners, an optional `bail` override, per-node options)
- * @returns The restored live {@link WorkflowInterface} root
- *
- * @example
- * ```ts
- * import { restoreWorkflow } from '@orkestrel/workflow'
- *
- * const restored = restoreWorkflow(workflow.snapshot()) // bail comes from the snapshot
- * restored.status === workflow.status // true
- * ```
- */
-export function restoreWorkflow(snapshot: unknown, options?: WorkflowOptions): WorkflowInterface {
-	const captured = captureWorkflowOptions(options)
-	const owned = cloneWorkflowSnapshot(snapshot)
-	return new Workflow(owned, captured)
-}
-
-/**
- * Rebuild an interrupted workflow at its remaining retry budget.
- *
- * @remarks
- * Each phase captures every unique initial `run` binding once before constructing tasks. Recovery
- * validates those live tasks' captured callable handlers without rereading the registry, while the
- * retained registry identity remains available to resolve future live additions at their mint time.
- *
- * @param snapshot - The hostile persisted snapshot
- * @param options - Runtime handlers and entity options
- * @returns A recoverable live workflow
- */
-export function recoverWorkflow(snapshot: unknown, options?: WorkflowOptions): WorkflowInterface {
-	const captured = captureWorkflowOptions(options)
-	const owned = cloneWorkflowSnapshot(snapshot)
-	if (owned.override !== undefined || owned.phases.some((phase) => phase.override !== undefined)) {
-		throw new WorkflowError('RESTORE', `workflow '${owned.id}' has a terminal override`, {
-			workflow: owned.id,
-		})
-	}
-	const recovered = cloneWorkflowSnapshot(recoverWorkflowSnapshot(owned))
-	const workflow = new Workflow(recovered, captured)
-	if (!hasWorkflowHandlers(workflow)) {
-		throw new WorkflowError('RESTORE', `workflow '${owned.id}' has an unresolved run`, {
-			workflow: owned.id,
-		})
-	}
-	return workflow
-}
-
-/**
- * Assert that a {@link WorkflowSnapshot} carries a `boolean` `bail` — at the workflow tier AND
- * on every phase — and that its every node's status (and its `override`, when present) is drawn
- * from the lifecycle vocabulary, throwing a `RESTORE` {@link WorkflowError} otherwise.
- *
- * @remarks
- * The boundary-narrowing guard (AGENTS §14) for {@link restoreWorkflow}: a snapshot is
- * untrusted JSON, so a status (or an override) outside
- * {@link import('./constants.js').WORKFLOW_STATUSES} /
- * {@link import('./constants.js').PHASE_STATUSES} / {@link import('./constants.js').TASK_STATUSES},
- * a non-boolean `bail` (the workflow's OR any phase's — both are REQUIRED persisted policy), a
- * present-but-invalid phase `concurrency` (not a positive integer), or a present-but-invalid task
- * `run` (an empty string) / `retries` / `timeout` (not a non-negative integer),
- * is rejected loudly (naming the offending node) rather than silently producing a broken tree.
- * The `override` / `concurrency` / `run` / `retries` / `timeout` are optional, so each is only
- * checked WHEN present. Structural shape beyond these fields is the contract's concern; this
- * guards exactly the fields the live state machine reads back.
- *
- * @param snapshot - The snapshot to validate
- */
-export function assertSnapshot(snapshot: unknown): void {
-	cloneWorkflowSnapshot(snapshot)
 }
 
 /**

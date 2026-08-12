@@ -11,6 +11,7 @@ import type {
 	TaskStatus,
 	WorkflowContext,
 	WorkflowDefinition,
+	WorkflowInterface,
 	WorkflowOptions,
 	WorkflowSnapshot,
 	WorkflowStatus,
@@ -19,6 +20,9 @@ import type { Failure, Success } from '@orkestrel/contract'
 import { isAbortSignal, linkSignal } from '@orkestrel/abort'
 import { DEFAULT_BAIL, MAX_TIMER_MS, TASK_TRANSITIONS } from './constants.js'
 import { WorkflowError } from './errors.js'
+import { cloneWorkflowSnapshot } from './cloners.js'
+import { hasWorkflowHandlers } from './validators.js'
+import { Workflow } from './Workflow.js'
 
 /**
  * Capture every top-level {@link WorkflowOptions} value exactly once into an owned plain bag.
@@ -543,6 +547,74 @@ export function recoverWorkflowSnapshot(snapshot: WorkflowSnapshot): WorkflowSna
 		phases,
 		updated: now,
 	}
+}
+
+/**
+ * Rebuild an equivalent live W-b entity tree from a {@link WorkflowSnapshot} — the
+ * inverse of {@link WorkflowInterface.snapshot}, restoring structure + each node's status
+ * + recorded results + positional order + the persisted `#override`.
+ *
+ * @remarks
+ * Round-trip fidelity is paramount: a `snapshot()` → `restoreWorkflow()` reproduces the
+ * same status at every node (each `#override` restored DIRECTLY from the snapshot's own
+ * `override` field, not guessed from a status divergence), the same recorded
+ * {@link import('./types.js').TaskResult}s, and the same positional order (an interior
+ * `skip` / `remove` survives). The snapshot is SELF-CONTAINED — it persists the `bail`
+ * policy it ran under, so the restore re-derives status IDENTICALLY without a silent
+ * default; the snapshot's `bail` is the source of truth, while an explicit `options.bail`
+ * still wins when supplied (to deliberately re-run under a different policy). A structurally
+ * invalid snapshot (a status — or override — outside the lifecycle vocabulary, or a
+ * non-boolean `bail`) throws a `RESTORE` {@link WorkflowError}.
+ * Runtime handlers are optional: without a matching `functions` entry, a persisted `run`
+ * remains visible with an undefined `handler` so the exact state is inspectable. The runner
+ * rejects that unresolved tree if execution is attempted.
+ *
+ * @param snapshot - The snapshot to restore (carries its own `bail` + `override`)
+ * @param options - Runtime options (initial listeners, an optional `bail` override, per-node options)
+ * @returns The restored live {@link WorkflowInterface} root
+ *
+ * @example
+ * ```ts
+ * import { restoreWorkflow } from '@orkestrel/workflow'
+ *
+ * const restored = restoreWorkflow(workflow.snapshot()) // bail comes from the snapshot
+ * restored.status === workflow.status // true
+ * ```
+ */
+export function restoreWorkflow(snapshot: unknown, options?: WorkflowOptions): WorkflowInterface {
+	const captured = captureWorkflowOptions(options)
+	const owned = cloneWorkflowSnapshot(snapshot)
+	return new Workflow(owned, captured)
+}
+
+/**
+ * Rebuild an interrupted workflow at its remaining retry budget.
+ *
+ * @remarks
+ * Each phase captures every unique initial `run` binding once before constructing tasks. Recovery
+ * validates those live tasks' captured callable handlers without rereading the registry, while the
+ * retained registry identity remains available to resolve future live additions at their mint time.
+ *
+ * @param snapshot - The hostile persisted snapshot
+ * @param options - Runtime handlers and entity options
+ * @returns A recoverable live workflow
+ */
+export function recoverWorkflow(snapshot: unknown, options?: WorkflowOptions): WorkflowInterface {
+	const captured = captureWorkflowOptions(options)
+	const owned = cloneWorkflowSnapshot(snapshot)
+	if (owned.override !== undefined || owned.phases.some((phase) => phase.override !== undefined)) {
+		throw new WorkflowError('RESTORE', `workflow '${owned.id}' has a terminal override`, {
+			workflow: owned.id,
+		})
+	}
+	const recovered = cloneWorkflowSnapshot(recoverWorkflowSnapshot(owned))
+	const workflow = new Workflow(recovered, captured)
+	if (!hasWorkflowHandlers(workflow)) {
+		throw new WorkflowError('RESTORE', `workflow '${owned.id}' has an unresolved run`, {
+			workflow: owned.id,
+		})
+	}
+	return workflow
 }
 
 /**

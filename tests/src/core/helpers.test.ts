@@ -5,6 +5,7 @@ import type {
 	TaskResult,
 	TaskStatus,
 	WorkflowDefinition,
+	WorkflowFunctions,
 	WorkflowOptions,
 } from '@src/core'
 import {
@@ -15,6 +16,8 @@ import {
 	canTransitionTask,
 	captureWorkflowOptions,
 	collectResults,
+	createWorkflow,
+	createWorkflowRunner,
 	definitionToSnapshot,
 	deriveBoundary,
 	derivePhaseStatus,
@@ -24,16 +27,19 @@ import {
 	findFailure,
 	insertEntry,
 	isTerminalStatus,
+	isWorkflowError,
 	moveEntry,
 	parkSignal,
 	phaseDefinitionToSnapshot,
+	recoverWorkflow,
 	resolveTaskSilence,
+	restoreWorkflow,
 	scheduleHost,
 	success,
 	taskDefinitionToSnapshot,
 } from '@src/core'
 import { describe, expect, it } from 'vitest'
-import { captureError, createErrorRecorder } from '../../setup.js'
+import { captureError, createErrorRecorder, createRecordingScheduler } from '../../setup.js'
 
 // The §10/§14 logic core: the derivation truth tables under BOTH bail modes, the ONE
 // terminal predicate, and the task-form `via` guards. Pure functions — real inputs, no
@@ -1301,5 +1307,445 @@ describe('resolveTaskSilence — runtime inheritance', () => {
 		expect(resolveTaskSilence(2_147_483_647, 10)).toBe(2_147_483_647)
 		expect(resolveTaskSilence(2_147_483_648, 10)).toBeUndefined()
 		expect(resolveTaskSilence(undefined, 2_147_483_648)).toBeUndefined()
+	})
+})
+
+// The snapshot-decode leaves: an exact restore of a persisted tree and the recovery projection
+// that returns interrupted work to its remaining budget. Real definitions, real snapshots, real
+// handler registries throughout.
+
+const RECOVERY_DEFINITION: WorkflowDefinition = {
+	id: 'durable',
+	name: 'Durable',
+	bail: false,
+	phases: [
+		{
+			id: 'phase',
+			name: 'Phase',
+			tasks: [{ id: 'task', name: 'Task', run: 'work', retries: 1 }],
+		},
+	],
+}
+
+const VALIDATED_FUNCTIONS = { work: () => 'validated' }
+const SHIFTED_FUNCTIONS = { work: () => 'shifted' }
+
+function recoveryRunner(): ReturnType<typeof createWorkflowRunner> {
+	return createWorkflowRunner({ scheduler: createRecordingScheduler() })
+}
+
+describe('workflow recovery', () => {
+	it('uses the exact once-read functions registry for validation and recovered handlers', () => {
+		const source = createWorkflow(RECOVERY_DEFINITION, { functions: VALIDATED_FUNCTIONS })
+		const task = source.phase('phase')?.task('task')
+		if (task === undefined) throw new Error('expected recoverable task')
+		task.start()
+		let reads = 0
+		const options: WorkflowOptions = {}
+		Object.defineProperty(options, 'functions', {
+			get: () => {
+				reads += 1
+				return reads === 1 ? VALIDATED_FUNCTIONS : SHIFTED_FUNCTIONS
+			},
+		})
+
+		const recovered = recoverWorkflow(source.snapshot(), options)
+
+		expect(reads).toBe(1)
+		expect(recovered.phase('phase')?.task('task')?.handler).toBe(VALIDATED_FUNCTIONS.work)
+	})
+
+	it('captures each unique initial run once and retains the registry for later live additions', () => {
+		const definition: WorkflowDefinition = {
+			id: 'captured-runs',
+			name: 'Captured runs',
+			phases: [
+				{
+					id: 'phase',
+					name: 'Phase',
+					tasks: [
+						{ id: 'first', name: 'First', run: 'work' },
+						{ id: 'second', name: 'Second', run: 'work' },
+					],
+				},
+			],
+		}
+		const snapshot = createWorkflow(definition, { functions: VALIDATED_FUNCTIONS }).snapshot()
+		let reads = 0
+		const functions: WorkflowFunctions = {}
+		Object.defineProperty(functions, 'work', {
+			get: () => {
+				reads += 1
+				return reads === 1 ? VALIDATED_FUNCTIONS.work : SHIFTED_FUNCTIONS.work
+			},
+		})
+
+		const recovered = recoverWorkflow(snapshot, { functions })
+
+		expect(reads).toBe(1)
+		expect(recovered.phase('phase')?.task('first')?.handler).toBe(VALIDATED_FUNCTIONS.work)
+		expect(recovered.phase('phase')?.task('second')?.handler).toBe(VALIDATED_FUNCTIONS.work)
+		const added = recovered.phase('phase')?.add({ id: 'later', name: 'Later', run: 'work' })
+		if (added === undefined || !added.success) throw new Error('expected live task addition')
+		expect(reads).toBe(2)
+		expect(added.value.handler).toBe(SHIFTED_FUNCTIONS.work)
+	})
+
+	it('rejects the first unresolved keyed binding without rereading a later valid value', () => {
+		const snapshot = createWorkflow(RECOVERY_DEFINITION, {
+			functions: VALIDATED_FUNCTIONS,
+		}).snapshot()
+		let reads = 0
+		const functions: WorkflowFunctions = {}
+		Object.defineProperty(functions, 'work', {
+			get: () => {
+				reads += 1
+				return reads === 1 ? undefined : VALIDATED_FUNCTIONS.work
+			},
+		})
+
+		const error = captureError(() => recoverWorkflow(snapshot, { functions }))
+
+		expect(reads).toBe(1)
+		expect(isWorkflowError(error) ? error.code : undefined).toBe('RESTORE')
+	})
+
+	it('preserves out-of-order completed siblings and executes only recovered pending work', async () => {
+		const definition: WorkflowDefinition = {
+			id: 'mixed',
+			name: 'Mixed',
+			bail: false,
+			phases: [
+				{
+					id: 'phase',
+					name: 'Phase',
+					tasks: [
+						{ id: 'first', name: 'First', run: 'first' },
+						{ id: 'done', name: 'Done', run: 'done' },
+						{ id: 'interrupted', name: 'Interrupted', run: 'interrupted', retries: 1 },
+					],
+				},
+			],
+		}
+		const functions = {
+			first: () => 'first',
+			done: () => 'done',
+			interrupted: () => 'interrupted',
+		}
+		const source = createWorkflow(definition, { functions })
+		const done = source.phase('phase')?.task('done')
+		const interrupted = source.phase('phase')?.task('interrupted')
+		if (done === undefined || interrupted === undefined) throw new Error('expected mixed tasks')
+		done.start()
+		done.complete('persisted')
+		interrupted.start()
+
+		const exact = restoreWorkflow(source.snapshot(), { functions })
+		expect(() => recoveryRunner().execute(exact)).toThrow(/not drivable/)
+
+		const calls: string[] = []
+		const recovered = recoverWorkflow(source.snapshot(), {
+			functions: {
+				first: () => {
+					calls.push('first')
+					return 'first'
+				},
+				done: () => {
+					calls.push('done')
+					return 'wrong'
+				},
+				interrupted: () => {
+					calls.push('interrupted')
+					return 'interrupted'
+				},
+			},
+		})
+		const result = await recoveryRunner().execute(recovered)
+
+		expect(result.status).toBe('completed')
+		expect(calls.sort()).toEqual(['first', 'interrupted'])
+		expect(result.workflow.phase('phase')?.task('done')?.result?.result).toEqual({
+			success: true,
+			value: 'persisted',
+		})
+	})
+
+	it('resumes an interrupted task at its remaining persisted attempt budget', async () => {
+		const source = createWorkflow(RECOVERY_DEFINITION, { functions: { work: () => null } })
+		const interrupted = source.phase('phase')?.task('task')
+		if (interrupted === undefined) throw new Error('expected task')
+		interrupted.start()
+		const reported = interrupted.report({ note: 'interrupted attempt' })
+		if (!reported.success) throw reported.error
+		const stale = reported.value
+
+		const attempts: number[] = []
+		const recovered = recoverWorkflow(source.snapshot(), {
+			functions: {
+				work: (controller) => {
+					attempts.push(controller.attempt)
+					return 'done'
+				},
+			},
+		})
+
+		expect(recovered.status).toBe('pending')
+		expect(recovered.phase('phase')?.task('task')?.status).toBe('pending')
+		expect(recovered.phase('phase')?.task('task')?.attempts).toBe(1)
+		expect(recovered.phase('phase')?.task('task')?.activity).toBeUndefined()
+		expect(recovered.snapshot().phases[0]?.tasks[0]).not.toHaveProperty('activity')
+
+		const result = await recoveryRunner().execute(recovered)
+		expect(result.status).toBe('completed')
+		expect(attempts).toEqual([2])
+		expect(result.workflow.phase('phase')?.task('task')?.attempts).toBe(2)
+		const started = result.workflow.phase('phase')?.task('task')?.activity
+		expect(started).not.toBe(stale)
+		expect(started?.note).toBeUndefined()
+		expect(started?.operations).toEqual([])
+		expect(started?.constraints).toEqual([])
+		expect(started?.updated).toBeGreaterThanOrEqual(stale.updated)
+	})
+
+	it('never regresses a future persisted workflow stamp during recovery', () => {
+		const source = createWorkflow(RECOVERY_DEFINITION, { functions: { work: () => null } })
+		const interrupted = source.phase('phase')?.task('task')
+		if (interrupted === undefined) throw new Error('expected task')
+		interrupted.start()
+		const snapshot = source.snapshot()
+		const future = Date.now() + 60_000
+
+		const recovered = recoverWorkflow(
+			{ ...snapshot, updated: future },
+			{ functions: { work: () => null } },
+		)
+
+		expect(recovered.snapshot().updated).toBe(future)
+	})
+
+	it('converts an exhausted interrupted task into a normalized recovery failure', () => {
+		const source = createWorkflow(
+			{
+				...RECOVERY_DEFINITION,
+				phases: [
+					{
+						id: 'phase',
+						name: 'Phase',
+						tasks: [{ id: 'task', name: 'Task', run: 'work' }],
+					},
+				],
+			},
+			{ functions: { work: () => null } },
+		)
+		const interrupted = source.phase('phase')?.task('task')
+		if (interrupted === undefined) throw new Error('expected task')
+		interrupted.start()
+
+		const recovered = recoverWorkflow(source.snapshot(), {
+			functions: { work: () => null },
+		})
+		const result = recovered.phase('phase')?.task('task')?.result
+		expect(result?.status).toBe('failed')
+		expect(result?.result).toEqual({
+			success: false,
+			error: {
+				origin: 'recovery',
+				message: "task 'task' exhausted its retry budget during recovery",
+			},
+		})
+	})
+
+	it('never replenishes attempts across repeated crash and recovery projections', () => {
+		const source = createWorkflow(
+			{
+				...RECOVERY_DEFINITION,
+				phases: [
+					{
+						id: 'phase',
+						name: 'Phase',
+						tasks: [{ id: 'task', name: 'Task', run: 'work', retries: 2 }],
+					},
+				],
+			},
+			{ functions: { work: () => null } },
+		)
+		const first = source.phase('phase')?.task('task')
+		if (first === undefined) throw new Error('expected first attempt')
+		first.start()
+
+		const once = recoverWorkflow(source.snapshot(), { functions: { work: () => null } })
+		expect(once.phase('phase')?.task('task')?.attempts).toBe(1)
+		once.phase('phase')?.task('task')?.start()
+
+		const twice = recoverWorkflow(once.snapshot(), { functions: { work: () => null } })
+		expect(twice.phase('phase')?.task('task')?.attempts).toBe(2)
+		twice.phase('phase')?.task('task')?.start()
+
+		const exhausted = recoverWorkflow(twice.snapshot(), { functions: { work: () => null } })
+		expect(exhausted.phase('phase')?.task('task')?.attempts).toBe(3)
+		expect(exhausted.phase('phase')?.task('task')?.status).toBe('failed')
+	})
+
+	it.each([
+		{
+			bail: true,
+			expected: ['skipped', 'failed', 'skipped', 'skipped'],
+			later: 'skipped',
+		},
+		{
+			bail: false,
+			expected: ['pending', 'failed', 'pending', 'pending'],
+			later: 'pending',
+		},
+	])(
+		'applies the whole-phase exhausted recovery policy under bail:$bail',
+		({ bail, expected, later }) => {
+			const definition: WorkflowDefinition = {
+				id: `policy-${String(bail)}`,
+				name: 'Policy',
+				bail,
+				phases: [
+					{
+						id: 'current',
+						name: 'Current',
+						tasks: [
+							{ id: 'left', name: 'Left', run: 'work' },
+							{ id: 'exhausted', name: 'Exhausted', run: 'work' },
+							{ id: 'retryable', name: 'Retryable', run: 'work', retries: 1 },
+							{ id: 'right', name: 'Right', run: 'work' },
+						],
+					},
+					{
+						id: 'later',
+						name: 'Later',
+						tasks: [{ id: 'later', name: 'Later', run: 'work' }],
+					},
+				],
+			}
+			const source = createWorkflow(definition, { functions: { work: () => null } })
+			const exhausted = source.phase('current')?.task('exhausted')
+			const retryable = source.phase('current')?.task('retryable')
+			if (exhausted === undefined || retryable === undefined) {
+				throw new Error('expected recovery policy tasks')
+			}
+			exhausted.start()
+			retryable.start()
+
+			const recovered = recoverWorkflow(source.snapshot(), {
+				functions: { work: () => null },
+			})
+			expect(
+				recovered
+					.phase('current')
+					?.tasks.tasks()
+					.map((task) => task.status),
+			).toEqual(expected)
+			expect(recovered.phase('later')?.task('later')?.status).toBe(later)
+		},
+	)
+
+	it('treats an existing strict-phase failure as the recovery halt boundary', () => {
+		const source = createWorkflow(
+			{
+				id: 'established-halt',
+				name: 'Established halt',
+				bail: true,
+				phases: [
+					{
+						id: 'current',
+						name: 'Current',
+						tasks: [
+							{ id: 'failed', name: 'Failed', run: 'work' },
+							{ id: 'interrupted', name: 'Interrupted', run: 'work', retries: 1 },
+							{ id: 'pending', name: 'Pending', run: 'work' },
+						],
+					},
+					{
+						id: 'later',
+						name: 'Later',
+						tasks: [{ id: 'later', name: 'Later', run: 'work' }],
+					},
+				],
+			},
+			{ functions: { work: () => null } },
+		)
+		const failed = source.phase('current')?.task('failed')
+		const interrupted = source.phase('current')?.task('interrupted')
+		if (failed === undefined || interrupted === undefined) {
+			throw new Error('expected strict recovery tasks')
+		}
+		interrupted.start()
+		failed.start()
+		failed.fail({ origin: 'handler', message: 'established' })
+
+		const recovered = recoverWorkflow(source.snapshot(), {
+			functions: { work: () => null },
+		})
+		expect(recovered.phase('current')?.task('failed')?.status).toBe('failed')
+		expect(recovered.phase('current')?.task('failed')?.result?.result).toEqual({
+			success: false,
+			error: { origin: 'handler', message: 'established' },
+		})
+		expect(recovered.phase('current')?.task('interrupted')?.status).toBe('skipped')
+		expect(recovered.phase('current')?.task('interrupted')?.attempts).toBe(1)
+		expect(recovered.phase('current')?.task('pending')?.status).toBe('skipped')
+		expect(recovered.phase('later')?.task('later')?.status).toBe('skipped')
+	})
+
+	it('keeps exact restore distinct from recovery and rejects the quiescent running tree', () => {
+		const source = createWorkflow(RECOVERY_DEFINITION, { functions: { work: () => null } })
+		const interrupted = source.phase('phase')?.task('task')
+		if (interrupted === undefined) throw new Error('expected task')
+		interrupted.start()
+		const restored = restoreWorkflow(source.snapshot(), {
+			functions: { work: () => null },
+		})
+
+		expect(restored.phase('phase')?.task('task')?.status).toBe('running')
+		const error = captureError(() => recoveryRunner().execute(restored))
+		expect(isWorkflowError(error) ? error.code : undefined).toBe('TRANSITION')
+	})
+
+	it('keeps unresolved behavior inspectable but rejects its execution and hostile snapshots', () => {
+		const snapshot = createWorkflow(RECOVERY_DEFINITION, {
+			functions: { work: () => null },
+		}).snapshot()
+		const restored = restoreWorkflow(snapshot)
+		expect(restored.phase('phase')?.task('task')?.run).toBe('work')
+		expect(() => recoveryRunner().execute(restored)).toThrow(/not drivable/)
+
+		const hostile = {
+			get id(): string {
+				throw new Error('accessor must not run')
+			},
+		}
+		const error = captureError(() => restoreWorkflow(hostile))
+		expect(isWorkflowError(error)).toBe(true)
+		if (!isWorkflowError(error)) throw new Error('expected WorkflowError')
+		expect(error.code).toBe('RESTORE')
+		expect(error.message).toContain('not enumerable data')
+	})
+
+	it('treats separately restored objects with the same workflow id as separate local claims', async () => {
+		const snapshot = createWorkflow(RECOVERY_DEFINITION, {
+			functions: { work: () => null },
+		}).snapshot()
+		let calls = 0
+		const functions = {
+			work: () => {
+				calls += 1
+				return null
+			},
+		}
+		const first = restoreWorkflow(snapshot, { functions })
+		const second = restoreWorkflow(snapshot, { functions })
+		expect(first).not.toBe(second)
+
+		const results = await Promise.all([
+			recoveryRunner().execute(first),
+			recoveryRunner().execute(second),
+		])
+		expect(results.map((result) => result.status)).toEqual(['completed', 'completed'])
+		expect(calls).toBe(2)
 	})
 })

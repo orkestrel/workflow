@@ -21,6 +21,7 @@ import {
 	isRecord,
 } from '@orkestrel/contract'
 import { MAX_TIMER_MS } from './constants.js'
+import { cloneWorkflowSnapshot } from './cloners.js'
 import { derivePhaseStatus, deriveWorkflowStatus } from './helpers.js'
 
 /** Test the workflow lifecycle vocabulary. */
@@ -328,6 +329,30 @@ export function isOwnedWorkflowSnapshot(value: unknown): value is WorkflowSnapsh
 export function isWorkflowSnapshot(value: unknown): value is WorkflowSnapshot {
 	const cloned = attempt(() => cloneJSONValue(value))
 	return cloned.success && isOwnedWorkflowSnapshot(cloned.value)
+}
+
+/**
+ * Assert that a {@link WorkflowSnapshot} carries a `boolean` `bail` — at the workflow tier AND
+ * on every phase — and that its every node's status (and its `override`, when present) is drawn
+ * from the lifecycle vocabulary, throwing a `RESTORE` {@link WorkflowError} otherwise.
+ *
+ * @remarks
+ * The boundary-narrowing guard (AGENTS §14) for {@link restoreWorkflow}: a snapshot is
+ * untrusted JSON, so a status (or an override) outside
+ * {@link import('./constants.js').WORKFLOW_STATUSES} /
+ * {@link import('./constants.js').PHASE_STATUSES} / {@link import('./constants.js').TASK_STATUSES},
+ * a non-boolean `bail` (the workflow's OR any phase's — both are REQUIRED persisted policy), a
+ * present-but-invalid phase `concurrency` (not a positive integer), or a present-but-invalid task
+ * `run` (an empty string) / `retries` / `timeout` (not a non-negative integer),
+ * is rejected loudly (naming the offending node) rather than silently producing a broken tree.
+ * The `override` / `concurrency` / `run` / `retries` / `timeout` are optional, so each is only
+ * checked WHEN present. Structural shape beyond these fields is the contract's concern; this
+ * guards exactly the fields the live state machine reads back.
+ *
+ * @param snapshot - The snapshot to validate
+ */
+export function assertSnapshot(snapshot: unknown): void {
+	cloneWorkflowSnapshot(snapshot)
 }
 
 /**
