@@ -65,13 +65,19 @@ describe('NodeScheduler', () => {
 	})
 
 	describe('delay', () => {
+		// `performance.now()` rather than `Date.now()`: the latter returns whole
+		// milliseconds, so measuring an interval with it truncates at both ends and
+		// can under-report a genuine 19.9ms wait as 19. That reported a timer doing
+		// exactly what it promised as a failure. This clock is monotonic and
+		// sub-millisecond, so the assertion measures the delay rather than the
+		// rounding.
 		it('does not resolve before its requested interval', async () => {
 			const scheduler = new NodeScheduler()
-			const start = Date.now()
+			const start = performance.now()
 
 			await scheduler.delay(20)
 
-			expect(Date.now() - start).toBeGreaterThanOrEqual(20)
+			expect(performance.now() - start).toBeGreaterThanOrEqual(20)
 		})
 
 		it('rejects before the deadline and never settles again after it passes', async () => {
