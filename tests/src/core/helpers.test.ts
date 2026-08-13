@@ -39,7 +39,8 @@ import {
 	taskDefinitionToSnapshot,
 } from '@src/core'
 import { describe, expect, it } from 'vitest'
-import { captureError, createErrorRecorder, createRecordingScheduler } from '../../setup.js'
+import { captureError } from '@orkestrel/test'
+import { createErrorRecorder, createRecordingScheduler } from '../../setup.js'
 
 // The §10/§14 logic core: the derivation truth tables under BOTH bail modes, the ONE
 // terminal predicate, and the task-form `via` guards. Pure functions — real inputs, no

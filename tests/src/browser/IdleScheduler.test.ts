@@ -1,7 +1,8 @@
 import type { SchedulerPriority } from '@src/core'
 import { IdleScheduler } from '@src/browser'
 import { describe, expect, it } from 'vitest'
-import { instrumentSignal, waitForDelay } from '../../setup.js'
+import { waitForDelay } from '@orkestrel/test'
+import { instrumentSignal } from '../../setup.js'
 
 // IdleScheduler — the idle-time browser cooperative-yield backend, run in REAL headless
 // Chromium where `requestIdleCallback` exists, so `yield` exercises the NATIVE idle path here

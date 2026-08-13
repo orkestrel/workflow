@@ -22,15 +22,14 @@ import {
 	MAX_TIMER_MS,
 } from '@src/core'
 import { describe, expect, it, vi } from 'vitest'
+import { createRecorder, waitForDelay } from '@orkestrel/test'
 import type { TestGateInterface } from '../../setup.js'
 import {
 	FaultBudget,
 	createGate,
-	createRecorder,
 	createRecordingScheduler,
 	instrumentSignal,
 	recordEmitterEvents,
-	waitForDelay,
 } from '../../setup.js'
 
 // The W-c1 WorkflowRunner — the thin orchestrator that EXECUTES a live W-b tree by COMPOSING the

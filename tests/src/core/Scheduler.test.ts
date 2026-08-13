@@ -1,7 +1,8 @@
 import type { SchedulerPriority } from '@src/core'
 import { Scheduler } from '@src/core'
 import { describe, expect, it } from 'vitest'
-import { createRecorder, instrumentSignal, waitForDelay } from '../../setup.js'
+import { createRecorder, waitForDelay } from '@orkestrel/test'
+import { instrumentSignal } from '../../setup.js'
 
 // Scheduler is exercised against the real host clock. These tests observe ordering,
 // elapsed time, cancellation, and listener ownership without inspecting timer internals.

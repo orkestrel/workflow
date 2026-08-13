@@ -1,13 +1,8 @@
 import type { RunnerEntryOptions, RunnerInterface, RunnerOptions } from '@src/core'
 import { describe, expect, it } from 'vitest'
 import { createRunner } from '@src/core'
-import {
-	createErrorRecorder,
-	createGate,
-	createRecorder,
-	recordEmitterEvents,
-	waitForDelay,
-} from '../../setup.js'
+import { createRecorder, waitForDelay } from '@orkestrel/test'
+import { createErrorRecorder, createGate, recordEmitterEvents } from '../../setup.js'
 
 describe('Runner', () => {
 	it('execute runs every input and returns results in declared order', async () => {

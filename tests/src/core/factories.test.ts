@@ -17,14 +17,8 @@ import {
 	createRestoredWorkflow,
 } from '@src/core'
 import { describe, expect, it } from 'vitest'
-import {
-	captureError,
-	createRecorder,
-	createRecordingScheduler,
-	omitTaskActivity,
-	recordEmitterEvents,
-	waitForDelay,
-} from '../../setup.js'
+import { captureError, createRecorder, waitForDelay } from '@orkestrel/test'
+import { createRecordingScheduler, omitTaskActivity, recordEmitterEvents } from '../../setup.js'
 import { createRunner } from '@src/core'
 
 // A workflow runner paced by an INJECTED `createRecordingScheduler` (AGENTS §16 deterministic,

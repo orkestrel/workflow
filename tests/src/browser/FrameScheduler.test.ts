@@ -1,7 +1,8 @@
 import type { SchedulerPriority } from '@src/core'
 import { FrameScheduler } from '@src/browser'
 import { describe, expect, it } from 'vitest'
-import { instrumentSignal, waitForDelay } from '../../setup.js'
+import { waitForDelay } from '@orkestrel/test'
+import { instrumentSignal } from '../../setup.js'
 
 // FrameScheduler — the frame-aligned browser cooperative-yield backend, run in REAL headless
 // Chromium where `requestAnimationFrame` is driven by the engine (AGENTS §16.2: do not fake a

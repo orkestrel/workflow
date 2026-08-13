@@ -7,14 +7,8 @@ import {
 	Workflow,
 } from '@src/core'
 import { describe, expect, it } from 'vitest'
-import {
-	buildWorkflowDefinition,
-	captureError,
-	createErrorRecorder,
-	createRecorder,
-	recordEmitterEvents,
-	waitForDelay,
-} from '../../setup.js'
+import { captureError, createRecorder, waitForDelay } from '@orkestrel/test'
+import { buildWorkflowDefinition, createErrorRecorder, recordEmitterEvents } from '../../setup.js'
 
 // The DERIVED workflow state machine (W-b) — the cascade's top tier under BOTH bail
 // modes, the override, the workflow-tier result tree, and the snapshot → restore

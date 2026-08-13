@@ -1,7 +1,8 @@
 import type { SchedulerPriority } from '@src/core'
 import { BrowserScheduler } from '@src/browser'
 import { describe, expect, it } from 'vitest'
-import { instrumentSignal, waitForDelay } from '../../setup.js'
+import { waitForDelay } from '@orkestrel/test'
+import { instrumentSignal } from '../../setup.js'
 
 // BrowserScheduler — the browser-native cooperative-yield backend, run in REAL headless
 // Chromium (AGENTS §16.2: do not mock a browser API the browser has). Chromium ships the

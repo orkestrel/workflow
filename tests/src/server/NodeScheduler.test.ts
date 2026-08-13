@@ -1,7 +1,8 @@
 import type { SchedulerPriority } from '@src/core'
 import { NodeScheduler } from '@src/server'
 import { describe, expect, it } from 'vitest'
-import { createRecorder, instrumentSignal, waitForDelay } from '../../setup.js'
+import { createRecorder, waitForDelay } from '@orkestrel/test'
+import { instrumentSignal } from '../../setup.js'
 
 // NodeScheduler is exercised against real setImmediate and setTimeout behavior. Abort
 // reasons must remain verbatim rather than being replaced by a Node AbortError.

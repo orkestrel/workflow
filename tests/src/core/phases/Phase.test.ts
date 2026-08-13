@@ -1,7 +1,8 @@
 import type { PhaseInterface, PhaseOptions, WorkflowDefinition, WorkflowInterface } from '@src/core'
 import { createWorkflow, Phase, createRestoredWorkflow } from '@src/core'
 import { describe, expect, it } from 'vitest'
-import { createErrorRecorder, createRecorder, recordEmitterEvents } from '../../../setup.js'
+import { createRecorder } from '@orkestrel/test'
+import { createErrorRecorder, recordEmitterEvents } from '../../../setup.js'
 
 // The DERIVED phase state machine (W-b): status derived from its tasks via the W-a
 // helper, recomputed reactively as a task transitions (the cascade's middle tier), the

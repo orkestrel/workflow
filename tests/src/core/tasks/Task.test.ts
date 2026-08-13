@@ -7,13 +7,8 @@ import {
 	Task,
 } from '@src/core'
 import { describe, expect, it } from 'vitest'
-import {
-	captureError,
-	createErrorRecorder,
-	createRecorder,
-	recordEmitterEvents,
-	waitForDelay,
-} from '../../../setup.js'
+import { captureError, createRecorder, waitForDelay } from '@orkestrel/test'
+import { createErrorRecorder, recordEmitterEvents } from '../../../setup.js'
 
 // The leaf state machine (W-b): the legal AGENTS §10 transition graph + each illegal
 // transition rejected, the recorded TaskResult (Success on complete, Failure on fail),

@@ -4,7 +4,8 @@ import {
 	createWorkflow,
 	isWorkflowError,
 } from '@src/core'
-import { captureError, INVALID_TASK_ACTIVITIES } from '../../setup.js'
+import { captureError } from '@orkestrel/test'
+import { INVALID_TASK_ACTIVITIES } from '../../setup.js'
 import { describe, expect, it } from 'vitest'
 
 describe('cloneTaskActivity', () => {
