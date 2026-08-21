@@ -1,4 +1,10 @@
-import type { TaskInterface, TaskOptions, WorkflowDefinition, WorkflowInterface } from '@src/core'
+import type {
+	TaskEventMap,
+	TaskInterface,
+	TaskOptions,
+	WorkflowDefinition,
+	WorkflowInterface,
+} from '@src/core'
 import {
 	MAX_TIMER_MS,
 	createWorkflow,
@@ -7,8 +13,9 @@ import {
 	Task,
 } from '@src/core'
 import { describe, expect, it } from 'vitest'
-import { captureError, createRecorder, waitForDelay } from '@orkestrel/test'
-import { createErrorRecorder, recordEmitterEvents } from '../../../setup.js'
+import { captureError, createRecorder, createRecorders, waitForDelay } from '@orkestrel/test'
+import type { TaskEvent } from '../../../setup.js'
+import { createErrorRecorder, TASK_EVENTS } from '../../../setup.js'
 
 // The leaf state machine (W-b): the legal AGENTS §10 transition graph + each illegal
 // transition rejected, the recorded TaskResult (Success on complete, Failure on fail),
@@ -244,7 +251,7 @@ describe('Task — activity, liveness, and cooperative control', () => {
 
 	it('pulses liveness without replacing the frame and emits the refreshed frame', async () => {
 		const task = loneTask(createWorkflow(buildSingleTaskWorkflow()))
-		const events = recordEmitterEvents(task.emitter, ['pulse'])
+		const events = createRecorders<TaskEventMap, TaskEvent>(task.emitter, TASK_EVENTS)
 		task.start()
 		const reported = task.report({ note: 'quiet work' })
 		if (!reported.success) throw reported.error
@@ -304,7 +311,7 @@ describe('Task — activity, liveness, and cooperative control', () => {
 	it('rearms a reusable silence deadline after both report and pulse, then clears on terminal', async () => {
 		const workflow = createWorkflow(buildSingleTaskWorkflow(), { silence: 15 })
 		const task = loneTask(workflow)
-		const events = recordEmitterEvents(task.emitter, ['silence'])
+		const events = createRecorders<TaskEventMap, TaskEvent>(task.emitter, TASK_EVENTS)
 		task.start()
 		await waitForDelay(25)
 		expect(task.silent).toBe(true)
@@ -346,7 +353,7 @@ describe('Task — activity, liveness, and cooperative control', () => {
 
 	it('accepts the host timer maximum and disables overflow without immediate silence', async () => {
 		const maximum = loneTask(createWorkflow(buildSingleTaskWorkflow(), { silence: MAX_TIMER_MS }))
-		const maximumEvents = recordEmitterEvents(maximum.emitter, ['silence'])
+		const maximumEvents = createRecorders<TaskEventMap, TaskEvent>(maximum.emitter, TASK_EVENTS)
 		maximum.start()
 		await Promise.resolve()
 		expect(maximum.silence).toBe(MAX_TIMER_MS)
@@ -357,7 +364,7 @@ describe('Task — activity, liveness, and cooperative control', () => {
 		const overflow = loneTask(
 			createWorkflow(buildSingleTaskWorkflow(), { silence: MAX_TIMER_MS + 1 }),
 		)
-		const overflowEvents = recordEmitterEvents(overflow.emitter, ['silence'])
+		const overflowEvents = createRecorders<TaskEventMap, TaskEvent>(overflow.emitter, TASK_EVENTS)
 		overflow.start()
 		await waitForDelay(2)
 		expect(overflow.silence).toBeUndefined()
@@ -539,7 +546,7 @@ describe('Task — emits (§13) after each transition', () => {
 	it('emits pause and resume once after each real runtime-gate change', () => {
 		const task = loneTask(createWorkflow(buildSingleTaskWorkflow()))
 		const states: boolean[] = []
-		const events = recordEmitterEvents(task.emitter, ['pause', 'resume'])
+		const events = createRecorders<TaskEventMap, TaskEvent>(task.emitter, TASK_EVENTS)
 		task.emitter.on('pause', () => states.push(task.paused))
 		task.emitter.on('resume', () => states.push(task.paused))
 
@@ -556,7 +563,7 @@ describe('Task — emits (§13) after each transition', () => {
 
 	it('does not emit resume when terminal cleanup releases a paused task', () => {
 		const task = loneTask(createWorkflow(buildSingleTaskWorkflow()))
-		const events = recordEmitterEvents(task.emitter, ['pause', 'resume'])
+		const events = createRecorders<TaskEventMap, TaskEvent>(task.emitter, TASK_EVENTS)
 		task.pause()
 		task.stop()
 		task.pause()
@@ -569,7 +576,7 @@ describe('Task — emits (§13) after each transition', () => {
 
 	it('fires start / complete with the result', () => {
 		const task = loneTask(createWorkflow(buildSingleTaskWorkflow()))
-		const events = recordEmitterEvents(task.emitter, ['start', 'complete', 'fail', 'skip', 'stop'])
+		const events = createRecorders<TaskEventMap, TaskEvent>(task.emitter, TASK_EVENTS)
 		task.start()
 		task.complete('value')
 		expect(events.start.calls).toEqual([['t']])
@@ -580,7 +587,7 @@ describe('Task — emits (§13) after each transition', () => {
 
 	it('fires fail with the failure result', () => {
 		const task = loneTask(createWorkflow(buildSingleTaskWorkflow()))
-		const events = recordEmitterEvents(task.emitter, ['start', 'fail'])
+		const events = createRecorders<TaskEventMap, TaskEvent>(task.emitter, TASK_EVENTS)
 		task.start()
 		task.fail({ origin: 'handler', message: 'nope' })
 		expect(events.fail.count).toBe(1)
@@ -589,12 +596,12 @@ describe('Task — emits (§13) after each transition', () => {
 
 	it('fires skip / stop as pure signals', () => {
 		const skipped = loneTask(createWorkflow(buildSingleTaskWorkflow()))
-		const skipEvents = recordEmitterEvents(skipped.emitter, ['skip'])
+		const skipEvents = createRecorders<TaskEventMap, TaskEvent>(skipped.emitter, TASK_EVENTS)
 		skipped.skip()
 		expect(skipEvents.skip.calls).toEqual([[]])
 
 		const stopped = loneTask(createWorkflow(buildSingleTaskWorkflow()))
-		const stopEvents = recordEmitterEvents(stopped.emitter, ['stop'])
+		const stopEvents = createRecorders<TaskEventMap, TaskEvent>(stopped.emitter, TASK_EVENTS)
 		stopped.stop()
 		expect(stopEvents.stop.calls).toEqual([[]])
 	})
@@ -691,7 +698,7 @@ describe('Task — own event precedes the cascade (cause before effect)', () => 
 		// AND the cascade must still run — skipping the lone task derives the whole tree to `skipped`.
 		const workflow = createWorkflow(buildSingleTaskWorkflow())
 		const task = loneTask(workflow)
-		const events = recordEmitterEvents(task.emitter, ['skip'])
+		const events = createRecorders<TaskEventMap, TaskEvent>(task.emitter, TASK_EVENTS)
 		task.skip()
 		expect(events.skip.calls).toEqual([[]])
 		// The cascade ran after the own event — the derived tree status reflects the skipped leaf.

@@ -1,4 +1,5 @@
 import type {
+	TaskEventMap,
 	WorkflowDefinition,
 	WorkflowFunction,
 	WorkflowOptions,
@@ -17,8 +18,9 @@ import {
 	createRestoredWorkflow,
 } from '@src/core'
 import { describe, expect, it } from 'vitest'
-import { captureError, createRecorder, waitForDelay } from '@orkestrel/test'
-import { createRecordingScheduler, omitTaskActivity, recordEmitterEvents } from '../../setup.js'
+import { captureError, createRecorder, createRecorders, waitForDelay } from '@orkestrel/test'
+import type { TaskEvent } from '../../setup.js'
+import { createRecordingScheduler, omitTaskActivity, TASK_EVENTS } from '../../setup.js'
 import { createRunner } from '@src/core'
 
 // A workflow runner paced by an INJECTED `createRecordingScheduler` (AGENTS §16 deterministic,
@@ -550,7 +552,7 @@ describe('createRestoredWorkflow / cloneWorkflowSnapshot — the round-trip inve
 		})
 		const restoredTask = restored.phase('phase-build')?.task('task-compile')
 		if (restoredTask === undefined) throw new Error('expected restored task')
-		const events = recordEmitterEvents(restoredTask.emitter, ['silence'])
+		const events = createRecorders<TaskEventMap, TaskEvent>(restoredTask.emitter, TASK_EVENTS)
 		await waitForDelay(20)
 		expect(events.silence.count).toBe(0)
 

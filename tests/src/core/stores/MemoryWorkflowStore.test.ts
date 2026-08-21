@@ -1,11 +1,11 @@
 import type { WorkflowSnapshot } from '@src/core'
+import { roundTripJSON } from '@orkestrel/test'
 import { createMemoryWorkflowStore, createWorkflow, createRestoredWorkflow } from '@src/core'
 import { describe, expect, it } from 'vitest'
 import {
 	buildReleaseDefinition,
 	buildWorkflowDefinition,
 	RELEASE_FUNCTIONS,
-	roundTripJSON,
 	settleSnapshot,
 } from '../../../setup.js'
 

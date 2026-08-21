@@ -1,4 +1,10 @@
-import type { WorkflowDefinition, WorkflowInterface, WorkflowOptions } from '@src/core'
+import type {
+	TaskEventMap,
+	WorkflowDefinition,
+	WorkflowEventMap,
+	WorkflowInterface,
+	WorkflowOptions,
+} from '@src/core'
 import {
 	createWorkflow,
 	definitionToSnapshot,
@@ -7,8 +13,14 @@ import {
 	Workflow,
 } from '@src/core'
 import { describe, expect, it } from 'vitest'
-import { captureError, createRecorder, waitForDelay } from '@orkestrel/test'
-import { buildWorkflowDefinition, createErrorRecorder, recordEmitterEvents } from '../../setup.js'
+import { captureError, createRecorder, createRecorders, waitForDelay } from '@orkestrel/test'
+import type { TaskEvent, WorkflowEvent } from '../../setup.js'
+import {
+	buildWorkflowDefinition,
+	createErrorRecorder,
+	TASK_EVENTS,
+	WORKFLOW_EVENTS,
+} from '../../setup.js'
 
 // The DERIVED workflow state machine (W-b) — the cascade's top tier under BOTH bail
 // modes, the override, the workflow-tier result tree, and the snapshot → restore
@@ -260,7 +272,10 @@ describe('Workflow — multi-phase cascade (sequential phases, reactive re-deriv
 		// emit `start` once (the first transition off pending) and `complete` once (the last settle) —
 		// never re-emitting on the intermediate task transitions that don't change the workflow status.
 		const workflow = createWorkflow(buildTwoPhaseWorkflow(false))
-		const events = recordEmitterEvents(workflow.emitter, ['start', 'complete', 'fail', 'stop'])
+		const events = createRecorders<WorkflowEventMap, WorkflowEvent>(
+			workflow.emitter,
+			WORKFLOW_EVENTS,
+		)
 		completeTask(workflow, 'a', 't0') // running (start fires once)
 		expect(events.start.count).toBe(1)
 		completeTask(workflow, 'a', 't1') // still running — phase a done, b pending: NO new emit
@@ -278,7 +293,10 @@ describe('Workflow — multi-phase cascade (sequential phases, reactive re-deriv
 describe('Workflow — the cascade under bail: false (graceful)', () => {
 	it('a failed task folds into a completed workflow', () => {
 		const workflow = createWorkflow(buildTwoPhaseWorkflow(false))
-		const events = recordEmitterEvents(workflow.emitter, ['start', 'complete', 'fail', 'stop'])
+		const events = createRecorders<WorkflowEventMap, WorkflowEvent>(
+			workflow.emitter,
+			WORKFLOW_EVENTS,
+		)
 		// Phase a: one task completes, one fails (the phase derives failed)…
 		completeTask(workflow, 'a', 't0')
 		const t1 = workflow.phase('a')?.task('t1')
@@ -296,7 +314,10 @@ describe('Workflow — the cascade under bail: false (graceful)', () => {
 describe('Workflow — the cascade under bail: true (halt)', () => {
 	it('a single failed task propagates failed to the workflow', () => {
 		const workflow = createWorkflow(buildTwoPhaseWorkflow(true))
-		const events = recordEmitterEvents(workflow.emitter, ['start', 'complete', 'fail', 'stop'])
+		const events = createRecorders<WorkflowEventMap, WorkflowEvent>(
+			workflow.emitter,
+			WORKFLOW_EVENTS,
+		)
 		completeTask(workflow, 'a', 't0')
 		const t1 = workflow.phase('a')?.task('t1')
 		t1?.start()
@@ -337,7 +358,10 @@ describe('Workflow — the #override (skip / stop the whole workflow)', () => {
 
 	it('skip forces skipped, overriding the derived value', () => {
 		const workflow = createWorkflow(buildTwoPhaseWorkflow(false))
-		const events = recordEmitterEvents(workflow.emitter, ['skip'])
+		const events = createRecorders<WorkflowEventMap, WorkflowEvent>(
+			workflow.emitter,
+			WORKFLOW_EVENTS,
+		)
 		completeTask(workflow, 'a', 't0') // mid-flight derived status would be running
 		expect(workflow.status).toBe('running')
 		workflow.skip()
@@ -348,7 +372,10 @@ describe('Workflow — the #override (skip / stop the whole workflow)', () => {
 
 	it('stop forces stopped and emits', () => {
 		const workflow = createWorkflow(buildTwoPhaseWorkflow(false))
-		const events = recordEmitterEvents(workflow.emitter, ['stop'])
+		const events = createRecorders<WorkflowEventMap, WorkflowEvent>(
+			workflow.emitter,
+			WORKFLOW_EVENTS,
+		)
 		workflow.stop()
 		expect(workflow.status).toBe('stopped')
 		expect(events.stop.count).toBe(1)
@@ -356,7 +383,10 @@ describe('Workflow — the #override (skip / stop the whole workflow)', () => {
 
 	it('complete refuses a fresh pending tree that still contains work', () => {
 		const workflow = createWorkflow(buildTwoPhaseWorkflow(false))
-		const events = recordEmitterEvents(workflow.emitter, ['start', 'complete', 'fail', 'stop'])
+		const events = createRecorders<WorkflowEventMap, WorkflowEvent>(
+			workflow.emitter,
+			WORKFLOW_EVENTS,
+		)
 		const before = workflow.snapshot()
 		workflow.complete()
 		expect(workflow.status).toBe('pending')
@@ -375,7 +405,10 @@ describe('Workflow — terminal no-op guards on skip / stop / complete (F1)', ()
 		completeTask(workflow, 'a', 't1')
 		completeTask(workflow, 'b', 't2')
 		expect(workflow.status).toBe('completed')
-		const events = recordEmitterEvents(workflow.emitter, ['stop'])
+		const events = createRecorders<WorkflowEventMap, WorkflowEvent>(
+			workflow.emitter,
+			WORKFLOW_EVENTS,
+		)
 		workflow.stop()
 		expect(workflow.status).toBe('completed')
 		expect(events.stop.count).toBe(0)
@@ -385,7 +418,10 @@ describe('Workflow — terminal no-op guards on skip / stop / complete (F1)', ()
 		const workflow = createWorkflow(buildTwoPhaseWorkflow(false))
 		workflow.stop()
 		expect(workflow.status).toBe('stopped')
-		const events = recordEmitterEvents(workflow.emitter, ['skip'])
+		const events = createRecorders<WorkflowEventMap, WorkflowEvent>(
+			workflow.emitter,
+			WORKFLOW_EVENTS,
+		)
 		workflow.skip()
 		expect(workflow.status).toBe('stopped')
 		expect(events.skip.count).toBe(0)
@@ -421,7 +457,10 @@ describe('Workflow — terminal no-op guards on skip / stop / complete (F1)', ()
 				{ id: 'second', name: 'Second', tasks: [] },
 			],
 		})
-		const events = recordEmitterEvents(workflow.emitter, ['complete'])
+		const events = createRecorders<WorkflowEventMap, WorkflowEvent>(
+			workflow.emitter,
+			WORKFLOW_EVENTS,
+		)
 		expect(workflow.status).toBe('pending')
 		workflow.complete()
 		expect(workflow.status).toBe('completed')
@@ -431,7 +470,10 @@ describe('Workflow — terminal no-op guards on skip / stop / complete (F1)', ()
 
 	it('double-stop is idempotent — the second call is a guarded no-op', () => {
 		const workflow = createWorkflow(buildTwoPhaseWorkflow(false))
-		const events = recordEmitterEvents(workflow.emitter, ['stop'])
+		const events = createRecorders<WorkflowEventMap, WorkflowEvent>(
+			workflow.emitter,
+			WORKFLOW_EVENTS,
+		)
 		workflow.stop()
 		workflow.stop()
 		expect(workflow.status).toBe('stopped')
@@ -440,7 +482,10 @@ describe('Workflow — terminal no-op guards on skip / stop / complete (F1)', ()
 
 	it('silently releases its gate before observers see a derived terminal workflow', async () => {
 		const workflow = createWorkflow(buildTwoPhaseWorkflow(false))
-		const events = recordEmitterEvents(workflow.emitter, ['complete', 'resume'])
+		const events = createRecorders<WorkflowEventMap, WorkflowEvent>(
+			workflow.emitter,
+			WORKFLOW_EVENTS,
+		)
 		const paused: boolean[] = []
 		workflow.emitter.on('complete', () => paused.push(workflow.paused))
 		workflow.pause()
@@ -854,7 +899,10 @@ describe('Workflow — pause/resume/paused', () => {
 	it('pause sets paused true; resume clears it — both idempotent', () => {
 		const workflow = createWorkflow(buildMultiPhaseWorkflow(1))
 		const states: boolean[] = []
-		const events = recordEmitterEvents(workflow.emitter, ['pause', 'resume'])
+		const events = createRecorders<WorkflowEventMap, WorkflowEvent>(
+			workflow.emitter,
+			WORKFLOW_EVENTS,
+		)
 		workflow.emitter.on('pause', () => states.push(workflow.paused))
 		workflow.emitter.on('resume', () => states.push(workflow.paused))
 		expect(workflow.paused).toBe(false)
@@ -874,7 +922,10 @@ describe('Workflow — pause/resume/paused', () => {
 
 	it('pause is a no-op once the workflow is terminal', () => {
 		const workflow = createWorkflow(buildMultiPhaseWorkflow(1))
-		const events = recordEmitterEvents(workflow.emitter, ['pause', 'resume'])
+		const events = createRecorders<WorkflowEventMap, WorkflowEvent>(
+			workflow.emitter,
+			WORKFLOW_EVENTS,
+		)
 		workflow.stop()
 		expect(workflow.status).toBe('stopped')
 		workflow.pause()
@@ -886,7 +937,10 @@ describe('Workflow — pause/resume/paused', () => {
 
 	it('pause is a no-op once the workflow is destroyed', () => {
 		const workflow = createWorkflow(buildMultiPhaseWorkflow(1))
-		const events = recordEmitterEvents(workflow.emitter, ['pause', 'resume'])
+		const events = createRecorders<WorkflowEventMap, WorkflowEvent>(
+			workflow.emitter,
+			WORKFLOW_EVENTS,
+		)
 		workflow.pause()
 		workflow.destroy()
 		workflow.pause()
@@ -978,7 +1032,7 @@ describe('Workflow — destroy()', () => {
 		const phase = workflow.phase('p0')
 		const task = phase?.task('t0')
 		if (phase === undefined || task === undefined) throw new Error('expected workflow fixtures')
-		const events = recordEmitterEvents(task.emitter, ['silence'])
+		const events = createRecorders<TaskEventMap, TaskEvent>(task.emitter, TASK_EVENTS)
 		task.start()
 		workflow.pause()
 		phase.pause()
@@ -1272,7 +1326,10 @@ describe('Workflow — the pending-suffix boundary (add/remove/move gate against
 describe('Workflow — add/remove/move/update events fire on success only', () => {
 	it('emits add with the created phase + index on success, nothing on refusal', () => {
 		const workflow = createWorkflow(buildMultiPhaseWorkflow(1))
-		const events = recordEmitterEvents(workflow.emitter, ['add'])
+		const events = createRecorders<WorkflowEventMap, WorkflowEvent>(
+			workflow.emitter,
+			WORKFLOW_EVENTS,
+		)
 		const result = workflow.add({ id: 'p1', name: 'P1', tasks: [] })
 		if (!result.success) throw new Error('expected add to succeed')
 		expect(events.add.count).toBe(1)
@@ -1284,7 +1341,10 @@ describe('Workflow — add/remove/move/update events fire on success only', () =
 
 	it('emits remove with the removed phase on success, nothing on refusal', () => {
 		const workflow = createWorkflow(buildMultiPhaseWorkflow(1))
-		const events = recordEmitterEvents(workflow.emitter, ['remove'])
+		const events = createRecorders<WorkflowEventMap, WorkflowEvent>(
+			workflow.emitter,
+			WORKFLOW_EVENTS,
+		)
 		const result = workflow.remove('p0')
 		if (!result.success) throw new Error('expected remove to succeed')
 		expect(events.remove.count).toBe(1)
@@ -1296,7 +1356,10 @@ describe('Workflow — add/remove/move/update events fire on success only', () =
 
 	it('emits move with the moved phase + destination index on success, nothing on refusal', () => {
 		const workflow = createWorkflow(buildMultiPhaseWorkflow(2))
-		const events = recordEmitterEvents(workflow.emitter, ['move'])
+		const events = createRecorders<WorkflowEventMap, WorkflowEvent>(
+			workflow.emitter,
+			WORKFLOW_EVENTS,
+		)
 		const result = workflow.move('p1', 0)
 		if (!result.success) throw new Error('expected move to succeed')
 		expect(events.move.count).toBe(1)
@@ -1308,7 +1371,10 @@ describe('Workflow — add/remove/move/update events fire on success only', () =
 
 	it('emits update with the patched phase on success, nothing on refusal', () => {
 		const workflow = createWorkflow(buildMultiPhaseWorkflow(1))
-		const events = recordEmitterEvents(workflow.emitter, ['update'])
+		const events = createRecorders<WorkflowEventMap, WorkflowEvent>(
+			workflow.emitter,
+			WORKFLOW_EVENTS,
+		)
 		const result = workflow.update('p0', { name: 'Renamed' })
 		if (!result.success) throw new Error('expected update to succeed')
 		expect(events.update.count).toBe(1)

@@ -1,8 +1,15 @@
-import type { PhaseInterface, PhaseOptions, WorkflowDefinition, WorkflowInterface } from '@src/core'
+import type {
+	PhaseEventMap,
+	PhaseInterface,
+	PhaseOptions,
+	WorkflowDefinition,
+	WorkflowInterface,
+} from '@src/core'
 import { createWorkflow, Phase, createRestoredWorkflow } from '@src/core'
 import { describe, expect, it } from 'vitest'
-import { createRecorder } from '@orkestrel/test'
-import { createErrorRecorder, recordEmitterEvents } from '../../../setup.js'
+import { createRecorder, createRecorders } from '@orkestrel/test'
+import type { PhaseEvent } from '../../../setup.js'
+import { createErrorRecorder, PHASE_EVENTS } from '../../../setup.js'
 
 // The DERIVED phase state machine (W-b): status derived from its tasks via the W-a
 // helper, recomputed reactively as a task transitions (the cascade's middle tier), the
@@ -190,7 +197,7 @@ describe('Phase — degenerate sizes (zero-task + single-task)', () => {
 describe('Phase — emits on a derived-status change', () => {
 	it('fires start, then complete, exactly once each across the cascade', () => {
 		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(2)))
-		const events = recordEmitterEvents(phase.emitter, ['start', 'complete', 'fail', 'stop'])
+		const events = createRecorders<PhaseEventMap, PhaseEvent>(phase.emitter, PHASE_EVENTS)
 		// First task starting flips pending → running (one start)…
 		phase.task('t0')?.start()
 		phase.task('t1')?.start()
@@ -205,7 +212,7 @@ describe('Phase — emits on a derived-status change', () => {
 
 	it('fires fail carrying the failing task’s result', () => {
 		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(1)))
-		const events = recordEmitterEvents(phase.emitter, ['fail'])
+		const events = createRecorders<PhaseEventMap, PhaseEvent>(phase.emitter, PHASE_EVENTS)
 		phase.task('t0')?.start()
 		phase.task('t0')?.fail({ origin: 'handler', message: 'kaboom' })
 		expect(events.fail.count).toBe(1)
@@ -217,7 +224,7 @@ describe('Phase — emits on a derived-status change', () => {
 describe('Phase — the #override (skip / stop a whole phase)', () => {
 	it('skip forces skipped, overriding the derived value', () => {
 		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(2)))
-		const events = recordEmitterEvents(phase.emitter, ['skip'])
+		const events = createRecorders<PhaseEventMap, PhaseEvent>(phase.emitter, PHASE_EVENTS)
 		// A task is mid-flight, so the DERIVED status would be running…
 		phase.task('t0')?.start()
 		expect(phase.status).toBe('running')
@@ -230,7 +237,7 @@ describe('Phase — the #override (skip / stop a whole phase)', () => {
 
 	it('stop forces stopped and emits', () => {
 		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(2)))
-		const events = recordEmitterEvents(phase.emitter, ['stop'])
+		const events = createRecorders<PhaseEventMap, PhaseEvent>(phase.emitter, PHASE_EVENTS)
 		phase.stop()
 		expect(phase.status).toBe('stopped')
 		expect(events.stop.count).toBe(1)
@@ -252,7 +259,7 @@ describe('Phase — terminal no-op guards on skip / stop (F1)', () => {
 		phase.task('t0')?.start()
 		phase.task('t0')?.complete('ok')
 		expect(phase.status).toBe('completed')
-		const events = recordEmitterEvents(phase.emitter, ['stop'])
+		const events = createRecorders<PhaseEventMap, PhaseEvent>(phase.emitter, PHASE_EVENTS)
 		phase.stop()
 		expect(phase.status).toBe('completed')
 		expect(events.stop.count).toBe(0)
@@ -262,7 +269,7 @@ describe('Phase — terminal no-op guards on skip / stop (F1)', () => {
 		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(2)))
 		phase.stop()
 		expect(phase.status).toBe('stopped')
-		const events = recordEmitterEvents(phase.emitter, ['skip'])
+		const events = createRecorders<PhaseEventMap, PhaseEvent>(phase.emitter, PHASE_EVENTS)
 		phase.skip()
 		expect(phase.status).toBe('stopped')
 		expect(events.skip.count).toBe(0)
@@ -270,7 +277,7 @@ describe('Phase — terminal no-op guards on skip / stop (F1)', () => {
 
 	it('double-stop is idempotent — the second call is a guarded no-op', () => {
 		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(2)))
-		const events = recordEmitterEvents(phase.emitter, ['stop'])
+		const events = createRecorders<PhaseEventMap, PhaseEvent>(phase.emitter, PHASE_EVENTS)
 		phase.stop()
 		phase.stop()
 		expect(phase.status).toBe('stopped')
@@ -279,7 +286,7 @@ describe('Phase — terminal no-op guards on skip / stop (F1)', () => {
 
 	it('silently releases its gate before observers see a derived terminal phase', async () => {
 		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(1)))
-		const events = recordEmitterEvents(phase.emitter, ['complete', 'resume'])
+		const events = createRecorders<PhaseEventMap, PhaseEvent>(phase.emitter, PHASE_EVENTS)
 		const paused: boolean[] = []
 		phase.emitter.on('complete', () => paused.push(phase.paused))
 		phase.pause()
@@ -388,7 +395,7 @@ describe('Phase — pause/resume/paused', () => {
 	it('pause sets paused true; resume clears it — both idempotent', () => {
 		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(1)))
 		const states: boolean[] = []
-		const events = recordEmitterEvents(phase.emitter, ['pause', 'resume'])
+		const events = createRecorders<PhaseEventMap, PhaseEvent>(phase.emitter, PHASE_EVENTS)
 		phase.emitter.on('pause', () => states.push(phase.paused))
 		phase.emitter.on('resume', () => states.push(phase.paused))
 		expect(phase.paused).toBe(false)
@@ -408,7 +415,7 @@ describe('Phase — pause/resume/paused', () => {
 
 	it('pause is a no-op once the phase is terminal', () => {
 		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(1)))
-		const events = recordEmitterEvents(phase.emitter, ['pause', 'resume'])
+		const events = createRecorders<PhaseEventMap, PhaseEvent>(phase.emitter, PHASE_EVENTS)
 		phase.pause()
 		phase.stop()
 		expect(phase.status).toBe('stopped')
@@ -524,7 +531,7 @@ describe('Phase — structural API: add() mints a live task', () => {
 		const positioned = phase.add({ id: 't2', name: 'T2', run: 'f' }, 0)
 		if (positioned.success) throw new Error('expected positioned add to fail')
 		expect(positioned.error.code).toBe('MUTATION')
-		const events = recordEmitterEvents(phase.emitter, ['add'])
+		const events = createRecorders<PhaseEventMap, PhaseEvent>(phase.emitter, PHASE_EVENTS)
 		const appended = phase.add({ id: 't2', name: 'T2', run: 'f' })
 		expect(appended.success).toBe(true)
 		expect(events.add.count).toBe(1)
@@ -587,7 +594,7 @@ describe('Phase — remove/move/update only while pending', () => {
 describe('Phase — add/remove/move/update events fire on success only', () => {
 	it('emits add with the created task + index on success, nothing on refusal', () => {
 		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(1)))
-		const events = recordEmitterEvents(phase.emitter, ['add'])
+		const events = createRecorders<PhaseEventMap, PhaseEvent>(phase.emitter, PHASE_EVENTS)
 		const result = phase.add({ id: 't1', name: 'T1', run: 'f' })
 		if (!result.success) throw new Error('expected add to succeed')
 		expect(events.add.count).toBe(1)
@@ -598,7 +605,7 @@ describe('Phase — add/remove/move/update events fire on success only', () => {
 
 	it('emits remove with the removed task on success, nothing on refusal', () => {
 		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(1)))
-		const events = recordEmitterEvents(phase.emitter, ['remove'])
+		const events = createRecorders<PhaseEventMap, PhaseEvent>(phase.emitter, PHASE_EVENTS)
 		const result = phase.remove('t0')
 		if (!result.success) throw new Error('expected remove to succeed')
 		expect(events.remove.count).toBe(1)
@@ -609,7 +616,7 @@ describe('Phase — add/remove/move/update events fire on success only', () => {
 
 	it('emits move with the moved task + destination index on success, nothing on refusal', () => {
 		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(2)))
-		const events = recordEmitterEvents(phase.emitter, ['move'])
+		const events = createRecorders<PhaseEventMap, PhaseEvent>(phase.emitter, PHASE_EVENTS)
 		const result = phase.move('t1', 0)
 		if (!result.success) throw new Error('expected move to succeed')
 		expect(events.move.count).toBe(1)
@@ -620,7 +627,7 @@ describe('Phase — add/remove/move/update events fire on success only', () => {
 
 	it('emits update with the patched task on success, nothing on refusal', () => {
 		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(1)))
-		const events = recordEmitterEvents(phase.emitter, ['update'])
+		const events = createRecorders<PhaseEventMap, PhaseEvent>(phase.emitter, PHASE_EVENTS)
 		const result = phase.update('t0', { name: 'Renamed' })
 		if (!result.success) throw new Error('expected update to succeed')
 		expect(events.update.count).toBe(1)

@@ -5,5 +5,5 @@
 // fixtures are needed yet — the browser scheduler backends' tests
 // (`BrowserScheduler` / `FrameScheduler` / `IdleScheduler` / factories) drive real
 // `requestAnimationFrame` / `requestIdleCallback` / `scheduler.postTask` through
-// the shared `setup.ts` helpers (`instrumentSignal`, `waitForDelay`) alone. Add
-// browser-specific helpers here if/when a future browser-only fixture needs one.
+// `setup.ts`'s own `instrumentSignal` and `@orkestrel/test`'s `waitForDelay` alone.
+// Add browser-specific helpers here if/when a future browser-only fixture needs one.

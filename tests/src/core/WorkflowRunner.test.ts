@@ -2,6 +2,7 @@ import type {
 	SchedulerInterface,
 	TaskControllerInterface,
 	TaskDefinition,
+	TaskEventMap,
 	WorkflowDefinition,
 	WorkflowFunction,
 	WorkflowFunctions,
@@ -22,14 +23,14 @@ import {
 	MAX_TIMER_MS,
 } from '@src/core'
 import { describe, expect, it, vi } from 'vitest'
-import { createRecorder, waitForDelay } from '@orkestrel/test'
-import type { TestGateInterface } from '../../setup.js'
+import { createRecorder, createRecorders, waitForDelay } from '@orkestrel/test'
+import type { TaskEvent, TestGateInterface } from '../../setup.js'
 import {
 	FaultBudget,
 	createGate,
 	createRecordingScheduler,
 	instrumentSignal,
-	recordEmitterEvents,
+	TASK_EVENTS,
 } from '../../setup.js'
 
 // The W-c1 WorkflowRunner — the thin orchestrator that EXECUTES a live W-b tree by COMPOSING the
@@ -2129,7 +2130,7 @@ describe('WorkflowRunner — activity ownership across attempts', () => {
 		const workflow = createWorkflow(definition, { functions: { run } })
 		const task = workflow.phase('a')?.task('t0')
 		if (task === undefined) throw new Error('expected task')
-		const events = recordEmitterEvents(task.emitter, ['report', 'pulse'])
+		const events = createRecorders<TaskEventMap, TaskEvent>(task.emitter, TASK_EVENTS)
 		const result = await pacedRunner().execute(workflow)
 		expect(result.workflow.phase('a')?.task('t0')?.status).toBe('failed')
 		expect(report?.success).toBe(false)
@@ -2161,7 +2162,7 @@ describe('WorkflowRunner — activity ownership across attempts', () => {
 		const workflow = createWorkflow(definition, { functions: { run } })
 		const task = workflow.phase('a')?.task('t0')
 		if (task === undefined) throw new Error('expected task')
-		const events = recordEmitterEvents(task.emitter, ['report'])
+		const events = createRecorders<TaskEventMap, TaskEvent>(task.emitter, TASK_EVENTS)
 		const result = await pacedRunner().execute(workflow)
 		expect(result.status).toBe('completed')
 		expect(attempts.count).toBe(2)
@@ -2325,7 +2326,7 @@ describe('WorkflowRunner — task stop and cooperative task gates', () => {
 		const workflow = createWorkflow(definition, { functions: { run } })
 		const paused = workflow.phase('a')?.task('t0')
 		if (paused === undefined) throw new Error('expected paused task')
-		const reports = recordEmitterEvents(paused.emitter, ['report'])
+		const reports = createRecorders<TaskEventMap, TaskEvent>(paused.emitter, TASK_EVENTS)
 		paused.pause()
 		const result = await pacedRunner().execute(workflow)
 		expect(started.count).toBe(0)

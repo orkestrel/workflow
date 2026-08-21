@@ -1,8 +1,9 @@
-import type { RunnerEntryOptions, RunnerInterface, RunnerOptions } from '@src/core'
+import type { RunnerEntryOptions, RunnerEventMap, RunnerInterface, RunnerOptions } from '@src/core'
 import { describe, expect, it } from 'vitest'
 import { createRunner } from '@src/core'
-import { createRecorder, waitForDelay } from '@orkestrel/test'
-import { createErrorRecorder, createGate, recordEmitterEvents } from '../../setup.js'
+import { createRecorder, createRecorders, waitForDelay } from '@orkestrel/test'
+import type { RunnerEvent } from '../../setup.js'
+import { createErrorRecorder, createGate, RUNNER_EVENTS } from '../../setup.js'
 
 describe('Runner', () => {
 	it('execute runs every input and returns results in declared order', async () => {
@@ -998,26 +999,16 @@ describe('Runner', () => {
 // the count gate or break fail-fast (the run still drains / still rejects with the first
 // error), yet the `error` handler fires.
 
-// The RunnerEventMap event names recorded across the emitter tests — fed to the shared
-// `recordEmitterEvents` (AGENTS §16.1: the per-event wiring is centralized; this file
-// keeps only the names its scenarios observe).
-const RUNNER_EVENTS: readonly ['start', 'unit', 'spawn', 'settle', 'fail', 'finish', 'abort'] = [
-	'start',
-	'unit',
-	'spawn',
-	'settle',
-	'fail',
-	'finish',
-	'abort',
-]
-
 describe('Runner — emitter (push observation surface)', () => {
 	it('a simple run fires start → unit (per unit) → settle (per unit) → finish', async () => {
 		const runner = createRunner<number, number>({
 			concurrency: 4,
 			handler: (controller) => controller.input * 10,
 		})
-		const events = recordEmitterEvents(runner.emitter, RUNNER_EVENTS)
+		const events = createRecorders<RunnerEventMap<number>, RunnerEvent>(
+			runner.emitter,
+			RUNNER_EVENTS,
+		)
 		const results = await runner.execute([1, 2, 3])
 		expect(results).toEqual([10, 20, 30])
 		// `start` once; one `unit` + one `settle` per declared unit; `finish` once with the
@@ -1034,7 +1025,10 @@ describe('Runner — emitter (push observation surface)', () => {
 
 	it('an empty run fires start then finish([]) (no units)', async () => {
 		const runner = createRunner<number, number>({ handler: (controller) => controller.input })
-		const events = recordEmitterEvents(runner.emitter, RUNNER_EVENTS)
+		const events = createRecorders<RunnerEventMap<number>, RunnerEvent>(
+			runner.emitter,
+			RUNNER_EVENTS,
+		)
 		expect(await runner.execute([])).toEqual([])
 		expect(events.start.count).toBe(1)
 		expect(events.finish.calls).toEqual([[[]]])
@@ -1051,7 +1045,10 @@ describe('Runner — emitter (push observation surface)', () => {
 				return controller.input
 			},
 		})
-		const events = recordEmitterEvents(runner.emitter, RUNNER_EVENTS)
+		const events = createRecorders<RunnerEventMap<number>, RunnerEvent>(
+			runner.emitter,
+			RUNNER_EVENTS,
+		)
 		const results = await runner.execute([1])
 		expect(results).toEqual([1, 101])
 		// Exactly one spawn — its parent is the declared unit `1`'s id.
@@ -1077,7 +1074,10 @@ describe('Runner — emitter (push observation surface)', () => {
 				return controller.input
 			},
 		})
-		const events = recordEmitterEvents(runner.emitter, RUNNER_EVENTS)
+		const events = createRecorders<RunnerEventMap<string>, RunnerEvent>(
+			runner.emitter,
+			RUNNER_EVENTS,
+		)
 		await expect(runner.execute(['a', 'boom', 'b'])).rejects.toBe(boom)
 		release.resolve()
 		await waitForDelay(0)
@@ -1098,7 +1098,10 @@ describe('Runner — emitter (push observation surface)', () => {
 				return controller.input
 			},
 		})
-		const events = recordEmitterEvents(runner.emitter, RUNNER_EVENTS)
+		const events = createRecorders<RunnerEventMap<number>, RunnerEvent>(
+			runner.emitter,
+			RUNNER_EVENTS,
+		)
 		const run = runner.execute([1, 2, 3])
 		await waitForDelay(10)
 		const reason = new Error('shutting down')
@@ -1633,7 +1636,10 @@ describe('Runner — lifecycle and hostile option boundaries', () => {
 
 	it('settles an empty run when its start listener requests a graceful stop', async () => {
 		const runner = createRunner<number, number>({ handler: (controller) => controller.input })
-		const events = recordEmitterEvents(runner.emitter, RUNNER_EVENTS)
+		const events = createRecorders<RunnerEventMap<number>, RunnerEvent>(
+			runner.emitter,
+			RUNNER_EVENTS,
+		)
 		let stopping: Promise<void> | undefined
 		runner.emitter.on('start', () => {
 			stopping = runner.stop()
@@ -1664,7 +1670,10 @@ describe('Runner — lifecycle and hostile option boundaries', () => {
 	it('rejects an empty run with the exact reason when its start listener aborts', async () => {
 		const reason = { command: 'abort from start' }
 		const runner = createRunner<number, number>({ handler: (controller) => controller.input })
-		const events = recordEmitterEvents(runner.emitter, RUNNER_EVENTS)
+		const events = createRecorders<RunnerEventMap<number>, RunnerEvent>(
+			runner.emitter,
+			RUNNER_EVENTS,
+		)
 		let aborting: Promise<void> | undefined
 		runner.emitter.on('start', () => {
 			aborting = runner.abort(reason)
@@ -1681,7 +1690,10 @@ describe('Runner — lifecycle and hostile option boundaries', () => {
 
 	it('destroys an empty run from its start listener without hanging or duplicating abort', async () => {
 		const runner = createRunner<number, number>({ handler: (controller) => controller.input })
-		const events = recordEmitterEvents(runner.emitter, RUNNER_EVENTS)
+		const events = createRecorders<RunnerEventMap<number>, RunnerEvent>(
+			runner.emitter,
+			RUNNER_EVENTS,
+		)
 		let destroying: Promise<void> | undefined
 		runner.emitter.on('start', () => {
 			destroying = runner.destroy()
@@ -1705,7 +1717,10 @@ describe('Runner — lifecycle and hostile option boundaries', () => {
 				return controller.input
 			},
 		})
-		const events = recordEmitterEvents(runner.emitter, RUNNER_EVENTS)
+		const events = createRecorders<RunnerEventMap<number>, RunnerEvent>(
+			runner.emitter,
+			RUNNER_EVENTS,
+		)
 		let recursive: Promise<void> | undefined
 		runner.emitter.on('abort', () => {
 			recursive = runner.abort(new Error('ignored recursive reason'))
@@ -1730,7 +1745,10 @@ describe('Runner — lifecycle and hostile option boundaries', () => {
 				return controller.input
 			},
 		})
-		const events = recordEmitterEvents(runner.emitter, RUNNER_EVENTS)
+		const events = createRecorders<RunnerEventMap<number>, RunnerEvent>(
+			runner.emitter,
+			RUNNER_EVENTS,
+		)
 		let recursive: Promise<void> | undefined
 		runner.emitter.on('abort', () => {
 			recursive = runner.destroy()
@@ -1752,7 +1770,10 @@ describe('Runner — lifecycle and hostile option boundaries', () => {
 
 	it('allows a finish listener to destroy the runner after successful drain', async () => {
 		const runner = createRunner<number, number>({ handler: (controller) => controller.input })
-		const events = recordEmitterEvents(runner.emitter, RUNNER_EVENTS)
+		const events = createRecorders<RunnerEventMap<number>, RunnerEvent>(
+			runner.emitter,
+			RUNNER_EVENTS,
+		)
 		let destroying: Promise<void> | undefined
 		let destroyedDuring = true
 		runner.emitter.on('finish', () => {
@@ -1778,7 +1799,10 @@ describe('Runner — lifecycle and hostile option boundaries', () => {
 				return controller.input
 			},
 		})
-		const events = recordEmitterEvents(runner.emitter, RUNNER_EVENTS)
+		const events = createRecorders<RunnerEventMap<number>, RunnerEvent>(
+			runner.emitter,
+			RUNNER_EVENTS,
+		)
 		const run = runner.execute([1])
 		await waitForDelay(10)
 		const stopping = runner.stop()
