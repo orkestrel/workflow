@@ -1,6 +1,6 @@
 {
 	"name": "@orkestrel/workflow",
-	"version": "0.0.13",
+	"version": "0.0.14",
 	"description": "A typed workflow engine for the @orkestrel line — a serializable Workflow → Phase → Task tree run by a composed runner on a cooperative scheduler. Part of the @orkestrel line.",
 	"keywords": [
 		"orchestration",
@@ -89,27 +89,27 @@
 	"dependencies": {
 		"@orkestrel/abort": "^0.0.7",
 		"@orkestrel/budget": "^0.0.7",
-		"@orkestrel/contract": "^0.0.12",
-		"@orkestrel/database": "^0.0.10",
+		"@orkestrel/contract": "^0.0.13",
+		"@orkestrel/database": "^0.0.11",
 		"@orkestrel/emitter": "^0.0.7",
-		"@orkestrel/queue": "^0.0.9",
+		"@orkestrel/queue": "^0.0.10",
 		"@orkestrel/timeout": "^0.0.7"
 	},
 	"devDependencies": {
-		"@microsoft/api-extractor": "^7.58.12",
+		"@microsoft/api-extractor": "^7.59.0",
 		"@orkestrel/guide": "^0.0.12",
 		"@orkestrel/probe": "^0.0.2",
 		"@orkestrel/scaffold": "^0.0.47",
-		"@orkestrel/test": "^0.0.6",
+		"@orkestrel/test": "^0.0.8",
 		"@types/node": "^26.2.0",
-		"@vitest/browser-playwright": "^4.1.10",
-		"oxfmt": "^0.63.0",
-		"oxlint": "^1.78.0",
+		"@vitest/browser-playwright": "^4.1.11",
+		"oxfmt": "^0.64.0",
+		"oxlint": "^1.79.0",
 		"playwright": "^1.62.1",
 		"typescript": "^6.0.3",
-		"vite": "^8.2.1",
+		"vite": "^8.2.2",
 		"vite-plugin-dts": "^5.0.3",
-		"vitest": "^4.1.10"
+		"vitest": "^4.1.11"
 	},
 	"engines": {
 		"node": ">=22.12.0"
