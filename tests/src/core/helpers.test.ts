@@ -39,7 +39,7 @@ import {
 	taskDefinitionToSnapshot,
 } from '@src/core'
 import { describe, expect, it } from 'vitest'
-import { captureError } from '@orkestrel/test'
+import { captureError, waitForDelay } from '@orkestrel/test'
 import { createErrorRecorder, createRecordingScheduler } from '../../setup.js'
 
 // The §10/§14 logic core: the derivation truth tables under BOTH bail modes, the ONE
@@ -1062,7 +1062,7 @@ describe('parkSignal — a one-shot promise-park on an AbortSignal, never reject
 		const parked = parkSignal(controller.signal).then(() => {
 			settled = true
 		})
-		await new Promise((resolve) => setTimeout(resolve, 5))
+		await waitForDelay(5)
 		expect(settled).toBe(false)
 		controller.abort()
 		await parked
