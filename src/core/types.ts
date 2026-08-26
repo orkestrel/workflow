@@ -212,6 +212,7 @@ export interface TaskConstraint {
  * One complete replacement of a running task's observable activity.
  *
  * @remarks
+ * `note` describes the frame while `progress.message` describes the progress value.
  * Omitted `operations` or `constraints` mean an empty list. Omitted `progress` clears the
  * previous aggregate progress. Use {@link TaskInterface.report} to commit the replacement.
  */

@@ -338,7 +338,7 @@ The shape VALUES `createWorkflowContract` compiles into the four lockstep output
 | `WorkflowInput`                | type      | `Partial<WorkflowContext>` — the minimal data to create a workflow context.                                                                                                                                                             |
 | `PhaseInput`                   | type      | `Partial<PhaseContext>` — the minimal data to create a phase context.                                                                                                                                                                   |
 | `TaskInput`                    | interface | `Partial<TaskContext>` + `{ metadata? }` — plus the open consumer bag stored + snapshotted, never interpreted.                                                                                                                          |
-| `TaskProgress`                 | interface | `{ progress, total?, message? }` — MCP-shaped progress with an optional total and observer-facing state text.                                                                                                                           |
+| `TaskProgress`                 | interface | `{ progress, total?, message? }` — the reported count, a `total` when the work's size is known, and observer-facing text for the reported state.                                                                                        |
 | `TaskOperation`                | interface | `{ id, name, started }` — one flat nested operation claimed active when the complete frame was accepted.                                                                                                                                |
 | `TaskConstraint`               | interface | `{ id, name, started }` — one constraint claimed active when the complete frame was accepted, without supervisor policy.                                                                                                                |
 | `TaskActivityInput`            | interface | `{ note?, progress?, operations?, constraints? }` — one whole-frame replacement; omitted collections mean empty.                                                                                                                        |
@@ -969,7 +969,7 @@ Core retains one bounded, current reporter claim—not a journal:
 ```ts
 const result = controller.report({
 	note: 'Indexing',
-	progress: { progress: 240, total: 1_000, message: 'Indexing files' },
+	progress: { progress: 240, total: 1_000, message: '240 of 1,000 sources' },
 	operations: [{ id: 'scan', name: 'Scan sources', started: Date.now() }],
 	constraints: [{ id: 'rate', name: 'Provider rate limit', started: Date.now() }],
 })

@@ -33,6 +33,7 @@ export const INVALID_TASK_ACTIVITIES: ReadonlyArray<readonly [input: unknown]> =
 			],
 		},
 	],
+	[{ progress: { progress: 1, total: Number.NaN } }],
 ])
 
 // ── Recorded event names (the second type argument `createRecorders` cannot infer) ───────
