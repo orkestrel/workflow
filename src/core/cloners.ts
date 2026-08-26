@@ -119,18 +119,18 @@ export function cloneTaskActivity(input: unknown, updated?: number): TaskActivit
 			if (
 				(progressPrototype !== Object.prototype && progressPrototype !== null) ||
 				!Object.keys(progressInput).every(
-					(key) => key === 'current' || key === 'total' || key === 'unit',
+					(key) => key === 'progress' || key === 'total' || key === 'message',
 				)
 			) {
 				throw new WorkflowError('MUTATION', 'task activity contains invalid progress')
 			}
-			const current = progressInput.current
+			const reported = progressInput.progress
 			const total = progressInput.total
-			const unit = progressInput.unit
+			const message = progressInput.message
 			progress = Object.freeze({
-				current,
+				progress: reported,
 				...(total === undefined ? {} : { total }),
-				...(unit === undefined ? {} : { unit }),
+				...(message === undefined ? {} : { message }),
 			})
 		}
 

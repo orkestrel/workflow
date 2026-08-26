@@ -177,7 +177,7 @@ describe('Task — activity, liveness, and cooperative control', () => {
 		const operation = { id: 'build', name: 'Build', started: 1 }
 		const determinate = task.report({
 			note: 'compiling',
-			progress: { current: 2, total: 4, unit: 'files' },
+			progress: { progress: 2, total: 4, message: 'files' },
 			operations: [operation],
 			constraints: [{ id: 'cpu', name: 'CPU quota', started: 2 }],
 		})
@@ -191,10 +191,10 @@ describe('Task — activity, liveness, and cooperative control', () => {
 		expect(Object.isFrozen(task.activity?.constraints)).toBe(true)
 		expect(Object.isFrozen(task.activity?.constraints[0])).toBe(true)
 
-		const indeterminate = task.report({ progress: { current: 5 } })
+		const indeterminate = task.report({ progress: { progress: 5 } })
 		expect(indeterminate.success).toBe(true)
 		expect(task.activity?.note).toBeUndefined()
-		expect(task.activity?.progress).toEqual({ current: 5 })
+		expect(task.activity?.progress).toEqual({ progress: 5 })
 		expect(task.activity?.operations).toEqual([])
 		expect(task.activity?.constraints).toEqual([])
 	})
@@ -209,7 +209,7 @@ describe('Task — activity, liveness, and cooperative control', () => {
 		const accepted = task.report({ note: 'valid' })
 		expect(accepted.success).toBe(true)
 		const before = task.activity
-		const invalid = task.report({ progress: { current: 2, total: 1 } })
+		const invalid = task.report({ progress: { progress: 2, total: 1 } })
 		expect(invalid.success).toBe(false)
 		if (invalid.success) throw new Error('expected mutation refusal')
 		expect(invalid.error.code).toBe('MUTATION')

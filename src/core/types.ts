@@ -185,13 +185,14 @@ export interface TaskOperation {
  * The aggregate progress most recently reported by a running task.
  *
  * @remarks
- * `current` and an optional `total` are finite non-negative numbers; when `total` is present
- * it is at least `current`. `unit` is optional observer-facing text.
+ * `progress` and an optional `total` are finite non-negative numbers; when `total` is present
+ * it is at least `progress`. `message` is optional observer-facing text describing the reported
+ * state.
  */
 export interface TaskProgress {
-	readonly current: number
+	readonly progress: number
 	readonly total?: number
-	readonly unit?: string
+	readonly message?: string
 }
 
 /**

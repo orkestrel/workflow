@@ -12,15 +12,15 @@ describe('cloneTaskActivity', () => {
 	it('clones and freezes a complete frame without retaining caller aliases', () => {
 		const operations = [{ id: 'operation', name: 'Operation', started: 1 }]
 		const constraints = [{ id: 'constraint', name: 'Constraint', started: 2 }]
-		const progress = { current: 2, total: 4, unit: 'steps' }
+		const progress = { progress: 2, total: 4, message: 'steps' }
 		const activity = cloneTaskActivity({ note: 'working', operations, constraints, progress }, 10)
 		operations.length = 0
 		constraints.length = 0
-		progress.current = 3
+		progress.progress = 3
 
 		expect(activity).toEqual({
 			note: 'working',
-			progress: { current: 2, total: 4, unit: 'steps' },
+			progress: { progress: 2, total: 4, message: 'steps' },
 			operations: [{ id: 'operation', name: 'Operation', started: 1 }],
 			constraints: [{ id: 'constraint', name: 'Constraint', started: 2 }],
 			updated: 10,
@@ -40,7 +40,7 @@ describe('cloneTaskActivity', () => {
 
 		for (const input of [
 			{ operations: [], extra: true },
-			{ progress: { current: 1, extra: true } },
+			{ progress: { progress: 1, extra: true } },
 			{ operations: [{ id: 'op', name: 'Operation', started: 0, extra: true }] },
 			{ constraints: [{ id: 'constraint', name: 'Constraint', started: 0, extra: true }] },
 			new Activity(),

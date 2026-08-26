@@ -18,9 +18,9 @@ import { describe, expect, it } from 'vitest'
 
 describe('task activity validators', () => {
 	it('accepts valid input and persisted frames', () => {
-		expect(isTaskActivityInput({ progress: { current: 1 }, operations: [], constraints: [] })).toBe(
-			true,
-		)
+		expect(
+			isTaskActivityInput({ progress: { progress: 1 }, operations: [], constraints: [] }),
+		).toBe(true)
 		expect(
 			isTaskActivity({
 				operations: [{ id: 'op', name: 'Operation', started: 0 }],
@@ -33,6 +33,10 @@ describe('task activity validators', () => {
 
 	it.each(INVALID_TASK_ACTIVITIES)('rejects invalid input %#', (input) => {
 		expect(isTaskActivityInput(input)).toBe(false)
+	})
+
+	it('rejects the removed progress unit as an unknown key', () => {
+		expect(isTaskActivityInput({ progress: { progress: 1, unit: 'files' } })).toBe(false)
 	})
 
 	it('contains throwing getters, proxies, and cyclic input', () => {

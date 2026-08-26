@@ -243,19 +243,19 @@ export function isTaskActivityInput(value: unknown): value is TaskActivityInput 
 			if (
 				(progressPrototype !== Object.prototype && progressPrototype !== null) ||
 				!Object.keys(progress).every(
-					(key) => key === 'current' || key === 'total' || key === 'unit',
+					(key) => key === 'progress' || key === 'total' || key === 'message',
 				)
 			) {
 				return false
 			}
-			const current = progress.current
+			const reported = progress.progress
 			const total = progress.total
-			const unit = progress.unit
+			const message = progress.message
 			if (
-				!isFiniteNumber(current) ||
-				current < 0 ||
-				(total !== undefined && (!isFiniteNumber(total) || total < current)) ||
-				(unit !== undefined && !isNonEmptyString(unit))
+				!isFiniteNumber(reported) ||
+				reported < 0 ||
+				(total !== undefined && (!isFiniteNumber(total) || total < reported)) ||
+				(message !== undefined && !isNonEmptyString(message))
 			) {
 				return false
 			}

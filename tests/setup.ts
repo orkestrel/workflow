@@ -18,10 +18,10 @@ import { createScheduler, createWorkflowRunner, TaskController } from '@src/core
 /** Shared invalid task activity frames used by cloner and guard boundary tests. */
 export const INVALID_TASK_ACTIVITIES: ReadonlyArray<readonly [input: unknown]> = Object.freeze([
 	[{ note: '' }],
-	[{ progress: { current: Number.NaN } }],
-	[{ progress: { current: -1 } }],
-	[{ progress: { current: 2, total: 1 } }],
-	[{ progress: { current: 1, unit: '' } }],
+	[{ progress: { progress: Number.NaN } }],
+	[{ progress: { progress: -1 } }],
+	[{ progress: { progress: 2, total: 1 } }],
+	[{ progress: { progress: 1, message: '' } }],
 	[{ operations: [{ id: '', name: 'Operation', started: 0 }] }],
 	[{ operations: [{ id: 'operation', name: '', started: 0 }] }],
 	[{ operations: [{ id: 'operation', name: 'Operation', started: Number.POSITIVE_INFINITY }] }],
