@@ -18,7 +18,7 @@ import { parkSignal } from './helpers.js'
  *   truth); since the attempt signal ANY-includes that abort, `abort()` fires
  *   `signal` too.
  * - **`wait` promise-parks (never a timer).** It resolves the instant the unit's
- *   `signal` fires (immediately if already aborted) via a one-shot listener — no
+ *   `signal` fires (immediately if already aborted) through a one-shot listener — no
  *   `setTimeout`, no polling, no busy-yield — so a parked unit costs no CPU.
  * - **`spawn` is fire-and-track.** It delegates to the runner's launch-a-sibling
  *   callback, which routes the sibling through the queue; the runner's `execute`

@@ -1,4 +1,5 @@
 export * from './types.js'
+export * from './Collection.js'
 export * from './Scheduler.js'
 export * from './factories.js'
 export * from './constants.js'

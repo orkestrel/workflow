@@ -1,5 +1,5 @@
 import type { SchedulerInterface, SchedulerOptions } from '@src/core'
-import { scheduleHost } from '@src/core'
+import { delayHost, scheduleHost } from '@src/core'
 
 /**
  * The Node {@link SchedulerInterface} — the server-native cooperative-yield backend.
@@ -36,7 +36,7 @@ import { scheduleHost } from '@src/core'
  */
 export class NodeScheduler implements SchedulerInterface {
 	/**
-	 * Yield control back to the event loop via `setImmediate` so pending I/O and timers
+	 * Yield control back to the event loop through `setImmediate` so pending I/O and timers
 	 * can run, then resume; abort rejects with `signal.reason`.
 	 */
 	yield(options?: SchedulerOptions): Promise<void> {
@@ -44,17 +44,16 @@ export class NodeScheduler implements SchedulerInterface {
 	}
 
 	/**
-	 * Resume after at least `ms` milliseconds via `setTimeout`; abort rejects with
+	 * Resume after at least `ms` milliseconds through `setTimeout`; abort rejects with
 	 * `signal.reason`.
 	 *
 	 * @remarks
-	 * `ms` should be a non-negative finite number. The primitive does no validation: it
-	 * passes `ms` straight to the host `setTimeout`, which clamps a negative value or
-	 * `NaN` to ~0 — so an out-of-domain `ms` resolves on the next host turn rather than
-	 * throwing.
+	 * Pass a non-negative finite `ms`. The primitive does no validation: it passes `ms`
+	 * straight to the host `setTimeout`, which clamps a negative value or `NaN` to ~0 — so an
+	 * out-of-domain `ms` resolves on the next host turn rather than throwing.
 	 */
 	delay(ms: number, options?: SchedulerOptions): Promise<void> {
-		return this.#sleep(ms, options?.signal)
+		return delayHost(ms, options?.signal)
 	}
 
 	// === Private
@@ -64,14 +63,6 @@ export class NodeScheduler implements SchedulerInterface {
 		return scheduleHost((complete) => {
 			const handle = setImmediate(complete)
 			return () => clearImmediate(handle)
-		}, signal)
-	}
-
-	// The Node timer boundary; `scheduleHost` owns cancellation lifecycle.
-	#sleep(ms: number, signal?: AbortSignal): Promise<void> {
-		return scheduleHost((complete) => {
-			const handle = setTimeout(complete, ms)
-			return () => clearTimeout(handle)
 		}, signal)
 	}
 }

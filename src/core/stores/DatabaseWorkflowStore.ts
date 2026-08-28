@@ -27,10 +27,12 @@ import { cloneWorkflowSnapshot } from '../cloners.js'
  *
  * - **`set(snapshot)` upserts under the snapshot's OWN `id`** (no separate id param) — it writes
  *   the row `{ id: snapshot.id, snapshot }`.
- * - **`get(id)` resolves the stored snapshot for an id**, narrowing the opaque JSON column back to
- *   a {@link WorkflowSnapshot} ({@link import('../helpers.js').isWorkflowSnapshot} — the AGENTS §14
- *   boundary narrow for an untrusted storage read), or `undefined` if none is stored. A present
- *   snapshot whose own id differs from the requested key rejects with normalized `RESTORE` evidence.
+ * - **`get(id)` resolves the stored snapshot for an id**, owning and narrowing the opaque JSON
+ *   column back to a {@link WorkflowSnapshot} through
+ *   {@link import('../cloners.js').cloneWorkflowSnapshot}, whose semantic pass is
+ *   {@link import('../validators.js').isOwnedWorkflowSnapshot} — the AGENTS §14 boundary narrow for
+ *   an untrusted storage read — or `undefined` if none is stored. A present snapshot whose own id
+ *   differs from the requested key rejects with normalized `RESTORE` evidence.
  * - **`delete(id)` drops a snapshot by id**; an absent id is a no-op (no throw).
  *
  * UNLIKE the server package's `SessionStoreInterface` there is NO

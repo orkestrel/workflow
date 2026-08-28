@@ -1,5 +1,5 @@
 import type { SchedulerInterface, SchedulerOptions, SchedulerPriority } from '@src/core'
-import { scheduleHost } from '@src/core'
+import { delayHost, scheduleHost } from '@src/core'
 import { isFunction, isPromise, isRecord } from '@orkestrel/contract'
 import { POST_TASK_PRIORITY } from './constants.js'
 
@@ -15,8 +15,8 @@ import { POST_TASK_PRIORITY } from './constants.js'
  *   `'background'`), so the host genuinely regains control and the urgency hint is
  *   honoured. The capability is feature-detected through guards (`isRecord` / `isFunction`),
  *   never an `as` (AGENTS §14). Where the API is absent (Firefox today, older engines),
- *   it **falls back** to a `setTimeout(0)` macrotask — still a real host-turn, just
- *   without priority. `delay(ms)` is always a real `setTimeout`.
+ *   it **falls back** to a `setTimeout(0)` macrotask — still a real host-turn, without
+ *   priority. `delay(ms)` is always a real `setTimeout`.
  * - **Abort fidelity is verbatim.** The shared `scheduleHost` lifecycle links an owned
  *   settlement composite before scheduling, preserving the exact caller reason without
  *   invoking caller-owned signal methods. The caller signal is NOT handed to `postTask`;
@@ -39,28 +39,27 @@ import { POST_TASK_PRIORITY } from './constants.js'
  */
 export class BrowserScheduler implements SchedulerInterface {
 	/**
-	 * Yield control to the host via `scheduler.postTask` at the given priority (or a
+	 * Yield control to the host through `scheduler.postTask` at the given priority (or a
 	 * `setTimeout(0)` macrotask where the API is absent), then resume; abort rejects with
 	 * `signal.reason`.
 	 */
 	yield(options?: SchedulerOptions): Promise<void> {
 		const post = this.#postTask()
-		if (post === undefined) return this.#timer(0, options?.signal)
+		if (post === undefined) return delayHost(0, options?.signal)
 		return this.#yieldVia(post, options?.priority ?? 'normal', options?.signal)
 	}
 
 	/**
-	 * Resume after at least `ms` milliseconds via `setTimeout`; abort rejects with
+	 * Resume after at least `ms` milliseconds through `setTimeout`; abort rejects with
 	 * `signal.reason`.
 	 *
 	 * @remarks
-	 * `ms` should be a non-negative finite number. The primitive does no validation: it
-	 * passes `ms` straight to the host `setTimeout`, which clamps a negative value or
-	 * `NaN` to ~0 — so an out-of-domain `ms` resolves on the next host turn rather than
-	 * throwing.
+	 * Pass a non-negative finite `ms`. The primitive does no validation: it passes `ms`
+	 * straight to the host `setTimeout`, which clamps a negative value or `NaN` to ~0 — so an
+	 * out-of-domain `ms` resolves on the next host turn rather than throwing.
 	 */
 	delay(ms: number, options?: SchedulerOptions): Promise<void> {
-		return this.#timer(ms, options?.signal)
+		return delayHost(ms, options?.signal)
 	}
 
 	// === Private
@@ -91,14 +90,6 @@ export class BrowserScheduler implements SchedulerInterface {
 			})
 			if (isPromise(task)) void task.catch(failure)
 			return () => internal.abort()
-		}, signal)
-	}
-
-	// The browser timer boundary shared by `delay` and fallback `yield`.
-	#timer(ms: number, signal?: AbortSignal): Promise<void> {
-		return scheduleHost((complete) => {
-			const handle = setTimeout(complete, ms)
-			return () => clearTimeout(handle)
 		}, signal)
 	}
 }

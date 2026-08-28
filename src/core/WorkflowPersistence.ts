@@ -7,6 +7,7 @@ import type {
 	WorkflowPersistenceInterface,
 	WorkflowStoreInterface,
 } from './types.js'
+import { PERSISTED_NODE_EVENTS, PERSISTED_TASK_EVENTS } from './constants.js'
 import { errorToMessage } from './helpers.js'
 
 /**
@@ -21,13 +22,13 @@ export class WorkflowPersistence implements WorkflowPersistenceInterface {
 	readonly #store: WorkflowStoreInterface
 	readonly #phases = new Set<PhaseInterface>()
 	readonly #tasks = new Set<TaskInterface>()
-	readonly #onWorkflowChange: () => void
+	// One bound change handler for every tier: the workflow, phase, and task subscriptions all
+	// mark the same revision, so a handler per tier would be three names for one behavior.
+	readonly #onChange: () => void
 	readonly #onWorkflowAdd: (phase: PhaseInterface) => void
 	readonly #onWorkflowRemove: (phase: PhaseInterface) => void
-	readonly #onPhaseChange: () => void
 	readonly #onPhaseAdd: (task: TaskInterface) => void
 	readonly #onPhaseRemove: (task: TaskInterface) => void
-	readonly #onTaskChange: () => void
 	#writing: Promise<void> | undefined
 	#error: string | undefined
 	#fault: WorkflowFault | undefined
@@ -38,13 +39,11 @@ export class WorkflowPersistence implements WorkflowPersistenceInterface {
 	constructor(workflow: WorkflowInterface, store: WorkflowStoreInterface) {
 		this.#workflow = workflow
 		this.#store = store
-		this.#onWorkflowChange = this.#change.bind(this)
+		this.#onChange = this.#change.bind(this)
 		this.#onWorkflowAdd = this.#addPhase.bind(this)
 		this.#onWorkflowRemove = this.#removePhase.bind(this)
-		this.#onPhaseChange = this.#change.bind(this)
 		this.#onPhaseAdd = this.#addTask.bind(this)
 		this.#onPhaseRemove = this.#removeTask.bind(this)
-		this.#onTaskChange = this.#change.bind(this)
 		this.#attachWorkflow()
 	}
 
@@ -94,26 +93,14 @@ export class WorkflowPersistence implements WorkflowPersistenceInterface {
 	detach(): void {
 		if (!this.#attached) return
 		this.#attached = false
-		this.#workflow.emitter.off('start', this.#onWorkflowChange)
-		this.#workflow.emitter.off('complete', this.#onWorkflowChange)
-		this.#workflow.emitter.off('fail', this.#onWorkflowChange)
-		this.#workflow.emitter.off('skip', this.#onWorkflowChange)
-		this.#workflow.emitter.off('stop', this.#onWorkflowChange)
-		this.#workflow.emitter.off('move', this.#onWorkflowChange)
-		this.#workflow.emitter.off('update', this.#onWorkflowChange)
+		for (const event of PERSISTED_NODE_EVENTS) this.#workflow.emitter.off(event, this.#onChange)
 		this.#workflow.emitter.off('add', this.#onWorkflowAdd)
 		this.#workflow.emitter.off('remove', this.#onWorkflowRemove)
 		for (const phase of this.#phases) this.#detachPhase(phase)
 	}
 
 	#attachWorkflow(): void {
-		this.#workflow.emitter.on('start', this.#onWorkflowChange)
-		this.#workflow.emitter.on('complete', this.#onWorkflowChange)
-		this.#workflow.emitter.on('fail', this.#onWorkflowChange)
-		this.#workflow.emitter.on('skip', this.#onWorkflowChange)
-		this.#workflow.emitter.on('stop', this.#onWorkflowChange)
-		this.#workflow.emitter.on('move', this.#onWorkflowChange)
-		this.#workflow.emitter.on('update', this.#onWorkflowChange)
+		for (const event of PERSISTED_NODE_EVENTS) this.#workflow.emitter.on(event, this.#onChange)
 		this.#workflow.emitter.on('add', this.#onWorkflowAdd)
 		this.#workflow.emitter.on('remove', this.#onWorkflowRemove)
 		for (const phase of this.#workflow.phases.phases()) this.#attachPhase(phase)
@@ -122,13 +109,7 @@ export class WorkflowPersistence implements WorkflowPersistenceInterface {
 	#attachPhase(phase: PhaseInterface): void {
 		if (this.#phases.has(phase)) return
 		this.#phases.add(phase)
-		phase.emitter.on('start', this.#onPhaseChange)
-		phase.emitter.on('complete', this.#onPhaseChange)
-		phase.emitter.on('fail', this.#onPhaseChange)
-		phase.emitter.on('skip', this.#onPhaseChange)
-		phase.emitter.on('stop', this.#onPhaseChange)
-		phase.emitter.on('move', this.#onPhaseChange)
-		phase.emitter.on('update', this.#onPhaseChange)
+		for (const event of PERSISTED_NODE_EVENTS) phase.emitter.on(event, this.#onChange)
 		phase.emitter.on('add', this.#onPhaseAdd)
 		phase.emitter.on('remove', this.#onPhaseRemove)
 		for (const task of phase.tasks.tasks()) this.#attachTask(task)
@@ -136,13 +117,7 @@ export class WorkflowPersistence implements WorkflowPersistenceInterface {
 
 	#detachPhase(phase: PhaseInterface): void {
 		if (!this.#phases.delete(phase)) return
-		phase.emitter.off('start', this.#onPhaseChange)
-		phase.emitter.off('complete', this.#onPhaseChange)
-		phase.emitter.off('fail', this.#onPhaseChange)
-		phase.emitter.off('skip', this.#onPhaseChange)
-		phase.emitter.off('stop', this.#onPhaseChange)
-		phase.emitter.off('move', this.#onPhaseChange)
-		phase.emitter.off('update', this.#onPhaseChange)
+		for (const event of PERSISTED_NODE_EVENTS) phase.emitter.off(event, this.#onChange)
 		phase.emitter.off('add', this.#onPhaseAdd)
 		phase.emitter.off('remove', this.#onPhaseRemove)
 		for (const task of phase.tasks.tasks()) this.#detachTask(task)
@@ -151,24 +126,12 @@ export class WorkflowPersistence implements WorkflowPersistenceInterface {
 	#attachTask(task: TaskInterface): void {
 		if (this.#tasks.has(task)) return
 		this.#tasks.add(task)
-		task.emitter.on('start', this.#onTaskChange)
-		task.emitter.on('complete', this.#onTaskChange)
-		task.emitter.on('fail', this.#onTaskChange)
-		task.emitter.on('skip', this.#onTaskChange)
-		task.emitter.on('stop', this.#onTaskChange)
-		task.emitter.on('report', this.#onTaskChange)
-		task.emitter.on('pulse', this.#onTaskChange)
+		for (const event of PERSISTED_TASK_EVENTS) task.emitter.on(event, this.#onChange)
 	}
 
 	#detachTask(task: TaskInterface): void {
 		if (!this.#tasks.delete(task)) return
-		task.emitter.off('start', this.#onTaskChange)
-		task.emitter.off('complete', this.#onTaskChange)
-		task.emitter.off('fail', this.#onTaskChange)
-		task.emitter.off('skip', this.#onTaskChange)
-		task.emitter.off('stop', this.#onTaskChange)
-		task.emitter.off('report', this.#onTaskChange)
-		task.emitter.off('pulse', this.#onTaskChange)
+		for (const event of PERSISTED_TASK_EVENTS) task.emitter.off(event, this.#onChange)
 	}
 
 	#addPhase(phase: PhaseInterface): void {

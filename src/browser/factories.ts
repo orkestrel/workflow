@@ -34,12 +34,12 @@ export function createBrowserScheduler(): SchedulerInterface {
 
 /**
  * Create the frame-aligned cooperative-yield {@link SchedulerInterface} — `yield()` resumes
- * just before the next paint via `requestAnimationFrame`; `delay(ms)` is a real
+ * just before the next paint through `requestAnimationFrame`; `delay(ms)` is a real
  * `setTimeout`.
  *
  * @remarks
- * Use it for work that should batch per render frame (animation, incremental DOM updates)
- * and naturally pause while the tab is hidden. `yield` is abort-aware: pass `options.signal`
+ * Use it for work that batches per render frame (animation, incremental DOM updates) and
+ * naturally pauses while the tab is hidden. `yield` is abort-aware: pass `options.signal`
  * and a pending yield rejects with the signal's `reason` verbatim, cancelling the pending
  * frame request. `options.priority` is accepted but a no-op — a frame callback has no
  * priority dimension.
@@ -60,7 +60,7 @@ export function createFrameScheduler(): SchedulerInterface {
 
 /**
  * Create the idle-time cooperative-yield {@link SchedulerInterface} — `yield()` resumes when
- * the host is idle via `requestIdleCallback` when present, falling back to a `setTimeout(0)`
+ * the host is idle through `requestIdleCallback` when present, falling back to a `setTimeout(0)`
  * macrotask; `delay(ms)` is a real `setTimeout`.
  *
  * @remarks

@@ -2,7 +2,9 @@ import type {
 	LifecycleStatus,
 	TaskActivity,
 	TaskActivityInput,
+	TaskClaim,
 	TaskFailure,
+	WorkflowInterface,
 	WorkflowSnapshot,
 } from './types.js'
 import {
@@ -11,27 +13,54 @@ import {
 	isArray,
 	isBoolean,
 	isFiniteNumber,
+	isFunction,
 	isInteger,
 	isJSONValue,
 	isNonEmptyString,
+	isObject,
 	isRecord,
 } from '@orkestrel/contract'
-import { MAX_TIMER_MS } from './constants.js'
+import { MAX_TIMER_MS, TASK_STATUSES } from './constants.js'
 import { derivePhaseStatus, deriveWorkflowStatus, isTaskResult } from './helpers.js'
 
-/** Test the workflow lifecycle vocabulary. */
+/**
+ * Checks whether an unknown value belongs to the workflow lifecycle vocabulary.
+ *
+ * @remarks
+ * Reads {@link import('./constants.js').TASK_STATUSES}, the runtime array the three status tiers
+ * alias, so the vocabulary has one definition rather than a hard-coded copy per guard.
+ *
+ * @param value - The value to test
+ * @returns True if `value` is a {@link LifecycleStatus}; false otherwise
+ *
+ * @example
+ * ```ts
+ * isLifecycleStatus('running') // true
+ * isLifecycleStatus('paused') // false
+ * ```
+ */
 export function isLifecycleStatus(value: unknown): value is LifecycleStatus {
-	return (
-		value === 'pending' ||
-		value === 'running' ||
-		value === 'completed' ||
-		value === 'failed' ||
-		value === 'skipped' ||
-		value === 'stopped'
-	)
+	return TASK_STATUSES.some((status) => status === value)
 }
 
-/** Test a normalized persisted task failure. */
+/**
+ * Test a normalized persisted task failure.
+ *
+ * @remarks
+ * The exact-record guard behind a persisted {@link TaskFailure}: exactly `origin` and `message`,
+ * an `origin` drawn from the {@link import('./types.js').TaskFailureOrigin} vocabulary, and a
+ * non-empty `message`. Total — a hostile prototype or accessor answers `false` rather than
+ * throwing.
+ *
+ * @param value - The value to test
+ * @returns True if `value` is a persisted {@link TaskFailure}; false otherwise
+ *
+ * @example
+ * ```ts
+ * isTaskFailure({ origin: 'handler', message: 'boom' }) // true
+ * isTaskFailure({ origin: 'handler' }) // false
+ * ```
+ */
 export function isTaskFailure(value: unknown): value is TaskFailure {
 	try {
 		return (
@@ -46,11 +75,52 @@ export function isTaskFailure(value: unknown): value is TaskFailure {
 }
 
 /**
+ * Checks whether an unknown value is a live workflow entity rather than a definition.
+ *
+ * @remarks
+ * The discriminator behind the overloaded
+ * {@link import('./types.js').WorkflowRunnerInterface.execute}: a
+ * {@link import('./types.js').WorkflowInterface} is the only one of the two carrying `destroyed`
+ * (RUNTIME-ONLY, never a field on the pure-JSON
+ * {@link import('./types.js').WorkflowDefinition}) AND a callable `snapshot`. Requiring both is
+ * sturdier than `destroyed` alone — a definition could coincidentally carry a `destroyed` field as
+ * arbitrary data, and pairing it with a function-typed `snapshot` narrows to the actual entity
+ * shape without an `as`. It reads a live class instance, so it tests object identity rather than a
+ * plain-record brand, and it is total: any other value answers `false`.
+ *
+ * @param value - The value to test
+ * @returns True if `value` is a live {@link WorkflowInterface}; false otherwise
+ *
+ * @example
+ * ```ts
+ * isWorkflowInterface(createWorkflow(definition)) // true
+ * isWorkflowInterface(definition) // false
+ * ```
+ */
+export function isWorkflowInterface(value: unknown): value is WorkflowInterface {
+	try {
+		return (
+			isObject(value) && 'destroyed' in value && 'snapshot' in value && isFunction(value.snapshot)
+		)
+	} catch {
+		return false
+	}
+}
+
+/**
  * Validate a safe owned JSON graph as a coherent workflow snapshot.
  *
  * @remarks
  * Callers at hostile boundaries use {@link isWorkflowSnapshot}, which owns the
  * graph first so this semantic pass never observes accessors or prototypes.
+ *
+ * @param value - The already-owned JSON graph to validate
+ * @returns True if `value` is a coherent {@link WorkflowSnapshot}; false otherwise
+ *
+ * @example
+ * ```ts
+ * isOwnedWorkflowSnapshot(workflow.snapshot()) // true
+ * ```
  */
 export function isOwnedWorkflowSnapshot(value: unknown): value is WorkflowSnapshot {
 	try {
@@ -210,14 +280,97 @@ export function isOwnedWorkflowSnapshot(value: unknown): value is WorkflowSnapsh
 	}
 }
 
-/** Total hostile-boundary workflow snapshot guard. */
+/**
+ * Total hostile-boundary workflow snapshot guard.
+ *
+ * @remarks
+ * Owns the value first through the exact-JSON clone of `@orkestrel/contract`, then runs the
+ * semantic pass {@link isOwnedWorkflowSnapshot} over the owned copy — so no accessor, prototype,
+ * or cycle in the caller's graph is ever observed by the semantic pass. Total: an unclonable
+ * value answers `false` rather than throwing.
+ *
+ * @param value - The untrusted value to test
+ * @returns True if `value` is a coherent {@link WorkflowSnapshot}; false otherwise
+ *
+ * @example
+ * ```ts
+ * isWorkflowSnapshot(JSON.parse(payload)) // true only for a coherent snapshot
+ * ```
+ */
 export function isWorkflowSnapshot(value: unknown): value is WorkflowSnapshot {
 	const cloned = attempt(() => cloneJSONValue(value))
 	return cloned.success && isOwnedWorkflowSnapshot(cloned.value)
 }
 
 /**
+ * Checks whether an unknown value is a valid list of task activity claims.
+ *
+ * @remarks
+ * The one guard behind both claim lists of a {@link TaskActivityInput} — its `operations` and its
+ * `constraints` — since {@link import('./types.js').TaskOperation} and
+ * {@link import('./types.js').TaskConstraint} are the same {@link TaskClaim} shape. Every member must be a plain record carrying exactly `id`, `name`, and
+ * `started`, with non-empty string `id` and `name`, a finite non-negative `started`, and an `id`
+ * unique within the list. Total: a hostile prototype, an accessor, or a cycle returns `false`
+ * rather than throwing.
+ *
+ * @param value - The value to test
+ * @returns True if `value` is a list of valid, uniquely identified claims; false otherwise
+ *
+ * @example
+ * ```ts
+ * isTaskClaimList([{ id: 'fetch', name: 'Fetch', started: 1 }]) // true
+ * isTaskClaimList([{ id: 'fetch', name: 'Fetch' }]) // false
+ * ```
+ */
+export function isTaskClaimList(value: unknown): value is readonly TaskClaim[] {
+	try {
+		if (!isArray(value)) return false
+		const ids = new Set<string>()
+		for (const claim of value) {
+			if (!isRecord(claim)) return false
+			const prototype = Object.getPrototypeOf(claim)
+			if (
+				(prototype !== Object.prototype && prototype !== null) ||
+				!Object.keys(claim).every((key) => key === 'id' || key === 'name' || key === 'started')
+			) {
+				return false
+			}
+			const id = claim.id
+			const name = claim.name
+			const started = claim.started
+			if (
+				!isNonEmptyString(id) ||
+				!isNonEmptyString(name) ||
+				!isFiniteNumber(started) ||
+				started < 0 ||
+				ids.has(id)
+			) {
+				return false
+			}
+			ids.add(id)
+		}
+		return true
+	} catch {
+		return false
+	}
+}
+
+/**
  * Test whether an unknown value is a valid whole-frame activity report.
+ *
+ * @remarks
+ * The guard behind {@link import('./types.js').TaskInterface.report}: exactly the optional `note`,
+ * `progress`, `operations`, and `constraints` keys, with the two claim lists checked by
+ * {@link isTaskClaimList} and `progress` a finite non-negative value under an optional `total` at
+ * least as large. Total — a hostile prototype or accessor answers `false` rather than throwing.
+ *
+ * @param value - The value to test
+ * @returns True if `value` is a valid {@link TaskActivityInput}; false otherwise
+ *
+ * @example
+ * ```ts
+ * isTaskActivityInput({ note: 'compiling', progress: { progress: 2, total: 5 } }) // true
+ * ```
  */
 export function isTaskActivityInput(value: unknown): value is TaskActivityInput {
 	try {
@@ -260,64 +413,8 @@ export function isTaskActivityInput(value: unknown): value is TaskActivityInput 
 				return false
 			}
 		}
-		if (operations !== undefined) {
-			if (!isArray(operations)) return false
-			const ids = new Set<string>()
-			for (const operation of operations) {
-				if (!isRecord(operation)) return false
-				const operationPrototype = Object.getPrototypeOf(operation)
-				if (
-					(operationPrototype !== Object.prototype && operationPrototype !== null) ||
-					!Object.keys(operation).every(
-						(key) => key === 'id' || key === 'name' || key === 'started',
-					)
-				) {
-					return false
-				}
-				const id = operation.id
-				const name = operation.name
-				const started = operation.started
-				if (
-					!isNonEmptyString(id) ||
-					!isNonEmptyString(name) ||
-					!isFiniteNumber(started) ||
-					started < 0 ||
-					ids.has(id)
-				) {
-					return false
-				}
-				ids.add(id)
-			}
-		}
-		if (constraints !== undefined) {
-			if (!isArray(constraints)) return false
-			const ids = new Set<string>()
-			for (const constraint of constraints) {
-				if (!isRecord(constraint)) return false
-				const constraintPrototype = Object.getPrototypeOf(constraint)
-				if (
-					(constraintPrototype !== Object.prototype && constraintPrototype !== null) ||
-					!Object.keys(constraint).every(
-						(key) => key === 'id' || key === 'name' || key === 'started',
-					)
-				) {
-					return false
-				}
-				const id = constraint.id
-				const name = constraint.name
-				const started = constraint.started
-				if (
-					!isNonEmptyString(id) ||
-					!isNonEmptyString(name) ||
-					!isFiniteNumber(started) ||
-					started < 0 ||
-					ids.has(id)
-				) {
-					return false
-				}
-				ids.add(id)
-			}
-		}
+		if (operations !== undefined && !isTaskClaimList(operations)) return false
+		if (constraints !== undefined && !isTaskClaimList(constraints)) return false
 		return true
 	} catch {
 		return false
@@ -326,6 +423,20 @@ export function isTaskActivityInput(value: unknown): value is TaskActivityInput 
 
 /**
  * Test whether an unknown value is valid persisted task activity.
+ *
+ * @remarks
+ * The persisted counterpart of {@link isTaskActivityInput}: the same frame plus the REQUIRED
+ * `operations`, `constraints`, and a finite non-negative `updated` stamp, since a stored frame
+ * has already been accepted and normalized. Total — a hostile prototype or accessor answers
+ * `false` rather than throwing.
+ *
+ * @param value - The value to test
+ * @returns True if `value` is a persisted {@link TaskActivity}; false otherwise
+ *
+ * @example
+ * ```ts
+ * isTaskActivity({ operations: [], constraints: [], updated: 1 }) // true
+ * ```
  */
 export function isTaskActivity(value: unknown): value is TaskActivity {
 	try {

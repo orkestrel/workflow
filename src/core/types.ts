@@ -169,17 +169,30 @@ export interface TaskInput extends Partial<TaskContext> {
 }
 
 /**
- * One operation claimed active when a running task's complete frame was accepted.
+ * One identified thing a running task claims active, with the moment the claim began.
  *
  * @remarks
- * `id` is stable within one complete activity report, `name` is the human-readable label,
- * and `started` is a finite non-negative reporter timestamp.
+ * The shape {@link TaskOperation} and {@link TaskConstraint} share: `id` is unique within one
+ * complete activity report, `name` is the human-readable label, and `started` is a finite
+ * non-negative reporter timestamp. The two claim lists are validated by one guard
+ * ({@link import('./validators.js').isTaskClaimList}) and owned by one cloner
+ * ({@link import('./cloners.js').cloneTaskClaims}) over this type, while each list keeps its own
+ * published member name so a later member can distinguish them.
  */
-export interface TaskOperation {
+export interface TaskClaim {
 	readonly id: string
 	readonly name: string
 	readonly started: number
 }
+
+/**
+ * One operation claimed active when a running task's complete frame was accepted.
+ *
+ * @remarks
+ * A {@link TaskClaim}: `id` is stable within one complete activity report, `name` is the
+ * human-readable label, and `started` is a finite non-negative reporter timestamp.
+ */
+export interface TaskOperation extends TaskClaim {}
 
 /**
  * The aggregate progress most recently reported by a running task.
@@ -199,14 +212,11 @@ export interface TaskProgress {
  * One constraint claimed active when a running task's complete frame was accepted.
  *
  * @remarks
- * Constraints describe active limits or requirements without embedding provider policy in
- * core. `id` is unique within one complete report and `started` is finite and non-negative.
+ * A {@link TaskClaim}. Constraints describe active limits or requirements without embedding
+ * provider policy in core. `id` is unique within one complete report and `started` is finite and
+ * non-negative.
  */
-export interface TaskConstraint {
-	readonly id: string
-	readonly name: string
-	readonly started: number
-}
+export interface TaskConstraint extends TaskClaim {}
 
 /**
  * One complete replacement of a running task's observable activity.
@@ -239,7 +249,7 @@ export interface TaskActivity {
 /**
  * A declarative partial update to a {@link TaskInterface} — the fields a `pending`
  * task's {@link TaskInterface.patch} (and the owning {@link TaskManagerInterface.update})
- * accept, runtime-validated via {@link import('./shapers.js').taskUpdateShape}.
+ * accept, runtime-validated through {@link import('./shapers.js').taskUpdateShape}.
  *
  * @remarks
  * Mirrors the identity fields of {@link TaskDefinition} (`name` / `description`) —
@@ -260,7 +270,7 @@ export interface TaskUpdate {
 /**
  * A declarative partial update to a {@link PhaseInterface} — the fields a `pending`
  * phase's {@link PhaseInterface.patch} (and the owning {@link PhaseManagerInterface.update})
- * accept, runtime-validated via {@link import('./shapers.js').phaseUpdateShape}.
+ * accept, runtime-validated through {@link import('./shapers.js').phaseUpdateShape}.
  *
  * @remarks
  * Mirrors the identity + throttle/policy fields of {@link PhaseDefinition} (`name` /
@@ -309,8 +319,13 @@ export interface PhaseUpdate {
  *   is a REJECTED promise, never a synchronous throw, so every scheduler backend settles
  *   the same way whatever the caller passed. The error `context` names the offending
  *   parameter (`signal`) and the `typeof` the caller supplied.
+ * - `INVARIANT` — an internal invariant the engine guarantees did not hold: a derived
+ *   `failed` node whose failing {@link TaskResult} is missing, or a tracked
+ *   {@link RunnerInterface} unit whose cancellation handle is absent. It is a programmer-error
+ *   guard on a path no input reaches, raised instead of fabricating a substitute value that
+ *   would type-check while masking the true cause. The error `context` names the offending node.
  */
-export type WorkflowErrorCode = 'TRANSITION' | 'RESTORE' | 'MUTATION' | 'SCHEDULE'
+export type WorkflowErrorCode = 'TRANSITION' | 'RESTORE' | 'MUTATION' | 'SCHEDULE' | 'INVARIANT'
 
 // === Status unions (AGENTS §10 lifecycle vocabulary)
 
@@ -391,6 +406,25 @@ export interface PhaseDerivation {
 // === Task result (lineage + boxed outcome)
 
 /**
+ * Where a task failure arose — the axis a persisted {@link TaskFailure} records.
+ *
+ * @remarks
+ * - `handler` — the task's own {@link WorkflowFunction} threw or rejected, or its `run` name had
+ *   no registered handler to dispatch.
+ * - `timeout` — the task's per-attempt deadline expired on its final attempt.
+ * - `recovery` — an interrupted `running` task was rebuilt by
+ *   {@link import('./factories.js').createRecoveredWorkflow} with no attempts left in its retry
+ *   budget, so the recovery settled it rather than replenishing it.
+ */
+export type TaskFailureOrigin = 'handler' | 'timeout' | 'recovery'
+
+/** A normalized JSON-safe task failure persisted without a stack or cause. */
+export interface TaskFailure {
+	readonly origin: TaskFailureOrigin
+	readonly message: string
+}
+
+/**
  * The structured outcome of a task execution — its full lineage, its terminal
  * status, the moment it settled, and its boxed produced outcome.
  *
@@ -406,14 +440,6 @@ export interface PhaseDerivation {
  * `value?` / `error?` fields: a success's payload is `result.value`, a failure's reason is `result.error`.
  * `timestamp` is when the result was created (ms since epoch).
  */
-export type TaskFailureOrigin = 'handler' | 'timeout' | 'recovery'
-
-/** A normalized JSON-safe task failure persisted without a stack or cause. */
-export interface TaskFailure {
-	readonly origin: TaskFailureOrigin
-	readonly message: string
-}
-
 export interface TaskResult {
 	readonly task: TaskContext
 	readonly phase: PhaseContext
@@ -585,8 +611,12 @@ export interface WorkflowStoreInterface {
  * `@orkestrel/queue`'s `StoredEntry` stores a queue entry's `input`), so the row
  * type stays FLAT and the deeply-nested snapshot shape (workflow → phases → tasks → results) never
  * forces the contract to `Infer` it — sidestepping a TS2589 instantiation-depth blow-up. The column
- * therefore reads back as the broad `unknown`; the store narrows it to a {@link WorkflowSnapshot} on
- * `get` ({@link import('./helpers.js').isWorkflowSnapshot}, the AGENTS §14 boundary narrow). `id`
+ * therefore reads back as the broad `unknown`; the store owns and narrows it to a
+ * {@link WorkflowSnapshot} on `get` through {@link import('./cloners.js').cloneWorkflowSnapshot},
+ * whose semantic pass is {@link import('./validators.js').isOwnedWorkflowSnapshot} — the AGENTS §14
+ * boundary narrow, which also key-checks the row and refuses a mismatch. The total guard
+ * {@link import('./validators.js').isWorkflowSnapshot} is the same boundary narrow for a caller
+ * holding an untrusted payload of its own. `id`
  * mirrors {@link WorkflowSnapshot.id} (the primary key), so a `set` writes `{ id: snapshot.id, snapshot }`.
  */
 export interface WorkflowSnapshotRow {
@@ -599,7 +629,7 @@ export interface WorkflowSnapshotRow {
 
 /**
  * The push observation surface (AGENTS §13) of the workflow entity (W-b) — the
- * lifecycle moments a fire-and-forget observer subscribes to via
+ * lifecycle moments a fire-and-forget observer subscribes to through
  * `workflow.emitter.on`.
  *
  * @remarks
@@ -952,7 +982,7 @@ export interface TaskInterface {
  * (never set directly) and recomputed reactively as a task transitions (the cascade).
  *
  * @remarks
- * - **Derived status.** `status` is computed via
+ * - **Derived status.** `status` is computed through
  *   {@link import('./helpers.js').derivePhaseStatus} over the live tasks' statuses,
  *   UNLESS an override is in force. It recomputes whenever a child task transitions; a
  *   CHANGE emits.
@@ -986,7 +1016,7 @@ export interface PhaseInterface {
 	/** Max tasks in flight at once (a resource throttle); mirrors {@link PhaseSnapshot.concurrency}. `undefined` ⇒ unbounded. */
 	readonly concurrency: number | undefined
 	/**
-	 * Whether the phase is currently paused (AGENTS §10 — resumable); RUNTIME-ONLY — never a
+	 * Whether the phase is paused (AGENTS §10 — resumable); RUNTIME-ONLY — never a
 	 * {@link PhaseStatus}, never persisted in a {@link PhaseSnapshot} (a paused phase's
 	 * `status` still reports its ordinary derived value).
 	 */
@@ -1076,7 +1106,7 @@ export interface PhaseInterface {
 	 * a pure append (`index` omitted or `=== tasks.count`) — a live runner subscribed to
 	 * the `add` event picks the new task up for same-run execution; the derived-status
 	 * model guarantees this phase cannot reach a terminal status while the accepted task is
-	 * still `pending` (its status feeds `status` via {@link import('./helpers.js').derivePhaseStatus}).
+	 * still `pending` (its status feeds `status` through {@link import('./helpers.js').derivePhaseStatus}).
 	 * While terminal: always refused.
 	 *
 	 * **Abort edge.** An append ACCEPTED while `running` can still settle `skipped` rather
@@ -1153,7 +1183,7 @@ export interface PhaseInterface {
  * under the `bail` policy and recomputed reactively as the cascade propagates up.
  *
  * @remarks
- * - **Derived status.** `status` is computed via
+ * - **Derived status.** `status` is computed through
  *   {@link import('./helpers.js').deriveWorkflowStatus} over the live phases' statuses,
  *   feeding the definition's `bail`, UNLESS an override is in force. It recomputes when a
  *   phase's status changes (the top of the cascade); a CHANGE emits — `fail` carries the
@@ -1181,7 +1211,7 @@ export interface WorkflowInterface {
 	readonly status: WorkflowStatus
 	readonly phases: PhaseManagerInterface
 	/**
-	 * Whether the workflow is currently paused (AGENTS §10 — resumable); RUNTIME-ONLY —
+	 * Whether the workflow is paused (AGENTS §10 — resumable); RUNTIME-ONLY —
 	 * never a {@link WorkflowStatus}, never persisted in a {@link WorkflowSnapshot} (a
 	 * paused workflow's `status` still reports its ordinary `pending` / `running` value).
 	 */
@@ -1358,6 +1388,106 @@ export interface WorkflowInterface {
 	snapshot(): WorkflowSnapshot
 }
 
+// === Positional collection (the one insertion-ordered gated store both managers hold)
+
+/**
+ * What the {@link CollectionInterface} store requires of the entities it holds — a stable `id`, a
+ * gating {@link LifecycleStatus}, and a `patch` the store applies once a patch validates.
+ *
+ * @remarks
+ * Both {@link TaskInterface} and {@link PhaseInterface} satisfy it, which is what lets one engine
+ * serve {@link TaskManagerInterface} and {@link PhaseManagerInterface}. The store reads `status`
+ * only to gate a `remove` / `move` / `update` on the target being `pending`; it never derives,
+ * writes, or interprets it further.
+ *
+ * @typeParam TPatch - The declarative partial update the entity's `patch` accepts
+ */
+export interface CollectionEntry<TPatch> {
+	readonly id: string
+	readonly status: LifecycleStatus
+	patch(value: TPatch): void
+}
+
+/**
+ * An insertion-ordered store of {@link CollectionEntry} entities keyed by `id`, with the gated
+ * mutation quartet a lean manager (AGENTS §9) delegates to.
+ *
+ * @remarks
+ * The ONE engine behind {@link TaskManagerInterface} and {@link PhaseManagerInterface}: positional
+ * order is the backing `Map`'s insertion order, so it survives an interior `skip` (a status
+ * change, never a removal) and a snapshot restore reproduces it by re-`append`ing in order.
+ * `append` is the build-time wiring path and THROWS a `MUTATION`
+ * {@link import('./errors.js').WorkflowError} on a duplicate id (a genuine programmer error);
+ * `add` / `remove` / `move` / `update` are its graceful `Result` counterparts, gating ONLY on the
+ * target's own existence, `pending` status, id, and bounds. The store is event-free — the entity
+ * that owns it emits on success. Each refusal names the entity noun the store was built with, so
+ * a task store and a phase store report in their own vocabulary.
+ *
+ * @typeParam TEntry - The stored entity
+ * @typeParam TPatch - The declarative partial update `update` validates and applies
+ */
+export interface CollectionInterface<TEntry, TPatch> {
+	readonly count: number
+	/**
+	 * Add `entry` at the end — the build-time wiring path.
+	 *
+	 * @remarks
+	 * THROWS a `MUTATION` {@link import('./errors.js').WorkflowError} on a duplicate `id` instead
+	 * of silently overwriting the existing entry.
+	 *
+	 * @param entry - The entity to append
+	 */
+	append(entry: TEntry): void
+	/**
+	 * Insert `entry` at `index` (default the end) — the gated counterpart to {@link append}.
+	 *
+	 * @param entry - The entity to insert
+	 * @param index - The insertion position (`[0, count]`); omitted inserts at the end
+	 * @returns A {@link Result} boxing the inserted entity, or a `MUTATION` failure on a duplicate
+	 *   id or an out-of-bounds `index`
+	 */
+	add(entry: TEntry, index?: number): Result<TEntry, WorkflowError>
+	/**
+	 * Remove the `pending` entity `id`.
+	 *
+	 * @param id - The entity id to remove
+	 * @returns A {@link Result} boxing the removed entity, or a `MUTATION` failure when `id` is
+	 *   absent or not `pending`
+	 */
+	remove(id: string): Result<TEntry, WorkflowError>
+	/**
+	 * Reposition the `pending` entity `id` to `index`.
+	 *
+	 * @param id - The entity id to move
+	 * @param index - The destination position (`[0, count)`)
+	 * @returns A {@link Result} boxing the moved entity, or a `MUTATION` failure when `id` is
+	 *   absent, not `pending`, or `index` is out of bounds
+	 */
+	move(id: string, index: number): Result<TEntry, WorkflowError>
+	/**
+	 * Apply a validated patch to the `pending` entity `id`.
+	 *
+	 * @param id - The entity id to patch
+	 * @param patch - The fields to update
+	 * @returns A {@link Result} boxing the patched entity, or a `MUTATION` failure when `id` is
+	 *   absent, not `pending`, or `patch` fails validation
+	 */
+	update(id: string, patch: TPatch): Result<TEntry, WorkflowError>
+	/**
+	 * Look up one stored entity by its `id`.
+	 *
+	 * @param id - The entity id to resolve
+	 * @returns The stored entity, or `undefined` when none is stored under `id`
+	 */
+	entry(id: string): TEntry | undefined
+	/**
+	 * List every stored entity in positional order.
+	 *
+	 * @returns The stored entities, in insertion order
+	 */
+	entries(): readonly TEntry[]
+}
+
 // === Manager interfaces (AGENTS §9 — lean: an accessor + count, no batch matrix)
 
 /**
@@ -1503,7 +1633,7 @@ export interface PhaseManagerInterface {
 // is dispatched through its construction-resolved handler; only an omitted-`run` task
 // auto-completes as a deliberate no-op.
 // The `bail` policy maps onto the substrate Runner's fail-fast (`bail: true`) vs settle-all
-// (`bail: false`). Abort / Timeout / Budget fold per run via `AbortSignal.any`, exactly as
+// (`bail: false`). Abort / Timeout / Budget fold per run through `AbortSignal.any`, exactly as
 // the agent runtime folds its bounds. Tool and agent adaptation remains outside core.
 
 /**
@@ -1517,7 +1647,7 @@ export interface PhaseManagerInterface {
  * to earlier phases' {@link TaskResult}s. A returned value becomes the task's
  * {@link import('@orkestrel/contract').Success} ({@link TaskInterface.complete}); a throw / rejection
  * becomes its {@link import('@orkestrel/contract').Failure} ({@link TaskInterface.fail}). Long work
- * should honour `controller.signal` (a workflow-level abort / timeout / budget, or — under
+ * must honour `controller.signal` (a workflow-level abort / timeout / budget, or — under
  * `bail: true` — a sibling's failure, fires it) so a cancel stops it promptly.
  */
 export type WorkflowFunction = (
@@ -1564,7 +1694,7 @@ export interface TaskControllerInterface {
 	readonly task: TaskContext
 	/** The one-based persisted launch represented by this handle. */
 	readonly attempt: number
-	/** Whether the workflow, phase, or task cooperative gate is currently paused. */
+	/** Whether the workflow, phase, or task cooperative gate is paused. */
 	readonly paused: boolean
 	/**
 	 * Replace this running task's complete observable activity.
@@ -1590,6 +1720,40 @@ export interface TaskControllerInterface {
 }
 
 /**
+ * The per-run cell holding the phase {@link RunnerInterface} a
+ * {@link WorkflowRunnerInterface.execute} call is driving.
+ *
+ * @remarks
+ * Phases run sequentially, so one run has at most one active phase runner at a time and the cell
+ * is swapped as each phase starts and cleared as it settles. `runner` is the one deliberately
+ * MUTABLE member in this file: the cell IS the mutation, and a fresh cell per `execute` is what
+ * keeps a nested run from clobbering the suspended outer run's active runner. A run-level cancel
+ * closes over the cell, so it always aborts the phase runner that is live when the cancel fires
+ * rather than the one that was live when the listener was armed. `undefined` between phases and
+ * after the last one settles.
+ */
+export interface RunHolder {
+	runner: RunnerInterface<TaskInterface, void> | undefined
+}
+
+/**
+ * How one task attempt left the race between its handler and its cancellation.
+ *
+ * @remarks
+ * The engine races a dispatched {@link WorkflowFunction} against the attempt's folded signal, so
+ * the attempt either SETTLED with the handler's JSON value or did not settle at all. A tuple, not
+ * a {@link Result}: the unsettled branch is a cancellation rather than an error, so there is no
+ * error to carry, and `genuine` records what the cancellation was — `true` for a genuine cancel
+ * (a run-level bound, a task `stop` / `skip`, or a sibling fail-fast, all of which skip the leaf),
+ * `false` for a bare per-attempt timeout (a retryable failure of this attempt), and `undefined`
+ * when the caller must re-read the discriminator itself. The engine reads the tuple positionally
+ * at each of its own settlement points; it never crosses the published surface.
+ */
+export type AttemptOutcome =
+	| readonly [settled: true, value: JSONValue]
+	| readonly [settled: false, value: undefined, genuine?: boolean]
+
+/**
  * The structured outcome of a {@link WorkflowRunnerInterface.execute} run — the settled
  * live workflow, its final status, and the flattened result tree.
  *
@@ -1601,7 +1765,7 @@ export interface TaskControllerInterface {
  * failed leaves; `failed` under `bail: true`; `stopped` on a workflow-level abort /
  * timeout / budget), and `results` is the workflow-tier {@link TaskResult} list (every
  * settled task across all phases, in positional order — the same array `workflow.results()`
- * yields). Returning the live `workflow` (not just a snapshot) keeps the entity tree the
+ * yields). Returning the live `workflow` (not only a snapshot) keeps the entity tree the
  * source of truth — the runner adds only the convenience `status` / `results` projections.
  * A scheduler or other engine-infrastructure failure rejects after the runner coherently
  * stops remaining work and attempts final persistence.
@@ -1656,11 +1820,12 @@ export interface WorkflowPersistenceInterface {
 
 /**
  * The options for one {@link WorkflowRunnerInterface.execute} call — the live tree's
- * CONSTRUCTION options ({@link WorkflowOptions}) PLUS the per-run BOUNDS (an external abort,
- * a deadline, and a cost ceiling), each bound folded into every task's cancellation.
+ * CONSTRUCTION options ({@link WorkflowOptions}) PLUS the per-run RUN CONTROLS: the bounds
+ * (an external abort, a deadline, and a cost ceiling), each folded into every task's
+ * cancellation, and the optional durable `store`.
  *
  * @remarks
- * `execute` is single-source: it BUILDS the live tree from the definition internally (via
+ * `execute` is single-source: it BUILDS the live tree from the definition internally (through
  * {@link import('./factories.js').createWorkflow}), so these options carry BOTH halves of
  * that one call —
  * - the **construction** half is {@link WorkflowOptions} (`on` initial listeners, the `bail`
@@ -1668,9 +1833,10 @@ export interface WorkflowPersistenceInterface {
  *   so construction-time emitter listeners, a `bail` override, and per-node options all apply
  *   to the tree it builds (`createWorkflow` resolves `bail` as `options.bail ?? definition.bail
  *   ?? DEFAULT_BAIL`); and
- * - the **run-control** half is the three bounds below, used only for the run-level fold.
+ * - the **run-control** half is the bounds and the `store` below; the bounds feed the run-level
+ *   fold and the store makes the run durable.
  *
- * The three bounds compose via `AbortSignal.any` (exactly as the agent runtime folds its
+ * The three bounds compose through `AbortSignal.any` (exactly as the agent runtime folds its
  * own): a fire of ANY of them cancels every in-flight task (its
  * {@link TaskControllerInterface.signal} fires) and HALTS the run — the remaining tasks
  * and phases are `skip`ped and the workflow settles `stopped`.
@@ -1682,6 +1848,17 @@ export interface WorkflowPersistenceInterface {
  *   `signal` and `start`s it. (A `max: 0` budget is exhausted from its first `start`, so it
  *   cancels the run at entry — a DIFFERENT primitive from the `timeout: 0` "no deadline" case.)
  *
+ * `store` is not a bound. Supplying a {@link WorkflowStoreInterface} makes the run DURABLE: the
+ * runner composes a {@link WorkflowPersistenceInterface} over it and writes the live
+ * {@link WorkflowSnapshot} at each required checkpoint — before the first phase, around every
+ * attempt and settlement, and once more when the run finishes — so an interrupted run is
+ * recoverable from the store through
+ * {@link import('./factories.js').createRecoveredWorkflow}. It also adds the two durability
+ * read-throughs to the result: {@link WorkflowResult.durable} reports whether the FINAL state
+ * reached the store, and {@link WorkflowResult.fault} carries the first required write that
+ * failed. Both are OMITTED without a store, since a run that was never asked to persist has
+ * nothing to report. A required checkpoint that fails stops the run rather than continuing work
+ * whose state is no longer recoverable. This half applies to BOTH `execute` overloads.
  */
 export type WorkflowRunOptions = WorkflowOptions & {
 	readonly signal?: AbortSignal
@@ -1703,7 +1880,7 @@ export type WorkflowRunOptions = WorkflowOptions & {
  *   ({@link createScheduler}).
  *
  * The reserved `on` key (AGENTS §8) is intentionally ABSENT: the runner is THIN and drives
- * the W-b entities' OWN emitters (subscribe via `workflow.emitter` / `phase.emitter` /
+ * the W-b entities' OWN emitters (subscribe through `workflow.emitter` / `phase.emitter` /
  * `task.emitter`), so it owns no event map of its own — there is nothing for an `on` to
  * wire. A future runner-level emitter would introduce its own `EmitterHooks` here.
  */
@@ -1718,7 +1895,7 @@ export interface WorkflowRunnerOptions {
  *
  * @remarks
  * `execute(definition, options?)` BUILDS the live W-b entity tree from the definition itself
- * (via {@link import('./factories.js').createWorkflow}) and drives it to a terminal
+ * (through {@link import('./factories.js').createWorkflow}) and drives it to a terminal
  * {@link WorkflowResult} — phases SEQUENTIALLY and, within each phase, the tasks CONCURRENTLY
  * through ONE substrate {@link RunnerInterface} (concurrency =
  * the phase's {@link PhaseDefinition.concurrency}). The definition is the SINGLE source of
@@ -1728,14 +1905,14 @@ export interface WorkflowRunnerOptions {
  * {@link WorkflowOptions.functions}) and each phase's `concurrency` (so there is no
  * separately-supplied workflow to drift from the definition). The freshly-built live tree is
  * returned in {@link WorkflowResult.workflow}. The runner carries NO registry of its own — it
- * simply invokes each task's OWN {@link TaskInterface.handler}; an omitted `run` is the only
+ * invokes each task's OWN {@link TaskInterface.handler}; an omitted `run` is the only
  * auto-completing no-op. The runner DRIVES the live entity (`start` → `complete` / `fail`), never
  * re-implementing status. The `bail` policy maps onto the substrate's fail-fast (`bail: true`
  * — the first failure aborts in-flight siblings and skips the rest) vs settle-all (`bail:
  * false` — failures are recorded and the run finishes). The {@link WorkflowOptions} half of
  * the options is forwarded to `createWorkflow` (initial listeners, a `bail` override,
  * per-node options, the `functions` registry); the Abort / Timeout / Budget bounds fold per
- * run via `AbortSignal.any`, halting the run and `stop`ping the workflow. A second
+ * run through `AbortSignal.any`, halting the run and `stop`ping the workflow. A second
  * `execute(workflow, options?)` overload drives a CALLER-BUILT live tree instead — the
  * entity-native control surface (AGENTS §10: `pause` / `resume` / `add` / `stop` /
  * `destroy` live on {@link WorkflowInterface} itself); see its own doc for details.
@@ -1773,7 +1950,7 @@ export interface WorkflowRunnerInterface {
 	 *
 	 * @param definition - The {@link WorkflowDefinition} to build the live tree from and drive
 	 * @param options - The construction options ({@link WorkflowOptions}: `on` / `bail` /
-	 *   `phases`) PLUS the per-run bounds (`signal` / `timeout` / `budget`)
+	 *   `phases`) PLUS the per-run bounds (`signal` / `timeout` / `budget`) and the durable `store`
 	 * @returns The run's terminal {@link WorkflowResult} (its `workflow` is the built tree)
 	 */
 	execute(definition: WorkflowDefinition, options?: WorkflowRunOptions): Promise<WorkflowResult>
@@ -1784,7 +1961,7 @@ export interface WorkflowRunnerInterface {
 	 * @remarks
 	 * The entity itself is now the single control surface (no separate run handle):
 	 * `createWorkflow` mints the live tree, this overload drives it, and the caller
-	 * controls the SAME entity mid-run via its own `pause` / `resume` / `add` / `stop` /
+	 * controls the SAME entity mid-run through its own `pause` / `resume` / `add` / `stop` /
 	 * `destroy` (AGENTS §10). Requires `workflow.status === 'pending'`,
 	 * `!workflow.destroyed`, and no prior execution claim. A process-local object-identity claim
 	 * shared by every runner instance is acquired synchronously and never released, so a same-object
@@ -1798,9 +1975,9 @@ export interface WorkflowRunnerInterface {
 	 * phase boundary AND before each task's dispatch (an in-flight task body is never
 	 * suspended); `workflow.stop()` skips not-yet-started work gracefully; `workflow.destroy()`
 	 * folds `workflow.signal` into the run's cancellation, aborting in-flight work
-	 * immediately. `options` carries only the per-run BOUNDS (`signal` / `timeout` /
-	 * `budget`) — the construction half of {@link WorkflowRunOptions}
-	 * does not apply, since the tree already exists.
+	 * immediately. `options` carries only the per-run RUN CONTROLS — the bounds (`signal` /
+	 * `timeout` / `budget`) and the durable `store` — since the construction half of
+	 * {@link WorkflowRunOptions} does not apply to a tree that already exists.
 	 *
 	 * **Run round-trips through the snapshot.** Driving a tree rebuilt by
 	 * {@link import('./factories.js').createRestoredWorkflow} behaves according to whether a
@@ -1813,8 +1990,9 @@ export interface WorkflowRunnerInterface {
 	 *
 	 * @param workflow - The live {@link WorkflowInterface} to drive (its own entity surface —
 	 *   `pause` / `resume` / `add` / `stop` / `destroy` — is the caller's control seam)
-	 * @param options - The per-run bounds (`signal` / `timeout` / `budget`); the construction
-	 *   half of {@link WorkflowRunOptions} does not apply (the tree already exists)
+	 * @param options - The per-run bounds (`signal` / `timeout` / `budget`) and the durable
+	 *   `store`; the construction half of {@link WorkflowRunOptions} does not apply (the tree
+	 *   already exists)
 	 * @returns The run's terminal {@link WorkflowResult} (its `workflow` is the SAME entity passed in)
 	 */
 	execute(
@@ -1863,8 +2041,8 @@ export interface WorkflowManagerOptions {
 	readonly store?: WorkflowStoreInterface
 	/**
 	 * The {@link WorkflowFunctions} registry threaded into every workflow this manager mints
-	 * (`add`, via {@link import('./factories.js').createWorkflow}) or hydrates (`open`'s
-	 * registry-miss path, via {@link import('./factories.js').createRestoredWorkflow}) — so a
+	 * (`add`, through {@link import('./factories.js').createWorkflow}) or hydrates (`open`'s
+	 * registry-miss path, through {@link import('./factories.js').createRestoredWorkflow}) — so a
 	 * hydrated workflow is RUNNABLE, its tasks carrying real resolved `handler`s. Omitted ⇒
 	 * named tasks remain inspectable but execution rejects them.
 	 */
@@ -1884,7 +2062,7 @@ export interface WorkflowManagerOptions {
  *
  * @remarks
  * - **Registry.** `count` is how many are stored. `add(definition)` mints a live
- *   {@link WorkflowInterface} via {@link import('./factories.js').createWorkflow} (flowing
+ *   {@link WorkflowInterface} through {@link import('./factories.js').createWorkflow} (flowing
  *   this manager's `functions` registry in) and registers it under `definition.id` — an
  *   already-present id OVERWRITES (last write wins, since `createWorkflow` keys the tree by
  *   the definition's own id). `workflow(id)` looks one up (`undefined` when absent);
@@ -1929,7 +2107,7 @@ export interface WorkflowManagerInterface {
 	workflow(id: string): WorkflowInterface | undefined
 	workflows(): readonly WorkflowInterface[]
 	/**
-	 * MINT a live {@link WorkflowInterface} from `definition` (via
+	 * MINT a live {@link WorkflowInterface} from `definition` (through
 	 * {@link import('./factories.js').createWorkflow}, flowing this manager's `functions`
 	 * registry in) and register it under `definition.id`.
 	 *
@@ -1951,7 +2129,7 @@ export interface WorkflowManagerInterface {
 	 * - If `id` is ALREADY registered, it is returned directly — no store hit.
 	 * - Same-id registry misses share one in-flight `store.get(id)` and resolve to the same live
 	 *   object. On a HIT the snapshot is
-	 *   rehydrated into a fresh {@link WorkflowInterface} via
+	 *   rehydrated into a fresh {@link WorkflowInterface} through
 	 *   {@link import('./factories.js').createRestoredWorkflow}, flowing this manager's `functions`
 	 *   registry in (so the rehydrated tree carries real resolved `handler`s and can RESUME
 	 *   real work), registers it, and returns it. A payload whose own id differs from `id` rejects
@@ -2032,7 +2210,7 @@ export interface SchedulerInterface {
  * onto this domain map and never into the one-shot / fail-fast / spawn-tracking engine — so a
  * buggy observer can never reorder, throw into, or corrupt the run. Every emit sits AFTER the
  * relevant unit-launch / settle / drain transition, so a throwing observer cannot unbalance
- * the outstanding-unit count gate or break fail-fast. Subscribe via `runner.emitter.on(...)`.
+ * the outstanding-unit count gate or break fail-fast. Subscribe through `runner.emitter.on(...)`.
  *
  * Declared as a `type` alias (not `interface extends EventMap`, §4.5 — `EventMap` is a
  * `type` kind): a type-literal satisfies the `EventMap` constraint
@@ -2133,7 +2311,7 @@ export type RunnerHandler<TInput, TResult> = (
 
 /**
  * The per-entry reliability OVERRIDES for one unit — its extra attempts on failure and its
- * per-attempt deadline, resolved from the unit's input via {@link RunnerOptions.entries}.
+ * per-attempt deadline, resolved from the unit's input through {@link RunnerOptions.entries}.
  *
  * @remarks
  * The unit's `id` and `signal` stay Runner-managed (it mints the id and owns the per-unit
@@ -2212,6 +2390,35 @@ export type UnitOutcome<TResult> =
 	| { readonly ok: false; readonly error: unknown }
 
 /**
+ * One settled unit's value, held in a box so presence is tracked by the box itself.
+ *
+ * @remarks
+ * The {@link RunnerInterface} records each settled unit's value in this box and reads it back by
+ * map membership, so a `TResult` of `undefined` is a genuine result rather than an absent one. It
+ * carries no discriminant, so it is NOT the `Success` of `@orkestrel/contract` — that shape
+ * answers "did this succeed", while this one answers "is a value present at all".
+ *
+ * @typeParam TResult - The value a unit resolves
+ */
+export interface RunnerValue<TResult> {
+	readonly value: TResult
+}
+
+/**
+ * The first unit failure a {@link RunnerInterface} run recorded, held in a box so presence is
+ * tracked by the box itself.
+ *
+ * @remarks
+ * Fail-fast keeps the FIRST failure and ignores later ones, so the box distinguishes "no failure
+ * recorded" from "a failure whose `error` happens to be `undefined`". It carries no discriminant,
+ * so it is NOT the `Failure` of `@orkestrel/contract`; the run's outcome is decided by whether the
+ * box exists, never by a `success` field inside it.
+ */
+export interface RunnerFailure {
+	readonly error: unknown
+}
+
+/**
  * A thin generic orchestrator that drives declared units — plus any they `spawn` —
  * through a bounded-concurrency queue, collecting their results in order.
  *
@@ -2226,7 +2433,7 @@ export type UnitOutcome<TResult> =
  * result. Emitting is observation-only — every event fires AFTER the relevant unit-launch /
  * settle / drain transition, so a buggy observer can never reorder or corrupt the one-shot /
  * fail-fast / spawn-tracking engine: the emitter isolates a listener throw and routes it to
- * its `error` handler (the `error` option), never the run. Subscribe via
+ * its `error` handler (the `error` option), never the run. Subscribe through
  * `runner.emitter.on(...)`.
  *
  * @typeParam TInput - The unit's work input
@@ -2236,7 +2443,7 @@ export interface RunnerInterface<TInput, TResult> {
 	readonly emitter: EmitterInterface<RunnerEventMap<TResult>>
 	readonly active: number
 	readonly stopped: boolean
-	/** Whether the runner is currently paused (AGENTS §10 — resumable, no new dispatch); rides the backing queue's own `paused`. */
+	/** Whether the runner is paused (AGENTS §10 — resumable, no new dispatch); rides the backing queue's own `paused`. */
 	readonly paused: boolean
 	/**
 	 * Run all `inputs` — and anything they `spawn` — to completion; resolve their
@@ -2260,7 +2467,7 @@ export interface RunnerInterface<TInput, TResult> {
 	 *
 	 * @remarks
 	 * Returns `undefined` synchronously (graceful, non-throwing — AGENTS §12) when the
-	 * runner is not currently mid-`execute`, or the run has already fully drained — the
+	 * runner is not mid-`execute`, or the run has already fully drained — the
 	 * caller reads `undefined` as "not accepted". Otherwise the unit is routed through
 	 * the SAME backing queue as a declared/`spawn`ed unit (the runner's
 	 * outstanding-unit count gate keeps the in-flight `execute` awaiting it) and emits

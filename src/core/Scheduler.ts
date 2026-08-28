@@ -1,5 +1,5 @@
 import type { SchedulerInterface, SchedulerOptions } from './types.js'
-import { scheduleHost } from './helpers.js'
+import { delayHost } from './helpers.js'
 
 /**
  * The safe cross-environment cooperative-yield default — a {@link SchedulerInterface}
@@ -18,7 +18,7 @@ import { scheduleHost } from './helpers.js'
  *   rendering run — it only defers within the current task. A zero-delay timer is
  *   the correct cross-environment "give the host a turn".
  * - **Abort-aware.** A pending `yield` / `delay` rejects with `signal.reason` exactly.
- *   {@link scheduleHost} links an owned settlement composite to the caller before arming
+ *   {@link delayHost} links an owned settlement composite to the caller before arming
  *   the timer, so pre-abort schedules nothing, caller signal method mutation is harmless,
  *   cancellation clears the handle, and native first-settlement wins exactly once.
  * - **Priority is accepted but uniform.** `options.priority` is part of the
@@ -38,32 +38,23 @@ import { scheduleHost } from './helpers.js'
 export class Scheduler implements SchedulerInterface {
 	/**
 	 * Yield control back to the host so other tasks (I/O, timers, rendering) can
-	 * run, then resume — a macrotask turn via `setTimeout(0)` (NOT a microtask,
+	 * run, then resume — a macrotask turn through `setTimeout(0)` (NOT a microtask,
 	 * which would resume before the host regains control).
 	 */
 	yield(options?: SchedulerOptions): Promise<void> {
-		return this.#sleep(0, options?.signal)
+		return delayHost(0, options?.signal)
 	}
 
 	/**
 	 * Resume after at least `ms` milliseconds; abort rejects with `signal.reason`.
 	 *
 	 * @remarks
-	 * `ms` should be a non-negative finite number. The primitive stays minimal and
-	 * does no validation: it passes `ms` straight to the host `setTimeout`, which
-	 * clamps a negative value or `NaN` to ~0 — so an out-of-domain `ms` resolves on
-	 * the next host turn rather than throwing.
+	 * Pass a non-negative finite `ms`. The primitive stays minimal and does no
+	 * validation: it passes `ms` straight to the host `setTimeout`, which clamps a
+	 * negative value or `NaN` to ~0 — so an out-of-domain `ms` resolves on the next
+	 * host turn rather than throwing.
 	 */
 	delay(ms: number, options?: SchedulerOptions): Promise<void> {
-		return this.#sleep(ms, options?.signal)
-	}
-
-	// The cross-environment timer boundary shared by `yield` and `delay`; `scheduleHost`
-	// owns listener safety, cancellation races, exact reasons, and once-only settlement.
-	#sleep(ms: number, signal?: AbortSignal): Promise<void> {
-		return scheduleHost((complete) => {
-			const handle = setTimeout(complete, ms)
-			return () => clearTimeout(handle)
-		}, signal)
+		return delayHost(ms, options?.signal)
 	}
 }

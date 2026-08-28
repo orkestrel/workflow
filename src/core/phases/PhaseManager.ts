@@ -1,29 +1,32 @@
 import type { Result } from '@orkestrel/contract'
 import type { PhaseInterface, PhaseManagerInterface, PhaseUpdate } from '../types.js'
+import type { WorkflowError } from '../errors.js'
 import { compileGuard } from '@orkestrel/contract'
-import { WorkflowError } from '../errors.js'
-import { failure, insertEntry, moveEntry, success } from '../helpers.js'
+import { Collection } from '../Collection.js'
 import { phaseUpdateShape } from '../shapers.js'
 
 /**
- * The lean child manager (AGENTS §9) of a {@link import('../Workflow.js').Workflow}'s
- * live phases — an insertion-ordered registry keyed by phase `id`, the phase analogue
+ * The lean child manager (AGENTS §9) of a {@link import('../Workflow.js').Workflow}'s live
+ * phases — the phase vocabulary over one insertion-ordered {@link Collection}, the phase analogue
  * of {@link import('../tasks/TaskManager.js').TaskManager}.
  *
  * @remarks
- * - **Positional store.** Phases live in an insertion-ordered `Map` keyed by `id`;
- *   `append` adds one at the end, `phase(id)` looks one up, `phases()` lists them in
- *   positional order, `count` is the size. A snapshot RESTORE re-`append`s in the
- *   snapshot's order, reproducing it exactly.
- * - **Gated mutation API (AGENTS §12).** `add` / `remove` / `move` / `update` are the
- *   graceful `Result` counterparts to `append`, gating ONLY on the target's OWN
- *   existence/status/id/bounds — a duplicate id, an absent/non-`pending` target, an
- *   out-of-bounds `index`, or a patch that fails {@link phaseUpdateShape} validation
- *   all fail gracefully with a `MUTATION` {@link WorkflowError} instead of throwing.
- * - **No batch matrix.** A workflow's phases are a fixed positional set, so AGENTS §9.2
- *   is deliberately omitted.
- * - **Event-free.** A purely structural container — the live {@link PhaseInterface}s own
- *   their own emitters.
+ * - **One shared store.** The insertion-ordered `Map`, the reorder step, the bounds checks, and
+ *   the gated `add` / `remove` / `move` / `update` all live in {@link Collection}, built with the
+ *   `phase` noun its refusals name and the compiled {@link phaseUpdateShape} guard. This class
+ *   adds the domain accessors `phase` / `phases` and nothing else.
+ * - **Positional store.** `append` adds one live {@link PhaseInterface} at the end, `phase(id)`
+ *   looks one up, `phases()` lists them in positional order, `count` is the tally. A snapshot
+ *   RESTORE re-`append`s in the snapshot's order, reproducing it exactly.
+ * - **Gated mutation API (AGENTS §12).** `add` / `remove` / `move` / `update` are the graceful
+ *   `Result` counterparts to `append`, gating ONLY on the target's OWN existence/status/id/bounds
+ *   — a duplicate id, an absent/non-`pending` target, an out-of-bounds `index`, or a patch that
+ *   fails {@link phaseUpdateShape} validation all fail gracefully with a `MUTATION`
+ *   {@link WorkflowError} instead of throwing.
+ * - **No batch matrix.** A workflow's phases are a fixed positional set, so AGENTS §9.2 is
+ *   deliberately omitted.
+ * - **Event-free.** A purely structural container — the live {@link PhaseInterface}s own their own
+ *   emitters.
  *
  * @example
  * ```ts
@@ -34,82 +37,40 @@ import { phaseUpdateShape } from '../shapers.js'
  * ```
  */
 export class PhaseManager implements PhaseManagerInterface {
-	readonly #phases = new Map<string, PhaseInterface>()
-	// The compiled guard validating a `PhaseUpdate` patch (AGENTS §14) before it reaches
-	// `update`'s `phase.patch` call.
-	readonly #isUpdate = compileGuard(phaseUpdateShape)
+	readonly #phases = new Collection<PhaseInterface, PhaseUpdate>(
+		'phase',
+		compileGuard(phaseUpdateShape),
+	)
 
 	get count(): number {
-		return this.#phases.size
+		return this.#phases.count
 	}
 
 	append(phase: PhaseInterface): void {
-		if (this.#phases.has(phase.id)) {
-			throw new WorkflowError('MUTATION', `duplicate phase id '${phase.id}'`, { id: phase.id })
-		}
-		this.#phases.set(phase.id, phase)
+		this.#phases.append(phase)
 	}
 
 	add(phase: PhaseInterface, index?: number): Result<PhaseInterface, WorkflowError> {
-		if (this.#phases.has(phase.id)) {
-			return failure(
-				new WorkflowError('MUTATION', `duplicate phase id '${phase.id}'`, { id: phase.id }),
-			)
-		}
-		const at = index ?? this.#phases.size
-		if (at < 0 || at > this.#phases.size) {
-			return failure(new WorkflowError('MUTATION', `index '${at}' out of bounds`, { index: at }))
-		}
-		this.#reorder(insertEntry([...this.#phases.entries()], at, phase.id, phase))
-		return success(phase)
+		return this.#phases.add(phase, index)
 	}
 
 	remove(id: string): Result<PhaseInterface, WorkflowError> {
-		const target = this.#phases.get(id)
-		if (target === undefined || target.status !== 'pending') {
-			return failure(new WorkflowError('MUTATION', `phase '${id}' is not a pending phase`, { id }))
-		}
-		this.#phases.delete(id)
-		return success(target)
+		return this.#phases.remove(id)
 	}
 
 	move(id: string, index: number): Result<PhaseInterface, WorkflowError> {
-		const target = this.#phases.get(id)
-		if (target === undefined || target.status !== 'pending') {
-			return failure(new WorkflowError('MUTATION', `phase '${id}' is not a pending phase`, { id }))
-		}
-		if (index < 0 || index >= this.#phases.size) {
-			return failure(new WorkflowError('MUTATION', `index '${index}' out of bounds`, { index }))
-		}
-		this.#reorder(moveEntry([...this.#phases.entries()], id, index))
-		return success(target)
+		return this.#phases.move(id, index)
 	}
 
 	update(id: string, patch: PhaseUpdate): Result<PhaseInterface, WorkflowError> {
-		const target = this.#phases.get(id)
-		if (target === undefined || target.status !== 'pending') {
-			return failure(new WorkflowError('MUTATION', `phase '${id}' is not a pending phase`, { id }))
-		}
-		if (!this.#isUpdate(patch)) {
-			return failure(new WorkflowError('MUTATION', `invalid patch for phase '${id}'`, { id }))
-		}
-		target.patch(patch)
-		return success(target)
+		return this.#phases.update(id, patch)
 	}
 
 	phase(id: string): PhaseInterface | undefined {
-		return this.#phases.get(id)
+		return this.#phases.entry(id)
 	}
 
 	phases(): readonly PhaseInterface[] {
-		return [...this.#phases.values()]
-	}
-
-	// Rebuild the positional store from `entries` — the shared reorder step behind
-	// `add` (insert) and `move` (reposition), keeping the `Map`'s insertion order the
-	// single source of positional truth.
-	#reorder(entries: ReadonlyArray<readonly [string, PhaseInterface]>): void {
-		this.#phases.clear()
-		for (const [key, value] of entries) this.#phases.set(key, value)
+		return this.#phases.entries()
 	}
 }

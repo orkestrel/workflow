@@ -4,12 +4,15 @@ import type {
 	WorkflowInterface,
 	WorkflowManagerInterface,
 	WorkflowManagerOptions,
+	WorkflowOptions,
 	WorkflowSnapshot,
 	WorkflowStoreInterface,
 } from './types.js'
 import { isArray } from '@orkestrel/contract'
 import { cloneWorkflowSnapshot } from './cloners.js'
-import { createRestoredWorkflow, createWorkflow } from './factories.js'
+import { DEFAULT_BAIL } from './constants.js'
+import { captureWorkflowOptions, definitionToSnapshot } from './helpers.js'
+import { Workflow } from './Workflow.js'
 
 /**
  * The store-backed registry of {@link WorkflowInterface}s keyed by `id`, in insertion order —
@@ -19,7 +22,8 @@ import { createRestoredWorkflow, createWorkflow } from './factories.js'
  *
  * @remarks
  * - **Registry.** Workflows live in an insertion-ordered `Map` keyed by `id`. `add(definition)`
- *   mints a live {@link WorkflowInterface} through {@link createWorkflow} (flowing the manager's
+ *   mints a live {@link WorkflowInterface} through the same construction path
+ *   {@link import('./factories.js').createWorkflow} takes (flowing the manager's
  *   `functions` registry in) and stores it under `definition.id` — an already-present id
  *   OVERWRITES (last write wins). `count` is the map size, `workflow(id)` looks one up,
  *   `workflows()` lists them in insertion order.
@@ -78,9 +82,7 @@ export class WorkflowManager implements WorkflowManagerInterface {
 	add(definition: WorkflowDefinition): WorkflowInterface {
 		// Mints keyed by the definition's own id — a re-add under the same id overwrites,
 		// exactly as `createWorkflow` keys the live tree by `definition.id`.
-		const workflow = createWorkflow(definition, {
-			...(this.#functions === undefined ? {} : { functions: this.#functions }),
-		})
+		const workflow = this.#build(definition)
 		const mutation = this.#invalidate(workflow.id)
 		if (mutation === undefined) this.#additions.delete(workflow.id)
 		else this.#additions.set(workflow.id, mutation)
@@ -182,9 +184,7 @@ export class WorkflowManager implements WorkflowManagerInterface {
 			if (!this.#owns(id, mutation, generation)) return this.#resolve(id, generation)
 			let workflow: WorkflowInterface
 			try {
-				workflow = createRestoredWorkflow(owned, {
-					...(this.#functions === undefined ? {} : { functions: this.#functions }),
-				})
+				workflow = this.#restore(owned)
 			} catch (error) {
 				if (!this.#owns(id, mutation, generation)) return this.#resolve(id, generation)
 				throw error
@@ -194,6 +194,31 @@ export class WorkflowManager implements WorkflowManagerInterface {
 		} finally {
 			this.#releaseHydration(id, lease)
 		}
+	}
+
+	// Build the live tree from a definition exactly as `createWorkflow` does — the shared
+	// `captureWorkflowOptions` / `definitionToSnapshot` steps, then the `Workflow` constructor.
+	// Constructing here rather than importing this module's own factory keeps the factories→classes
+	// import direction `WorkflowRunner` records, so no class↔factory cycle exists.
+	#build(definition: WorkflowDefinition): WorkflowInterface {
+		const captured = this.#captured()
+		const bail = captured.bail ?? definition.bail ?? DEFAULT_BAIL
+		return new Workflow(definitionToSnapshot(definition, bail), captured)
+	}
+
+	// Rebuild the live tree from an already-owned snapshot exactly as `createRestoredWorkflow`
+	// does — the hostile-boundary clone stays, so a hydrated tree is owned by this manager rather
+	// than sharing the store's payload.
+	#restore(snapshot: WorkflowSnapshot): WorkflowInterface {
+		return new Workflow(cloneWorkflowSnapshot(snapshot), this.#captured())
+	}
+
+	// The owned construction options every mint and hydrate carries — this manager's retained
+	// `functions` registry and nothing else.
+	#captured(): WorkflowOptions {
+		return captureWorkflowOptions(
+			this.#functions === undefined ? {} : { functions: this.#functions },
+		)
 	}
 
 	#owns(id: string, mutation: symbol | undefined, generation: symbol): boolean {

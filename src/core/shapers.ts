@@ -25,7 +25,7 @@ import { MAX_TIMER_MS } from './constants.js'
 // never changes what the guard / parser accept (the contract stays byte-for-byte strict).
 
 // The description-carrying `bail` toggle rides on the shared `literalShape` (the
-// `@orkestrel/contract` module) — a described single-value literal is just
+// `@orkestrel/contract` module) — a described single-value literal is
 // `literalShape([value], { description })`, so no module-local helper is needed.
 
 /**

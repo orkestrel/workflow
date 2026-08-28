@@ -4,14 +4,17 @@ import type { QueueExecution, QueueInterface } from '@orkestrel/queue'
 import type {
 	DeferredInterface,
 	RunnerEventMap,
+	RunnerFailure,
 	RunnerInterface,
 	RunnerOptions,
 	RunnerUnit,
+	RunnerValue,
 	UnitOutcome,
 } from './types.js'
 import { createAbort } from '@orkestrel/abort'
 import { createQueue } from '@orkestrel/queue'
 import { Emitter } from '@orkestrel/emitter'
+import { WorkflowError } from './errors.js'
 import { createDeferred } from './helpers.js'
 import { Controller } from './Controller.js'
 
@@ -30,12 +33,12 @@ import { Controller } from './Controller.js'
  *   Results are read back as `#order.map(id => #values.get(id))` — declared first (in
  *   input order), then spawns (in spawn order). There is no one-time task snapshot,
  *   so a unit spawned mid-handler is run and ordered like any other.
- * - **`execute` awaits the full spawn closure via a count gate.** `#launch` increments
+ * - **`execute` awaits the full spawn closure through a count gate.** `#launch` increments
  *   an outstanding-unit `#count` BEFORE enqueuing and every settle decrements it,
  *   resolving the `#drained` deferred at zero. Because `spawn` calls `#launch` (so
  *   `#count += 1`) before the parent handler returns, the count never reaches zero
  *   mid-run — `execute` parks on `#drained` and so awaits the entire transitive
- *   closure, not just the declared units.
+ *   closure, not only the declared units.
  * - **`spawn` is fire-and-track.** A spawned unit runs through the queue regardless of
  *   whether its promise is awaited; the Runner never awaits a spawned promise from
  *   within a handler's slot (it awaits the count gate instead), so a slot-holding
@@ -84,7 +87,7 @@ export class Runner<TInput, TResult> implements RunnerInterface<TInput, TResult>
 	readonly #order: string[] = []
 	// Each unit's settled value, by id — boxed so presence is tracked by map membership
 	// (not by an `undefined` sentinel), correct even when `TResult` includes `undefined`.
-	readonly #values = new Map<string, { readonly value: TResult }>()
+	readonly #values = new Map<string, RunnerValue<TResult>>()
 	// The ids whose handler was actually DISPATCHED (`#dispatch` invoked) — the settlement-path
 	// distinguisher a graceful `stop` needs: a never-dispatched unit's enqueue rejection (the
 	// queue's own "queue is stopped" error for a still-PENDING entry) is a stop artifact, never a
@@ -101,7 +104,7 @@ export class Runner<TInput, TResult> implements RunnerInterface<TInput, TResult>
 	// never-dispatched unit's rejection as a stop artifact rather than a failure.
 	#stopping = false
 	// The first unit failure (fail-fast) — `execute` rejects with it once drained.
-	#failure: { readonly error: unknown } | undefined
+	#failure: RunnerFailure | undefined
 	#stopPromise: Promise<void> | undefined
 	#abortPromise: Promise<void> | undefined
 	#destroyPromise: Promise<void> | undefined
@@ -150,9 +153,9 @@ export class Runner<TInput, TResult> implements RunnerInterface<TInput, TResult>
 	 *
 	 * @remarks
 	 * Returns `undefined` synchronously (graceful, non-throwing — AGENTS §12) unless the
-	 * runner is currently mid-`execute` and not yet stopped — covering "never started",
+	 * runner is mid-`execute` and not yet stopped — covering "never started",
 	 * "already drained", "aborted", and "destroyed". Otherwise the unit is routed through
-	 * the SAME backing queue as a declared/`spawn`ed unit via `#launch` — the outstanding-
+	 * the SAME backing queue as a declared/`spawn`ed unit through `#launch` — the outstanding-
 	 * unit count gate increments BEFORE this call returns, so an in-flight `execute`
 	 * keeps awaiting it (the drain race: `#running` flips to `false` as the very first
 	 * step after `execute`'s `await drained.promise` settles, so a `spawn` reaching this
@@ -176,8 +179,10 @@ export class Runner<TInput, TResult> implements RunnerInterface<TInput, TResult>
 	}
 
 	async execute(inputs: readonly TInput[]): Promise<readonly TResult[]> {
-		if (this.#started) throw new Error('runner has already executed')
-		if (this.#stopped) throw new Error('runner is stopped')
+		if (this.#started) {
+			throw new WorkflowError('TRANSITION', 'runner has already executed', { started: true })
+		}
+		if (this.#stopped) throw new WorkflowError('TRANSITION', 'runner is stopped', { stopped: true })
 		this.#started = true
 		this.#running = true
 		const drained = createDeferred<void>()
@@ -224,7 +229,7 @@ export class Runner<TInput, TResult> implements RunnerInterface<TInput, TResult>
 		this.#cancel(reason)
 		this.#stopped = true
 		const cleanup = this.#queue.abort(reason)
-		void this.#settleLifecycle(barrier, cleanup)
+		void this.#settleBarrier(barrier, cleanup, false)
 		// Observe the abort — AFTER every unit's signal fired, the backing queue was aborted,
 		// and the run was marked stopped, so a swallowed listener throw can't perturb the
 		// cancel. Idempotent at the top (a second `abort` returns early), so this fires once.
@@ -251,7 +256,7 @@ export class Runner<TInput, TResult> implements RunnerInterface<TInput, TResult>
 	 *
 	 * @remarks
 	 * A no-op once the runner is `stopped` (nothing left to resume) and a no-op when the
-	 * runner is not currently `paused`, so calling it repeatedly or on a never-paused
+	 * runner is not `paused`, so calling it repeatedly or on a never-paused
 	 * runner is safe.
 	 */
 	resume(): void {
@@ -283,7 +288,7 @@ export class Runner<TInput, TResult> implements RunnerInterface<TInput, TResult>
 		this.#stopping = true
 		this.#stopped = true
 		const cleanup = this.#queue.stop()
-		void this.#settleLifecycle(barrier, cleanup)
+		void this.#settleBarrier(barrier, cleanup, false)
 		return barrier.promise
 	}
 
@@ -295,7 +300,7 @@ export class Runner<TInput, TResult> implements RunnerInterface<TInput, TResult>
 		this.#stopped = true
 		void this.abort()
 		const cleanup = this.#queue.destroy()
-		void this.#settleDestroy(barrier, cleanup)
+		void this.#settleBarrier(barrier, cleanup, true)
 		return barrier.promise
 	}
 
@@ -348,7 +353,7 @@ export class Runner<TInput, TResult> implements RunnerInterface<TInput, TResult>
 	// run the user handler against it. The unit's own `Abort` was passed as the entry
 	// signal, so `execution.signal` already fires on unit abort, runner abort, or timeout
 	// — expose THAT as `controller.signal` (covering all three); `abort` / `aborted`
-	// delegate to the unit `Abort` via the Controller.
+	// delegate to the unit `Abort` through the Controller.
 	#dispatch(unit: RunnerUnit<TInput>, execution: QueueExecution): Promise<TResult> | TResult {
 		// `#launch` always stores the unit's `Abort` BEFORE enqueuing, so this lookup is an
 		// invariant, never optional. Assert it (§12 programmer-error guard — narrows to a
@@ -356,7 +361,9 @@ export class Runner<TInput, TResult> implements RunnerInterface<TInput, TResult>
 		// fallback `Abort` would be divorced from this entry's `execution.signal`, silently
 		// severing the unit's cancellation while the type still type-checked.
 		const abort = this.#aborts.get(unit.id)
-		if (abort === undefined) throw new Error('unit abort missing')
+		if (abort === undefined) {
+			throw new WorkflowError('INVARIANT', 'unit abort missing', { unit: unit.id })
+		}
 		// Record that this unit's handler was actually dispatched — the settlement-path
 		// distinguisher `#settle` reads to tell a graceful `stop`'s never-dispatched rejection
 		// (this branch never ran) from a genuine in-flight failure (this branch DID run).
@@ -379,7 +386,11 @@ export class Runner<TInput, TResult> implements RunnerInterface<TInput, TResult>
 	// the same `#launch` (and thus the queue), so it actually runs and is ordered. The
 	// spawning unit's `parent` id flows through so `#launch` can observe the `spawn`.
 	#spawn(input: TInput, parent: string): Promise<TResult> {
-		if (!this.#accepts()) throw new Error('spawn is unavailable outside an active run')
+		if (!this.#accepts()) {
+			throw new WorkflowError('TRANSITION', 'spawn is unavailable outside an active run', {
+				parent,
+			})
+		}
 		return this.#launch(input, parent)
 	}
 
@@ -432,7 +443,7 @@ export class Runner<TInput, TResult> implements RunnerInterface<TInput, TResult>
 		return this.#running && !this.#stopped
 	}
 
-	async #cleanup(): Promise<{ readonly error: unknown } | undefined> {
+	async #cleanup(): Promise<RunnerFailure | undefined> {
 		const cleanup = this.#destroyPromise ?? this.#abortPromise ?? this.#stopPromise
 		if (cleanup === undefined) return undefined
 		try {
@@ -443,27 +454,24 @@ export class Runner<TInput, TResult> implements RunnerInterface<TInput, TResult>
 		}
 	}
 
-	async #settleLifecycle(barrier: DeferredInterface<void>, cleanup: Promise<void>): Promise<void> {
-		let failure: { readonly error: unknown } | undefined
+	// Settle one lifecycle barrier: await the backing queue's own cleanup, park until every
+	// launched unit has drained, then resolve the barrier (or reject it with the cleanup error).
+	// `teardown` true destroys the emitter after the drain and BEFORE the barrier settles — the
+	// `destroy()` ordering, which a caller awaiting the barrier relies on; false leaves the emitter
+	// live, which is what a graceful `stop()` and an `abort()` need.
+	async #settleBarrier(
+		barrier: DeferredInterface<void>,
+		cleanup: Promise<void>,
+		teardown: boolean,
+	): Promise<void> {
+		let failure: RunnerFailure | undefined
 		try {
 			await cleanup
 		} catch (error) {
 			failure = { error }
 		}
 		await this.#waitDrain()
-		if (failure === undefined) barrier.resolve()
-		else barrier.reject(failure.error)
-	}
-
-	async #settleDestroy(barrier: DeferredInterface<void>, cleanup: Promise<void>): Promise<void> {
-		let failure: { readonly error: unknown } | undefined
-		try {
-			await cleanup
-		} catch (error) {
-			failure = { error }
-		}
-		await this.#waitDrain()
-		this.#emitter.destroy()
+		if (teardown) this.#emitter.destroy()
 		if (failure === undefined) barrier.resolve()
 		else barrier.reject(failure.error)
 	}

@@ -1,11 +1,18 @@
-import type { PhaseStatus, TaskStatus, WorkflowStatus } from './types.js'
+import type {
+	PhaseEventMap,
+	PhaseStatus,
+	TaskEventMap,
+	TaskStatus,
+	WorkflowEventMap,
+	WorkflowStatus,
+} from './types.js'
 
 // Workflow constants — the centralized data the contract, the derivation helpers,
-// and (later) the entities read. UPPER_SNAKE, `Object.freeze`d, every member
-// exported (AGENTS §5). The status-vocabulary arrays are the runtime source of
-// truth for the §10 unions: compose them with the shipped contracts primitives
-// (`literalOf(...)` for a guard, `literalShape(...)` for a contract) instead of a
-// bespoke guard.
+// and the entities read. UPPER_SNAKE, `Object.freeze`d, every member exported
+// (AGENTS §5). The status-vocabulary arrays are the runtime source of truth for the
+// §10 unions, and the guards read them: `isLifecycleStatus` scans `TASK_STATUSES`
+// and `isTerminalStatus` scans `TERMINAL_TASK_STATUSES`, so the vocabulary has one
+// definition rather than a hard-coded copy per predicate.
 
 /** The default {@link import('./types.js').WorkflowDefinition.bail} — graceful (continue on a leaf failure). */
 export const DEFAULT_BAIL = false
@@ -15,7 +22,9 @@ export const DEFAULT_BAIL = false
  *
  * @remarks
  * Ordered pending → running → terminal (`completed` / `failed` / `skipped` /
- * `stopped`). The source of truth for the union; compose guards / shapes from it.
+ * `stopped`). The runtime source of truth for the union:
+ * {@link import('./validators.js').isLifecycleStatus} reads this array, and
+ * {@link PHASE_STATUSES} / {@link WORKFLOW_STATUSES} name it rather than repeating its members.
  */
 export const TASK_STATUSES: readonly TaskStatus[] = Object.freeze([
 	'pending',
@@ -26,25 +35,24 @@ export const TASK_STATUSES: readonly TaskStatus[] = Object.freeze([
 	'stopped',
 ])
 
-/** Every {@link PhaseStatus} value, frozen — the lifecycle vocabulary of a phase. */
-export const PHASE_STATUSES: readonly PhaseStatus[] = Object.freeze([
-	'pending',
-	'running',
-	'completed',
-	'failed',
-	'skipped',
-	'stopped',
-])
+/**
+ * Every {@link PhaseStatus} value, frozen — the lifecycle vocabulary of a phase.
+ *
+ * @remarks
+ * The three tiers alias one {@link import('./types.js').LifecycleStatus} vocabulary, so this names
+ * the same frozen array {@link TASK_STATUSES} holds rather than repeating its members. One array
+ * cannot drift from another.
+ */
+export const PHASE_STATUSES: readonly PhaseStatus[] = TASK_STATUSES
 
-/** Every {@link WorkflowStatus} value, frozen — the lifecycle vocabulary of a workflow. */
-export const WORKFLOW_STATUSES: readonly WorkflowStatus[] = Object.freeze([
-	'pending',
-	'running',
-	'completed',
-	'failed',
-	'skipped',
-	'stopped',
-])
+/**
+ * Every {@link WorkflowStatus} value, frozen — the lifecycle vocabulary of a workflow.
+ *
+ * @remarks
+ * The workflow tier of the same aliased vocabulary; it names the {@link TASK_STATUSES} array
+ * rather than repeating its members.
+ */
+export const WORKFLOW_STATUSES: readonly WorkflowStatus[] = TASK_STATUSES
 
 /**
  * The {@link TaskStatus} values that are TERMINAL — a task in one of these will
@@ -108,3 +116,37 @@ export const DEFAULT_PHASE_CONCURRENCY = 1024
  * The largest delay representable by the host timer APIs without overflow or clamping.
  */
 export const MAX_TIMER_MS = 2_147_483_647
+
+/**
+ * The {@link WorkflowEventMap} / {@link PhaseEventMap} events that make a durable observer
+ * re-persist the live tree, frozen.
+ *
+ * @remarks
+ * The two maps carry the same event names, so one list serves both tiers. It is the source of
+ * truth behind {@link import('./WorkflowPersistence.js').WorkflowPersistence}'s attach and detach
+ * passes: subscribing and unsubscribing loop over these names, so an added event reaches both
+ * passes from one edit. `add` and `remove` are deliberately absent — they carry the new or dropped
+ * child, so the persistence layer binds its own attaching handler to them instead.
+ */
+export const PERSISTED_NODE_EVENTS: ReadonlyArray<keyof WorkflowEventMap & keyof PhaseEventMap> =
+	Object.freeze(['start', 'complete', 'fail', 'skip', 'stop', 'move', 'update'])
+
+/**
+ * The {@link TaskEventMap} events that make a durable observer re-persist the live tree, frozen.
+ *
+ * @remarks
+ * The leaf counterpart of {@link PERSISTED_NODE_EVENTS}, and the source of truth behind the task
+ * attach and detach passes of
+ * {@link import('./WorkflowPersistence.js').WorkflowPersistence}. `report` and `pulse` join the
+ * lifecycle events because an accepted activity frame changes the persisted snapshot; a leaf has
+ * no children, so there is no structural event to bind separately.
+ */
+export const PERSISTED_TASK_EVENTS: ReadonlyArray<keyof TaskEventMap> = Object.freeze([
+	'start',
+	'complete',
+	'fail',
+	'skip',
+	'stop',
+	'report',
+	'pulse',
+])

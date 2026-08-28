@@ -1,30 +1,34 @@
 import type { Result } from '@orkestrel/contract'
 import type { TaskInterface, TaskManagerInterface, TaskUpdate } from '../types.js'
+import type { WorkflowError } from '../errors.js'
 import { compileGuard } from '@orkestrel/contract'
-import { WorkflowError } from '../errors.js'
-import { failure, insertEntry, moveEntry, success } from '../helpers.js'
+import { Collection } from '../Collection.js'
 import { taskUpdateShape } from '../shapers.js'
 
 /**
  * The lean child manager (AGENTS §9) of a {@link import('../phases/Phase.js').Phase}'s live
- * tasks — an insertion-ordered registry keyed by task `id`, so positional order is
- * preserved across an interior `skip` / `remove`.
+ * tasks — the task vocabulary over one insertion-ordered {@link Collection}, so positional order
+ * is preserved across an interior `skip` / `remove`.
  *
  * @remarks
- * - **Positional store.** Tasks live in an insertion-ordered `Map` keyed by `id`;
- *   `append` adds one at the end (the build-time wiring path), `task(id)` looks one up,
- *   `tasks()` lists them in positional order, `count` is the size. A `skip` is a STATUS
- *   change on a stored task (never a removal), so order survives it; a snapshot RESTORE
- *   re-`append`s in the snapshot's order, reproducing it exactly.
- * - **Gated mutation API (AGENTS §12).** `add` / `remove` / `move` / `update` are the
- *   graceful `Result` counterparts to `append`, gating ONLY on the target's OWN
- *   existence/status/id/bounds — a duplicate id, an absent/non-`pending` target, an
- *   out-of-bounds `index`, or a patch that fails {@link taskUpdateShape} validation all
- *   fail gracefully with a `MUTATION` {@link WorkflowError} instead of throwing.
- * - **No batch matrix.** A phase's tasks are a fixed positional set, so AGENTS §9.2 (the
- *   bulk verb overloads) is deliberately omitted — there is no `remove` family here.
- * - **Event-free.** A purely structural container — the live {@link TaskInterface}s own
- *   their own emitters; the manager observes nothing.
+ * - **One shared store.** The insertion-ordered `Map`, the reorder step, the bounds checks, and
+ *   the gated `add` / `remove` / `move` / `update` all live in {@link Collection}, built with the
+ *   `task` noun its refusals name and the compiled {@link taskUpdateShape} guard. This class adds
+ *   the domain accessors `task` / `tasks` and nothing else, so the task and phase managers cannot
+ *   drift apart.
+ * - **Positional store.** `append` adds one live {@link TaskInterface} at the end (the build-time
+ *   wiring path), `task(id)` looks one up, `tasks()` lists them in positional order, `count` is
+ *   the tally. A `skip` is a STATUS change on a stored task (never a removal), so order survives
+ *   it; a snapshot RESTORE re-`append`s in the snapshot's order, reproducing it exactly.
+ * - **Gated mutation API (AGENTS §12).** `add` / `remove` / `move` / `update` are the graceful
+ *   `Result` counterparts to `append`, gating ONLY on the target's OWN existence/status/id/bounds
+ *   — a duplicate id, an absent/non-`pending` target, an out-of-bounds `index`, or a patch that
+ *   fails {@link taskUpdateShape} validation all fail gracefully with a `MUTATION`
+ *   {@link WorkflowError} instead of throwing.
+ * - **No batch matrix.** A phase's tasks are a fixed positional set, so AGENTS §9.2 (the bulk verb
+ *   overloads) is deliberately omitted — there is no `remove` family here.
+ * - **Event-free.** A purely structural container — the live {@link TaskInterface}s own their own
+ *   emitters; the manager observes nothing.
  *
  * @example
  * ```ts
@@ -35,82 +39,37 @@ import { taskUpdateShape } from '../shapers.js'
  * ```
  */
 export class TaskManager implements TaskManagerInterface {
-	readonly #tasks = new Map<string, TaskInterface>()
-	// The compiled guard validating a `TaskUpdate` patch (AGENTS §14) before it reaches
-	// `update`'s `task.patch` call.
-	readonly #isUpdate = compileGuard(taskUpdateShape)
+	readonly #tasks = new Collection<TaskInterface, TaskUpdate>('task', compileGuard(taskUpdateShape))
 
 	get count(): number {
-		return this.#tasks.size
+		return this.#tasks.count
 	}
 
 	append(task: TaskInterface): void {
-		if (this.#tasks.has(task.id)) {
-			throw new WorkflowError('MUTATION', `duplicate task id '${task.id}'`, { id: task.id })
-		}
-		this.#tasks.set(task.id, task)
+		this.#tasks.append(task)
 	}
 
 	add(task: TaskInterface, index?: number): Result<TaskInterface, WorkflowError> {
-		if (this.#tasks.has(task.id)) {
-			return failure(
-				new WorkflowError('MUTATION', `duplicate task id '${task.id}'`, { id: task.id }),
-			)
-		}
-		const at = index ?? this.#tasks.size
-		if (at < 0 || at > this.#tasks.size) {
-			return failure(new WorkflowError('MUTATION', `index '${at}' out of bounds`, { index: at }))
-		}
-		this.#reorder(insertEntry([...this.#tasks.entries()], at, task.id, task))
-		return success(task)
+		return this.#tasks.add(task, index)
 	}
 
 	remove(id: string): Result<TaskInterface, WorkflowError> {
-		const target = this.#tasks.get(id)
-		if (target === undefined || target.status !== 'pending') {
-			return failure(new WorkflowError('MUTATION', `task '${id}' is not a pending task`, { id }))
-		}
-		this.#tasks.delete(id)
-		return success(target)
+		return this.#tasks.remove(id)
 	}
 
 	move(id: string, index: number): Result<TaskInterface, WorkflowError> {
-		const target = this.#tasks.get(id)
-		if (target === undefined || target.status !== 'pending') {
-			return failure(new WorkflowError('MUTATION', `task '${id}' is not a pending task`, { id }))
-		}
-		if (index < 0 || index >= this.#tasks.size) {
-			return failure(new WorkflowError('MUTATION', `index '${index}' out of bounds`, { index }))
-		}
-		this.#reorder(moveEntry([...this.#tasks.entries()], id, index))
-		return success(target)
+		return this.#tasks.move(id, index)
 	}
 
 	update(id: string, patch: TaskUpdate): Result<TaskInterface, WorkflowError> {
-		const target = this.#tasks.get(id)
-		if (target === undefined || target.status !== 'pending') {
-			return failure(new WorkflowError('MUTATION', `task '${id}' is not a pending task`, { id }))
-		}
-		if (!this.#isUpdate(patch)) {
-			return failure(new WorkflowError('MUTATION', `invalid patch for task '${id}'`, { id }))
-		}
-		target.patch(patch)
-		return success(target)
+		return this.#tasks.update(id, patch)
 	}
 
 	task(id: string): TaskInterface | undefined {
-		return this.#tasks.get(id)
+		return this.#tasks.entry(id)
 	}
 
 	tasks(): readonly TaskInterface[] {
-		return [...this.#tasks.values()]
-	}
-
-	// Rebuild the positional store from `entries` — the shared reorder step behind
-	// `add` (insert) and `move` (reposition), keeping the `Map`'s insertion order the
-	// single source of positional truth.
-	#reorder(entries: ReadonlyArray<readonly [string, TaskInterface]>): void {
-		this.#tasks.clear()
-		for (const [key, value] of entries) this.#tasks.set(key, value)
+		return this.#tasks.entries()
 	}
 }

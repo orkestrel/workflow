@@ -112,7 +112,7 @@ export class Workflow implements WorkflowInterface {
 	#override: WorkflowStatus | undefined
 	// This workflow's own cancellation handle (AGENTS core precedent) — `signal` fires on `destroy`.
 	readonly #abort: AbortInterface
-	// RUNTIME-ONLY (never persisted): whether the workflow is currently paused.
+	// RUNTIME-ONLY (never persisted): whether the workflow is paused.
 	#paused: boolean
 	// The parked `wait()` gate while paused; `undefined` when not paused — released (resolved) by
 	// `resume` / `stop` / `destroy`.
@@ -223,7 +223,7 @@ export class Workflow implements WorkflowInterface {
 		// recompute so the change is detected and the `skip` event is emitted. IDEMPOTENT /
 		// NO-OP once `status` is already terminal (a settled workflow cannot be re-forced) — but a
 		// parked `wait()` waiter is ALWAYS released regardless (a terminal workflow must never hold
-		// one; kept unconditional for safety even though a terminal entity should have none parked).
+		// one; kept unconditional for safety even though a terminal entity holds none parked).
 		if (!isTerminalStatus(this.status)) this.#force('skipped')
 		this.#paused = false
 		this.#release()
@@ -265,7 +265,7 @@ export class Workflow implements WorkflowInterface {
 	}
 
 	resume(): void {
-		// Idempotent: a no-op unless currently paused.
+		// Idempotent: a no-op unless paused.
 		if (!this.#paused) return
 		this.#paused = false
 		this.#release()
@@ -477,7 +477,11 @@ export class Workflow implements WorkflowInterface {
 	#failure(): TaskResult {
 		const found = findFailure(this.results())
 		if (found === undefined) {
-			throw new Error(`workflow '${this.id}' derived failed with no failing task result`)
+			throw new WorkflowError(
+				'INVARIANT',
+				`workflow '${this.id}' derived failed with no failing task result`,
+				{ workflow: this.id },
+			)
 		}
 		return found
 	}
@@ -503,7 +507,7 @@ export class Workflow implements WorkflowInterface {
 	// MINT a live phase (and its tasks) from a PhaseDefinition for a live `add` — converts it to
 	// an initial PhaseSnapshot (`phaseDefinitionToSnapshot`'s per-phase step, resolving effective
 	// bail as `definition.bail ?? this.#bail`, carrying each task's `run` / `retries` / `timeout`)
-	// then builds it via the Phase constructor's OWN `#functions` resolution, so a live mint and a
+	// then builds it through the Phase constructor's OWN `#functions` resolution, so a live mint and a
 	// built/restored phase are wired IDENTICALLY — same recompute cascade, same emitter hooks,
 	// same handler resolution.
 	#mint(definition: PhaseDefinition): Phase {

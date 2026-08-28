@@ -7,9 +7,9 @@ import { NodeScheduler } from './NodeScheduler.js'
  * a real `setTimeout`.
  *
  * @remarks
- * Use it on a server instead of the cross-environment `createScheduler` when a yield
- * should hand the event loop a full turn (after pending I/O) via `setImmediate` rather
- * than a zero-delay timer. Both methods are abort-aware: pass `options.signal` and a
+ * Use it on a server instead of the cross-environment `createScheduler` when a yield must
+ * hand the event loop a full turn (after pending I/O) through `setImmediate` rather than a
+ * zero-delay timer. Both methods are abort-aware: pass `options.signal` and a
  * pending yield/delay rejects with the signal's exact `reason`; the shared owned-signal
  * lifecycle clears the native handle without invoking caller listener methods.
  * `options.priority` is accepted for contract compliance but a

@@ -109,7 +109,7 @@ export class Phase implements PhaseInterface {
 	// settle-all for THIS phase, and by the workflow's per-phase-bail-aware status derivation.
 	// Mutable (AGENTS §7): a `pending` phase's `patch` may override it before a run starts.
 	#bail: boolean
-	// Max tasks in flight at once (a resource throttle), seeded from the snapshot; mutable via a
+	// Max tasks in flight at once (a resource throttle), seeded from the snapshot; mutable through a
 	// `pending` phase's `patch` (AGENTS §7). `undefined` ⇒ unbounded.
 	#concurrency: number | undefined
 	// The PUSH observation surface (§13) — owned, never inherited. The emitter isolates a
@@ -119,7 +119,7 @@ export class Phase implements PhaseInterface {
 	#status: PhaseStatus
 	// The forced status of a `skip` / `stop`, overriding the derived value; `undefined` ⇒ derived.
 	#override: PhaseStatus | undefined
-	// RUNTIME-ONLY (never persisted): whether the phase is currently paused.
+	// RUNTIME-ONLY (never persisted): whether the phase is paused.
 	#paused: boolean
 	// The parked `wait()` gate while paused; `undefined` when not paused — released (resolved) by
 	// `resume` / `stop` / `skip`.
@@ -276,7 +276,7 @@ export class Phase implements PhaseInterface {
 	}
 
 	resume(): void {
-		// Idempotent: a no-op unless currently paused.
+		// Idempotent: a no-op unless paused.
 		if (!this.#paused) return
 		this.#paused = false
 		this.#release()
@@ -446,7 +446,11 @@ export class Phase implements PhaseInterface {
 	#failure(): TaskResult {
 		const found = findFailure(this.results())
 		if (found === undefined) {
-			throw new Error(`phase '${this.id}' derived failed with no failing task result`)
+			throw new WorkflowError(
+				'INVARIANT',
+				`phase '${this.id}' derived failed with no failing task result`,
+				{ phase: this.id },
+			)
 		}
 		return found
 	}

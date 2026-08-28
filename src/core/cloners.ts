@@ -44,6 +44,54 @@ export function cloneWorkflowSnapshot(input: unknown, id?: string): WorkflowSnap
 }
 
 /**
+ * Validates and owns one list of task activity claims.
+ *
+ * @remarks
+ * The one cloner behind both claim lists of a task activity frame — its `operations` and its
+ * `constraints` — since {@link import('./types.js').TaskOperation} and
+ * {@link import('./types.js').TaskConstraint} are the same {@link import('./types.js').TaskClaim}
+ * shape. An omitted
+ * list is an empty one. Each member is read exactly once inside the caller's protected boundary
+ * and returned frozen; the semantic pass over the copied values is
+ * {@link import('./validators.js').isTaskClaimList}, so this cloner refuses only what it cannot
+ * read: a non-array list, a non-record member, a hostile prototype, or an unexpected key.
+ *
+ * @param input - The untrusted claim list
+ * @param noun - The singular claim noun the refusal message names, pluralized by adding `s`
+ * @returns The owned frozen claims, in input order
+ * @throws {WorkflowError} With `MUTATION` when the list or one of its members cannot be read
+ *
+ * @example
+ * ```ts
+ * cloneTaskClaims([{ id: 'fetch', name: 'Fetch', started: 1 }], 'operation')
+ * ```
+ */
+export function cloneTaskClaims(input: unknown, noun: string): readonly unknown[] {
+	const inputs = input === undefined ? [] : isArray(input) ? [...input] : undefined
+	if (inputs === undefined) {
+		throw new WorkflowError('MUTATION', `task activity ${noun}s must be an array`)
+	}
+	const claims: unknown[] = []
+	for (const claim of inputs) {
+		if (!isRecord(claim)) {
+			throw new WorkflowError('MUTATION', `task activity contains an invalid ${noun}`)
+		}
+		const prototype = Object.getPrototypeOf(claim)
+		if (
+			(prototype !== Object.prototype && prototype !== null) ||
+			!Object.keys(claim).every((key) => key === 'id' || key === 'name' || key === 'started')
+		) {
+			throw new WorkflowError('MUTATION', `task activity contains an invalid ${noun}`)
+		}
+		const id = claim.id
+		const name = claim.name
+		const started = claim.started
+		claims.push(Object.freeze({ id, name, started }))
+	}
+	return claims
+}
+
+/**
  * Validate and clone one complete task activity frame.
  *
  * @remarks
@@ -83,32 +131,7 @@ export function cloneTaskActivity(input: unknown, updated?: number): TaskActivit
 		const constraintsInput = input.constraints
 		const accepted = updated === undefined ? input.updated : updated
 
-		const operationInputs =
-			operationsInput === undefined
-				? []
-				: isArray(operationsInput)
-					? [...operationsInput]
-					: undefined
-		if (operationInputs === undefined) {
-			throw new WorkflowError('MUTATION', 'task activity operations must be an array')
-		}
-		const operations: unknown[] = []
-		for (const operation of operationInputs) {
-			if (!isRecord(operation)) {
-				throw new WorkflowError('MUTATION', 'task activity contains an invalid operation')
-			}
-			const operationPrototype = Object.getPrototypeOf(operation)
-			if (
-				(operationPrototype !== Object.prototype && operationPrototype !== null) ||
-				!Object.keys(operation).every((key) => key === 'id' || key === 'name' || key === 'started')
-			) {
-				throw new WorkflowError('MUTATION', 'task activity contains an invalid operation')
-			}
-			const id = operation.id
-			const name = operation.name
-			const started = operation.started
-			operations.push(Object.freeze({ id, name, started }))
-		}
+		const operations = cloneTaskClaims(operationsInput, 'operation')
 
 		let progress: unknown
 		if (progressInput !== undefined) {
@@ -134,32 +157,7 @@ export function cloneTaskActivity(input: unknown, updated?: number): TaskActivit
 			})
 		}
 
-		const constraintInputs =
-			constraintsInput === undefined
-				? []
-				: isArray(constraintsInput)
-					? [...constraintsInput]
-					: undefined
-		if (constraintInputs === undefined) {
-			throw new WorkflowError('MUTATION', 'task activity constraints must be an array')
-		}
-		const constraints: unknown[] = []
-		for (const constraint of constraintInputs) {
-			if (!isRecord(constraint)) {
-				throw new WorkflowError('MUTATION', 'task activity contains an invalid constraint')
-			}
-			const constraintPrototype = Object.getPrototypeOf(constraint)
-			if (
-				(constraintPrototype !== Object.prototype && constraintPrototype !== null) ||
-				!Object.keys(constraint).every((key) => key === 'id' || key === 'name' || key === 'started')
-			) {
-				throw new WorkflowError('MUTATION', 'task activity contains an invalid constraint')
-			}
-			const id = constraint.id
-			const name = constraint.name
-			const started = constraint.started
-			constraints.push(Object.freeze({ id, name, started }))
-		}
+		const constraints = cloneTaskClaims(constraintsInput, 'constraint')
 
 		const activity = Object.freeze({
 			...(note === undefined ? {} : { note }),

@@ -1,12 +1,12 @@
 import type { SchedulerInterface, SchedulerOptions } from '@src/core'
-import { scheduleHost } from '@src/core'
+import { delayHost, scheduleHost } from '@src/core'
 import type { AnyFunction } from '@orkestrel/contract'
 import type { IdleAPI } from './types.js'
 import { isFunction } from '@orkestrel/contract'
 
 /**
  * The idle-time {@link SchedulerInterface} — a browser cooperative-yield backend whose
- * `yield` resumes when the host is idle via `requestIdleCallback`, falling back to a
+ * `yield` resumes when the host is idle through `requestIdleCallback`, falling back to a
  * zero-delay macrotask where it is absent.
  *
  * @remarks
@@ -15,7 +15,7 @@ import { isFunction } from '@orkestrel/contract'
  *   rendering and input — ideal for low-priority background work that must not contend with
  *   the user. The capability is feature-detected through a guard (`isFunction`), never an
  *   `as` (AGENTS §14). Where the API is absent (Safari today), it **falls back** to a
- *   `setTimeout(0)` macrotask — still a real host-turn, just not idle-gated. `delay(ms)` is
+ *   `setTimeout(0)` macrotask — still a real host-turn, not idle-gated. `delay(ms)` is
  *   always a real `setTimeout`. `options.priority` is accepted for contract compliance but a
  *   no-op — idle scheduling has no priority dimension.
  * - **Abort fidelity is verbatim, with cleanup.** The shared `scheduleHost` lifecycle links
@@ -38,28 +38,27 @@ import { isFunction } from '@orkestrel/contract'
  */
 export class IdleScheduler implements SchedulerInterface {
 	/**
-	 * Yield control to the host until it is idle via `requestIdleCallback` (or a
+	 * Yield control to the host until it is idle through `requestIdleCallback` (or a
 	 * `setTimeout(0)` macrotask where the API is absent), then resume; abort rejects with
 	 * `signal.reason`.
 	 */
 	yield(options?: SchedulerOptions): Promise<void> {
 		const idle = this.#idleAPI()
-		if (idle === undefined) return this.#sleep(0, options?.signal)
+		if (idle === undefined) return delayHost(0, options?.signal)
 		return this.#idle(idle, options?.signal)
 	}
 
 	/**
-	 * Resume after at least `ms` milliseconds via `setTimeout`; abort rejects with
+	 * Resume after at least `ms` milliseconds through `setTimeout`; abort rejects with
 	 * `signal.reason`.
 	 *
 	 * @remarks
-	 * `ms` should be a non-negative finite number. The primitive does no validation: it
-	 * passes `ms` straight to the host `setTimeout`, which clamps a negative value or
-	 * `NaN` to ~0 — so an out-of-domain `ms` resolves on the next host turn rather than
-	 * throwing.
+	 * Pass a non-negative finite `ms`. The primitive does no validation: it passes `ms`
+	 * straight to the host `setTimeout`, which clamps a negative value or `NaN` to ~0 — so an
+	 * out-of-domain `ms` resolves on the next host turn rather than throwing.
 	 */
 	delay(ms: number, options?: SchedulerOptions): Promise<void> {
-		return this.#sleep(ms, options?.signal)
+		return delayHost(ms, options?.signal)
 	}
 
 	// === Private
@@ -82,14 +81,6 @@ export class IdleScheduler implements SchedulerInterface {
 		return scheduleHost((complete) => {
 			const handle = idle.request(complete)
 			return () => idle.cancel(handle)
-		}, signal)
-	}
-
-	// The browser timer boundary shared by `delay` and fallback `yield`.
-	#sleep(ms: number, signal?: AbortSignal): Promise<void> {
-		return scheduleHost((complete) => {
-			const handle = setTimeout(complete, ms)
-			return () => clearTimeout(handle)
 		}, signal)
 	}
 

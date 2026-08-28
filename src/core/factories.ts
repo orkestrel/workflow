@@ -1,8 +1,9 @@
-import type { RunnerInterface, RunnerOptions, SchedulerInterface } from './types.js'
-import { Scheduler } from './Scheduler.js'
 import type { ContractInterface } from '@orkestrel/contract'
 import type { DriverInterface, TableInterface } from '@orkestrel/database'
 import type {
+	RunnerInterface,
+	RunnerOptions,
+	SchedulerInterface,
 	WorkflowDefinition,
 	WorkflowInterface,
 	WorkflowManagerInterface,
@@ -24,6 +25,7 @@ import {
 	hasWorkflowHandlers,
 	recoverWorkflowSnapshot,
 } from './helpers.js'
+import { Scheduler } from './Scheduler.js'
 import { workflowShape } from './shapers.js'
 import { DatabaseWorkflowStore } from './stores/DatabaseWorkflowStore.js'
 import { MemoryWorkflowStore } from './stores/MemoryWorkflowStore.js'
@@ -47,7 +49,7 @@ import { Runner } from './Runner.js'
 //
 // `parse` is the contract's own parser, used directly: the shared compiler now
 // re-applies each leaf's `min` / `max` / `pattern` refinement after coercion
-// (compilers.ts `compileParser`, via the shared `stringOf` / `boundsOf`
+// (compilers.ts `compileParser`, through the shared `stringOf` / `boundsOf`
 // combinators), so a parsed
 // `WorkflowDefinition` already satisfies `is` — refinements included (AGENTS §14
 // parse↔guard soundness). An empty `id` or `concurrency: 0` parses to `undefined`
@@ -263,8 +265,9 @@ export function createMemoryWorkflowStore(): WorkflowStoreInterface {
  * snapshot is already a COMPLETE, self-contained, pure-JSON payload, so storing it whole is lossless
  * AND keeps the row type FLAT — a structured multi-column snapshot table would force the contract to
  * `Infer` the deeply-nested snapshot shape (workflow → phases → tasks → results) and trip TS2589;
- * the opaque column sidesteps it (the column reads back as `unknown`, narrowed on `get` by
- * {@link import('./helpers.js').isWorkflowSnapshot}). The `driver` DEFAULTS to
+ * the opaque column sidesteps it (the column reads back as `unknown`, owned and narrowed on `get` by
+ * {@link cloneWorkflowSnapshot}, whose semantic pass is
+ * {@link import('./validators.js').isOwnedWorkflowSnapshot}). The `driver` DEFAULTS to
  * {@link createMemoryDriver}, so the store ALSO works in memory out of the box; pass a server
  * `createJSONDriver` / `createSQLiteDriver` (or a browser IndexedDB driver) for a persistent one —
  * the durability is the driver's job, the store engine is shared. It swaps in behind
@@ -313,7 +316,7 @@ export function createDatabaseWorkflowStore(
  * rest) vs settle-all (`false` — failures are recorded, the run finishes); the run-level abort
  * / timeout / budget ({@link import('./types.js').WorkflowRunOptions}) fold through
  * `AbortSignal.any` (the agent runtime's pattern); pacing is the shipped scheduler.
- * `execute(definition, options?)` BUILDS the live tree from the definition itself (via
+ * `execute(definition, options?)` BUILDS the live tree from the definition itself (through
  * {@link createWorkflow} — one source of truth, returned in `WorkflowResult.workflow`), drives
  * the live entity (`start` → `complete` / `fail`), and resolves a
  * {@link import('./types.js').WorkflowResult}.
@@ -352,8 +355,8 @@ export function createWorkflowRunner(options?: WorkflowRunnerOptions): WorkflowR
  * line's `createConversationManager` / `createWorkspaceManager`.
  *
  * @remarks
- * `options.functions` flows into every workflow the manager mints (`add`, via
- * {@link createWorkflow}) or hydrates (`open`'s registry-miss path, via
+ * `options.functions` flows into every workflow the manager mints (`add`, through
+ * {@link createWorkflow}) or hydrates (`open`'s registry-miss path, through
  * {@link createRestoredWorkflow}), so a hydrated workflow is RUNNABLE rather than a dead snapshot
  * mirror. `options.store` is the EXACT analogue of the twins' `store` seam — omitted ⇒ the
  * manager is registry-only (`open` resolves only what is registered, `save` is a no-op). This
@@ -387,7 +390,7 @@ export function createWorkflowManager(options?: WorkflowManagerOptions): Workflo
  * runs unchanged in both the browser and Node.
  *
  * @remarks
- * `yield()` gives the host a turn via a zero-delay macrotask (so pending I/O,
+ * `yield()` gives the host a turn through a zero-delay macrotask (so pending I/O,
  * timers, and rendering actually run — a microtask would not); `delay(ms)` resumes
  * after at least `ms`. Pass `options.signal` to make a pending yield/delay reject
  * with the signal's exact `reason`; the shared owned-signal lifecycle clears the timer
@@ -444,10 +447,10 @@ export function createScheduler(): SchedulerInterface {
  * aborts every other unit and rejects `execute` with that error. **Observable (§13):** a
  * typed `emitter` surfaces `start` / `unit` / `spawn` / `settle` / `fail` / `finish` / `abort`.
  *
- * Because `spawn` is fire-and-track (the runner awaits the whole spawn closure via an
+ * Because `spawn` is fire-and-track (the runner awaits the whole spawn closure through an
  * outstanding-unit count, not a one-time snapshot), a handler need NOT await its spawns
- * for them to run — and on a bounded runner it should NOT `await` a spawn inline (a
- * slot-holding handler awaiting its own spawn can deadlock); fan out and return instead.
+ * for them to run — and on a bounded runner do NOT `await` a spawn inline (a slot-holding
+ * handler awaiting its own spawn can deadlock); fan out and return instead.
  *
  * @typeParam TInput - The work input each unit carries
  * @typeParam TResult - The value a unit's handler resolves

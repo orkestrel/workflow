@@ -268,7 +268,7 @@ export class Task implements TaskInterface {
 		// Own event FIRST, THEN the cascade — an observer sees the cause (this task started) before
 		// the effect (the phase / workflow re-derive), mirroring `Runner.#settle` (AGENTS §13).
 		this.#emitter.emit('start', this.id)
-		this.#escalate()
+		this.#recompute()
 	}
 
 	complete(value: JSONValue): void {
@@ -295,7 +295,7 @@ export class Task implements TaskInterface {
 		// so the leaf's own event fires before any parent's cascade event (cause before effect).
 		const result = this.#record('completed', Object.freeze({ success: true, value: owned }))
 		this.#emitter.emit('complete', result)
-		this.#escalate()
+		this.#recompute()
 	}
 
 	fail(error: TaskFailure): void {
@@ -319,7 +319,7 @@ export class Task implements TaskInterface {
 			}),
 		)
 		this.#emitter.emit('fail', result)
-		this.#escalate()
+		this.#recompute()
 	}
 
 	skip(): void {
@@ -330,7 +330,7 @@ export class Task implements TaskInterface {
 		this.#finish()
 		this.#abort.abort()
 		this.#emitter.emit('skip')
-		this.#escalate()
+		this.#recompute()
 	}
 
 	stop(): void {
@@ -341,7 +341,7 @@ export class Task implements TaskInterface {
 		this.#finish()
 		this.#abort.abort()
 		this.#emitter.emit('stop')
-		this.#escalate()
+		this.#recompute()
 	}
 
 	report(input: TaskActivityInput): Result<TaskActivity, WorkflowError> {
@@ -479,12 +479,6 @@ export class Task implements TaskInterface {
 		const frozen = Object.freeze(record)
 		this.#result = frozen
 		return frozen
-	}
-
-	// Notify the parent phase that this leaf changed, so it re-derives and escalates to the
-	// workflow — the single upward step of the cascade.
-	#escalate(): void {
-		this.#recompute()
 	}
 
 	#touch(): void {

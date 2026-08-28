@@ -1,9 +1,9 @@
 import type { WorkflowErrorCode } from './types.js'
 
 // AGENTS §12: an illegal state-machine transition, structurally invalid restore, refused
-// mutation, or refused host schedule carries a machine-readable `code`, so a `catch`
-// branches on `error.code` instead of parsing the message. The `context` bag names the
-// offending node / status / parameter. Optional lookups (`task` / `phase`) return
+// mutation, refused host schedule, or broken internal invariant carries a machine-readable
+// `code`, so a `catch` branches on `error.code` instead of parsing the message. The `context`
+// bag names the offending node / status / parameter. Optional lookups (`task` / `phase`) return
 // `undefined` — they never throw.
 
 /**
@@ -13,9 +13,10 @@ import type { WorkflowErrorCode } from './types.js'
  * Carries a {@link WorkflowErrorCode} and an optional `context` bag naming the
  * offending node id / status / parameter. Raised for an illegal lifecycle transition
  * (`TRANSITION`), a structurally invalid {@link import('./types.js').WorkflowSnapshot}
- * boundary (`RESTORE`), a refused structural/activity edit (`MUTATION`), or a host
+ * boundary (`RESTORE`), a refused structural/activity edit (`MUTATION`), a host
  * schedule refused before arming because the caller's `signal` is not a native
- * `AbortSignal` (`SCHEDULE`, delivered as a rejected promise).
+ * `AbortSignal` (`SCHEDULE`, delivered as a rejected promise), or a broken internal
+ * invariant (`INVARIANT`).
  */
 export class WorkflowError extends Error {
 	readonly code: WorkflowErrorCode

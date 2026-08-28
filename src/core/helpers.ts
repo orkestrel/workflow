@@ -1,11 +1,14 @@
 import type {
+	ControllerInterface,
 	DeferredInterface,
 	LifecycleStatus,
 	PhaseContext,
 	PhaseDerivation,
+	PhaseInterface,
 	PhaseSnapshot,
 	PhaseStatus,
 	TaskContext,
+	TaskInterface,
 	TaskResult,
 	TaskSnapshot,
 	TaskStatus,
@@ -29,7 +32,12 @@ import {
 	isNonEmptyString,
 	isRecord,
 } from '@orkestrel/contract'
-import { DEFAULT_BAIL, MAX_TIMER_MS, TASK_TRANSITIONS } from './constants.js'
+import {
+	DEFAULT_BAIL,
+	MAX_TIMER_MS,
+	TASK_TRANSITIONS,
+	TERMINAL_TASK_STATUSES,
+} from './constants.js'
 import { WorkflowError } from './errors.js'
 import { isLifecycleStatus, isTaskFailure } from './validators.js'
 
@@ -86,17 +94,161 @@ export function captureWorkflowOptions(options?: WorkflowOptions): WorkflowOptio
  * The ONE terminal check across all three tiers (AGENTS §4.4 "one concept = one word"):
  * a task, a phase, and a workflow share the same {@link LifecycleStatus} vocabulary, so a
  * single predicate covers them — {@link derivePhaseStatus} and {@link deriveWorkflowStatus}
- * both consult it to tell a settled node from an in-flight one. Terminal: `completed` /
- * `failed` / `skipped` / `stopped`; the only non-terminal states are `pending` and
- * `running`.
+ * both consult it to tell a settled node from an in-flight one. It reads the terminal set from
+ * {@link import('./constants.js').TERMINAL_TASK_STATUSES} (`completed` / `failed` / `skipped` /
+ * `stopped`), so that constant is the one definition; the only non-terminal states are `pending`
+ * and `running`.
  *
  * @param status - The lifecycle status to test (a task / phase / workflow status)
  * @returns `true` when the status is terminal
  */
 export function isTerminalStatus(status: LifecycleStatus): boolean {
+	return TERMINAL_TASK_STATUSES.includes(status)
+}
+
+/**
+ * Test whether a driving run must stop giving a workflow more work.
+ *
+ * @remarks
+ * The halt gate a {@link import('./WorkflowRunner.js').WorkflowRunner} consults before starting a
+ * phase, before dispatching a task, and after every cooperative gate. A workflow is halted once
+ * its derived status is terminal but NOT `completed` — a `bail: true` failure, a caller's own
+ * graceful `stop()`, or a forced `skip`. `completed` is excluded deliberately: a workflow that
+ * completed vacuously is settled, not halted, and the distinction is what keeps the run from
+ * sweeping a finished tree. When a `phase` is supplied, its own forced `skipped` / `stopped` halts
+ * that phase's work too; a `failed` phase does not, because the workflow's own `bail` policy
+ * decides whether a failed phase ends the run.
+ *
+ * @param workflow - The live workflow the run is driving
+ * @param phase - The phase whose own forced terminal status also halts its tasks
+ * @returns True if the run must stop giving this workflow (or phase) more work; false otherwise
+ *
+ * @example
+ * ```ts
+ * isHalted(workflow) // false while pending or running
+ * workflow.stop()
+ * isHalted(workflow) // true
+ * ```
+ */
+export function isHalted(workflow: WorkflowInterface, phase?: PhaseInterface): boolean {
+	const status = workflow.status
+	// The workflow half is the terminal set minus `completed`, so it reads the one terminal
+	// definition. The phase half is NOT that set — only a FORCED skip / stop halts a phase, since a
+	// `failed` phase is the workflow policy's decision and a `completed` one is ordinary progress.
 	return (
-		status === 'completed' || status === 'failed' || status === 'skipped' || status === 'stopped'
+		(isTerminalStatus(status) && status !== 'completed') ||
+		phase?.status === 'skipped' ||
+		phase?.status === 'stopped'
 	)
+}
+
+/**
+ * Test whether forcing a workflow `stopped` would still record something.
+ *
+ * @remarks
+ * `stop()` is a no-op once a workflow's status is already terminal, so a run that must record a
+ * cancellation forces it only while this holds. It is NOT the negation of
+ * {@link isTerminalStatus}: `completed` and `skipped` both pass, because a run-level cancel that
+ * lands on a vacuously-completed or fully-skipped tree still records `stopped` as the outcome the
+ * caller asked for. Only an already-`failed` or already-`stopped` workflow has a terminal state
+ * worth keeping.
+ *
+ * @param workflow - The live workflow a run-level cancel would force
+ * @returns True if forcing `stopped` would change the recorded outcome; false otherwise
+ *
+ * @example
+ * ```ts
+ * isStoppable(workflow) // true while pending, running, completed, or skipped
+ * workflow.stop()
+ * isStoppable(workflow) // false
+ * ```
+ */
+export function isStoppable(workflow: WorkflowInterface): boolean {
+	const status = workflow.status
+	return status !== 'failed' && status !== 'stopped'
+}
+
+/**
+ * Test whether a naturally-finished run may force its workflow `completed`.
+ *
+ * @remarks
+ * A run that walked every phase and still derives `pending` executed nothing — zero phases, or
+ * every phase empty — so it is vacuously done and the run settles it `completed`. Gated on
+ * EXACTLY `pending` so a real `completed`, a `bail: true` `failed`, a `stopped`, or a derived
+ * `skipped` is never overridden. The tree-is-empty half of the rule is
+ * {@link WorkflowInterface.complete}'s own guard, which refuses a pending tree that still holds
+ * tasks.
+ *
+ * @param workflow - The live workflow the run has finished walking
+ * @returns True if the run may force the vacuous completion; false otherwise
+ *
+ * @example
+ * ```ts
+ * isCompletable(createWorkflow({ id: 'w', name: 'W', phases: [] })) // true
+ * ```
+ */
+export function isCompletable(workflow: WorkflowInterface): boolean {
+	return workflow.status === 'pending'
+}
+
+/**
+ * Test whether a task attempt is being genuinely cancelled rather than merely timed out.
+ *
+ * @remarks
+ * The discriminator that keeps a per-attempt deadline off the skip path. Three causes fire a
+ * running task's folded signal, and only two of them mean "skip this task": the task's own
+ * `signal` (its `stop` / `skip`), and the unit or run signal (a sibling fail-fast under
+ * `bail: true`, or a run-level abort / timeout / budget / `destroy`). A bare per-attempt timeout
+ * fires NEITHER — it aborts only the deadline portion of the attempt signal — so it stays a
+ * retryable failure of that attempt instead of skipping the leaf and losing the recorded fault.
+ * Read fresh at each call so a cancel that lands mid-dispatch is seen.
+ *
+ * @param task - The live task the attempt is driving
+ * @param controller - The substrate unit handle carrying the unit-level abort
+ * @param runSignal - The run's folded cancellation signal
+ * @returns True if the attempt is being genuinely cancelled; false otherwise
+ *
+ * @example
+ * ```ts
+ * isSkipping(task, controller, runSignal) // false until a cancel fires
+ * ```
+ */
+export function isSkipping(
+	task: TaskInterface,
+	controller: ControllerInterface<TaskInterface, void>,
+	runSignal: AbortSignal,
+): boolean {
+	return task.signal.aborted || controller.aborted || runSignal.aborted
+}
+
+/**
+ * Test whether one attempt still owns the task it launched.
+ *
+ * @remarks
+ * A retried task is re-dispatched while an earlier attempt's handler may still be resolving, so
+ * every settlement path re-checks ownership before touching the leaf. Ownership needs BOTH
+ * halves: the run-local `owners` ledger must still name this attempt, and the live task's own
+ * `attempts` tally must still match it. A superseded attempt reads `false` and returns without
+ * recording anything, so a late resolution can never overwrite the newer attempt's outcome.
+ *
+ * @param owners - The run-local ledger of the attempt owning each task id
+ * @param task - The live task the attempt launched
+ * @param attempt - The one-based attempt number to test
+ * @returns True if `attempt` still owns `task`; false otherwise
+ *
+ * @example
+ * ```ts
+ * const owners = new Map([[task.id, 1]])
+ * ownsAttempt(owners, task, 1) // true while the task's own `attempts` is 1
+ * ownsAttempt(owners, task, 2) // false
+ * ```
+ */
+export function ownsAttempt(
+	owners: Map<string, number>,
+	task: TaskInterface,
+	attempt: number,
+): boolean {
+	return owners.get(task.id) === attempt && task.attempts === attempt
 }
 
 // === Status derivation
@@ -190,7 +342,7 @@ export function deriveWorkflowStatus(phases: readonly PhaseDerivation[]): Workfl
  * reads this over its live phases' statuses to decide which positions are safe to edit.
  * Because entries run SEQUENTIALLY (phases sequential, AGENTS determinism), every
  * already-started entry forms a contiguous LEADING prefix and every still-`pending`
- * entry forms the trailing suffix — so the boundary is simply the count of leading
+ * entry forms the trailing suffix — so the boundary is the count of leading
  * non-`pending` entries: the index of the first `pending` entry, or the full length when
  * none is `pending` (nothing is safely editable). A `pending` container's entries are ALL
  * `pending`, so the boundary is `0` and every position is naturally accepted — callers
@@ -558,12 +710,59 @@ export function recoverWorkflowSnapshot(snapshot: WorkflowSnapshot): WorkflowSna
 	}
 }
 
-/** Compare two optional description values. */
+/**
+ * Compare two optional description values.
+ *
+ * @remarks
+ * The equality rule a lineage check needs: two descriptions match when they are the same value
+ * AND that value is either a string or genuine absence. Anything else — a number, an object, a
+ * `null` — never matches, even against itself, so a lineage stamped with a non-string description
+ * is rejected rather than silently accepted.
+ *
+ * @param left - The first description value
+ * @param right - The second description value
+ * @returns True if both are the same string or both absent; false otherwise
+ *
+ * @example
+ * ```ts
+ * matchesDescription('build', 'build') // true
+ * matchesDescription(undefined, undefined) // true
+ * matchesDescription('build', undefined) // false
+ * ```
+ */
 export function matchesDescription(left: unknown, right: unknown): boolean {
 	return left === right && (left === undefined || typeof left === 'string')
 }
 
-/** Test a result's lineage against its containing snapshot nodes. */
+/**
+ * Test a result's lineage against its containing snapshot nodes.
+ *
+ * @remarks
+ * The four arguments are the result and the three snapshot nodes it claims to belong to, read
+ * from the OUTSIDE in: a {@link TaskResult} is self-describing, so restoring one is only safe
+ * when every identity it carries agrees with the tree it was found in. It checks the exact key
+ * set at each level, that `status` equals the owning task's, and that the `task` / `phase` /
+ * `workflow` contexts — including the nested `task.phase.workflow` lineage — carry the same `id`,
+ * `name`, and `description` as the nodes containing them. It then requires the boxed outcome to
+ * match the status: a `Success` holding JSON for `completed`, a `Failure` holding a
+ * {@link TaskFailure} for `failed`, and nothing for any other status. Total — a hostile
+ * prototype, accessor, or cycle answers `false` rather than throwing.
+ *
+ * @param value - The candidate {@link TaskResult}
+ * @param workflow - The workflow snapshot node containing it
+ * @param phase - The phase snapshot node containing it
+ * @param task - The task snapshot node the result belongs to
+ * @returns True if `value` is a {@link TaskResult} whose lineage and outcome match those nodes;
+ *   false otherwise
+ *
+ * @example
+ * ```ts
+ * const snapshot = workflow.snapshot()
+ * const phase = snapshot.phases[0]
+ * const task = phase?.tasks[0]
+ * isTaskResult(task?.result, snapshot, phase, task) // true for a settled task
+ * ```
+ */
 export function isTaskResult(
 	value: unknown,
 	workflow: unknown,
@@ -767,12 +966,11 @@ export function collectResults(
  * the pure splice-in step behind an insertion-ordered registry's `add`.
  *
  * @remarks
- * Shared by {@link import('./tasks/TaskManager.js').TaskManager} and
- * {@link import('./phases/PhaseManager.js').PhaseManager}: both convert their
- * insertion-ordered `Map` to `[...map.entries()]`, call this to splice the new entry
- * in at the target index, then rebuild the `Map` from the result (a stateful step that
- * stays a `#` private method — this helper does no `Map` construction). Does not
- * mutate `entries`; returns a new array.
+ * Used by the shared {@link import('./Collection.js').Collection} store both managers hold: it
+ * converts its insertion-ordered `Map` to `[...map.entries()]`, calls this to splice the new entry
+ * in at the target index, then rebuilds the `Map` from the result (a stateful step that stays a
+ * `#` private method — this helper does no `Map` construction). Does not mutate `entries`;
+ * returns a new array.
  *
  * @typeParam T - The entry's value type
  * @param entries - The current positional entries, in order
@@ -805,9 +1003,10 @@ export function insertEntry<T>(
  * @remarks
  * The move counterpart of {@link insertEntry}: finds the entry by `key`, splices it
  * out, then splices it back in at `index`. An absent `key` is a no-op (returns a copy
- * of `entries` unchanged) — the caller (`TaskManager.move` / `PhaseManager.move`)
- * already gates on the target's existence before calling this, so the no-op branch is
- * defensive, never reached in practice. Does not mutate `entries`; returns a new array.
+ * of `entries` unchanged) — the caller, the shared
+ * {@link import('./Collection.js').Collection} store's `move`, already gates on the target's
+ * existence before calling this, so the no-op branch is defensive, never reached in practice.
+ * Does not mutate `entries`; returns a new array.
  *
  * @typeParam T - The entry's value type
  * @param entries - The current positional entries, in order
@@ -932,6 +1131,36 @@ export function scheduleHost(
 			} catch {}
 		}
 	})
+}
+
+/**
+ * Schedules the shared host timer boundary every scheduler backend resumes from.
+ *
+ * @remarks
+ * The one `setTimeout` / `clearTimeout` boundary in the package: the cross-environment
+ * {@link import('./Scheduler.js').Scheduler}, both Node primitives, and every browser backend's
+ * `delay` and macrotask fallback route here, so the timer is armed and cleared in one place. It
+ * composes {@link scheduleHost}, which owns listener safety, the cancellation race, the exact
+ * caller reason, and once-only settlement. It does NOT validate `ms`: the value passes straight to
+ * the host `setTimeout`, which clamps a negative value or `NaN` to about zero, so an
+ * out-of-domain `ms` resumes on the next host turn rather than throwing. Pass a non-negative
+ * finite `ms`.
+ *
+ * @param ms - The milliseconds to wait before resuming
+ * @param signal - Optional caller cancellation signal
+ * @returns A promise that resolves after `ms`, or rejects with the caller's exact abort reason
+ *
+ * @example
+ * ```ts
+ * const controller = new AbortController()
+ * await delayHost(0, controller.signal) // a real macrotask host turn
+ * ```
+ */
+export function delayHost(ms: number, signal?: AbortSignal): Promise<void> {
+	return scheduleHost((complete) => {
+		const handle = setTimeout(complete, ms)
+		return () => clearTimeout(handle)
+	}, signal)
 }
 
 /**
