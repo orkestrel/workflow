@@ -37,7 +37,7 @@ import { Phase } from './phases/Phase.js'
 import { PhaseManager } from './phases/PhaseManager.js'
 
 /**
- * The live DERIVED state machine (W-b) for a whole workflow — the observable (AGENTS §13)
+ * Implements the live DERIVED state machine (W-b) for a whole workflow — the observable (AGENTS §13)
  * ROOT whose {@link WorkflowStatus} is computed from its phases under the `bail` policy and
  * recomputed reactively as the cascade propagates up from a task transition.
  *

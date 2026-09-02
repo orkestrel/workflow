@@ -1,7 +1,7 @@
 import type { SchedulerPriority } from '@src/core'
 
 /**
- * The browser-native `postTask` priority for each portable {@link SchedulerPriority} — the
+ * Maps each portable {@link SchedulerPriority} to the browser-native `postTask` priority — the
  * Prioritized Task Scheduling API's three levels.
  *
  * @remarks

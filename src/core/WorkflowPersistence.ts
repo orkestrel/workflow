@@ -11,7 +11,7 @@ import { PERSISTED_NODE_EVENTS, PERSISTED_TASK_EVENTS } from './constants.js'
 import { errorToMessage } from './helpers.js'
 
 /**
- * Advanced run-local snapshot persistence with one writer and one coalesced latest obligation.
+ * Coordinates advanced run-local snapshot persistence with one writer and one coalesced latest obligation.
  *
  * @remarks
  * Normally composed by `WorkflowRunner.execute({ store })`; exported for hosts that need to
@@ -52,12 +52,12 @@ export class WorkflowPersistence implements WorkflowPersistenceInterface {
 	}
 
 	/**
-	 * Persist every change through this required boundary.
+	 * Persists every change through this required boundary.
 	 *
 	 * @param checkpoint - The boundary being made durable
 	 * @param task - The task owning an attempt or settlement
 	 * @param attempt - The persisted attempt number
-	 * @returns Whether the latest state reached the store
+	 * @returns True if the latest state reached the store; false otherwise
 	 */
 	async checkpoint(
 		checkpoint: WorkflowCheckpoint,
@@ -79,16 +79,16 @@ export class WorkflowPersistence implements WorkflowPersistenceInterface {
 	}
 
 	/**
-	 * Stop observing the live tree and persist its final state.
+	 * Stops observing the live tree and persists its final state.
 	 *
-	 * @returns Whether the final snapshot reached the store
+	 * @returns True if the final snapshot reached the store; false otherwise
 	 */
 	async finalize(): Promise<boolean> {
 		this.detach()
 		return this.checkpoint('final')
 	}
 
-	/** Stop observing the live tree. */
+	/** Stops observing the live tree. */
 	detach(): void {
 		if (!this.#attached) return
 		this.#attached = false

@@ -41,7 +41,7 @@ import { WorkflowError } from './errors.js'
 import { isLifecycleStatus, isTaskFailure } from './validators.js'
 
 /**
- * Capture every top-level {@link WorkflowOptions} value exactly once into an owned plain bag.
+ * Captures every top-level {@link WorkflowOptions} value exactly once into an owned plain bag.
  *
  * @remarks
  * Direct property reads preserve inherited and non-enumerable option values while preventing
@@ -86,7 +86,7 @@ export function captureWorkflowOptions(options?: WorkflowOptions): WorkflowOptio
 // === Status predicates
 
 /**
- * Test whether a {@link LifecycleStatus} is TERMINAL — a node in this state will not
+ * Tests whether a {@link LifecycleStatus} is TERMINAL — a node in this state will not
  * transition further.
  *
  * @remarks
@@ -99,14 +99,14 @@ export function captureWorkflowOptions(options?: WorkflowOptions): WorkflowOptio
  * and `running`.
  *
  * @param status - The lifecycle status to test (a task / phase / workflow status)
- * @returns `true` when the status is terminal
+ * @returns True if the status is terminal; false otherwise
  */
 export function isTerminalStatus(status: LifecycleStatus): boolean {
 	return TERMINAL_TASK_STATUSES.includes(status)
 }
 
 /**
- * Test whether a driving run must stop giving a workflow more work.
+ * Tests whether a driving run must stop giving a workflow more work.
  *
  * @remarks
  * The halt gate a {@link import('./WorkflowRunner.js').WorkflowRunner} consults before starting a
@@ -142,7 +142,7 @@ export function isHalted(workflow: WorkflowInterface, phase?: PhaseInterface): b
 }
 
 /**
- * Test whether forcing a workflow `stopped` would still record something.
+ * Tests whether forcing a workflow `stopped` would still record something.
  *
  * @remarks
  * `stop()` is a no-op once a workflow's status is already terminal, so a run that must record a
@@ -168,7 +168,7 @@ export function isStoppable(workflow: WorkflowInterface): boolean {
 }
 
 /**
- * Test whether a naturally-finished run may force its workflow `completed`.
+ * Tests whether a naturally-finished run may force its workflow `completed`.
  *
  * @remarks
  * A run that walked every phase and still derives `pending` executed nothing — zero phases, or
@@ -191,7 +191,7 @@ export function isCompletable(workflow: WorkflowInterface): boolean {
 }
 
 /**
- * Test whether a task attempt is being genuinely cancelled rather than merely timed out.
+ * Tests whether a task attempt is being genuinely cancelled rather than merely timed out.
  *
  * @remarks
  * The discriminator that keeps a per-attempt deadline off the skip path. Three causes fire a
@@ -221,7 +221,7 @@ export function isSkipping(
 }
 
 /**
- * Test whether one attempt still owns the task it launched.
+ * Tests whether one attempt still owns the task it launched.
  *
  * @remarks
  * A retried task is re-dispatched while an earlier attempt's handler may still be resolving, so
@@ -253,7 +253,7 @@ export function ownsAttempt(
 // === Status derivation
 
 /**
- * Derive a phase's status from its tasks' statuses (tasks are concurrent, so this
+ * Derives a phase's status from its tasks' statuses (tasks are concurrent, so this
  * is an order-insensitive reduction).
  *
  * @remarks
@@ -284,7 +284,7 @@ export function derivePhaseStatus(tasks: readonly TaskStatus[]): PhaseStatus {
 }
 
 /**
- * Derive a workflow's status from its phases' {@link PhaseDerivation}s — each phase's status
+ * Derives a workflow's status from its phases' {@link PhaseDerivation}s — each phase's status
  * paired with the EFFECTIVE `bail` it ran under (`phase.bail ?? workflow.bail`) — so the
  * failure outcome is PER-PHASE-bail-aware (phases are sequential, but the derivation is an
  * order-insensitive reduction over the settled set).
@@ -332,7 +332,7 @@ export function deriveWorkflowStatus(phases: readonly PhaseDerivation[]): Workfl
 // === Pending-suffix boundary (bottom-up NATIVE mutation gating)
 
 /**
- * Derive the PENDING SUFFIX boundary of a positional list of {@link LifecycleStatus}es —
+ * Derives the PENDING SUFFIX boundary of a positional list of {@link LifecycleStatus}es —
  * the index of the first entry in the contiguous trailing run of `pending` entries.
  *
  * @remarks
@@ -365,7 +365,7 @@ export function deriveBoundary(statuses: readonly LifecycleStatus[]): number {
 // === Task state-machine guards (the W-b transition graph + override)
 
 /**
- * Test whether the live W-b task state machine may move directly from one
+ * Tests whether the live W-b task state machine may move directly from one
  * {@link TaskStatus} to another — the legal-transition guard.
  *
  * @remarks
@@ -376,14 +376,14 @@ export function deriveBoundary(statuses: readonly LifecycleStatus[]): number {
  *
  * @param from - The task's current status
  * @param to - The status the transition would move it to
- * @returns `true` when the move is legal
+ * @returns True if the move is legal; false otherwise
  */
 export function canTransitionTask(from: TaskStatus, to: TaskStatus): boolean {
 	return TASK_TRANSITIONS[from].includes(to)
 }
 
 /**
- * Resolve a task's runtime silence window against its workflow default.
+ * Resolves a task's runtime silence window against its workflow default.
  *
  * @param value - The task-level override; any present non-positive or non-finite value disables
  * @param fallback - The workflow-level default
@@ -410,7 +410,7 @@ export function resolveTaskSilence(
 // + managers uses instead of a hand-rolled `{ success: true/false, ... }` literal)
 
 /**
- * Box a value as a {@link Success} — the graceful outcome half of a {@link Result}.
+ * Boxes a value as a {@link Success} — the graceful outcome half of a {@link Result}.
  *
  * @typeParam T - The boxed value's type
  * @param value - The value to box
@@ -426,7 +426,7 @@ export function success<T>(value: T): Success<T> {
 }
 
 /**
- * Box an error as a {@link Failure} — the graceful outcome half of a {@link Result}.
+ * Boxes an error as a {@link Failure} — the graceful outcome half of a {@link Result}.
  *
  * @typeParam E - The boxed error's type
  * @param error - The error to box
@@ -442,7 +442,7 @@ export function failure<E>(error: E): Failure<E> {
 }
 
 /**
- * Normalize an unknown thrown value to a non-empty persistence-safe message.
+ * Normalizes an unknown thrown value to a non-empty persistence-safe message.
  *
  * @param error - The caught value
  * @returns A non-empty message without stack or cause data
@@ -459,7 +459,7 @@ export function errorToMessage(error: unknown): string {
 // === Result-tree collection
 
 /**
- * Find the first {@link TaskResult} in a positional list whose boxed outcome is a
+ * Finds the first {@link TaskResult} in a positional list whose boxed outcome is a
  * `Failure` — the pure scan shared by a phase's and a workflow's derived-`failed`
  * `fail`-event lookup.
  *
@@ -486,7 +486,7 @@ export function findFailure(results: readonly TaskResult[]): TaskResult | undefi
 // === Lineage context builders (the chain carried back UP the tree)
 
 /**
- * Build a {@link WorkflowContext} — the identity every level inherits — from a node's
+ * Builds a {@link WorkflowContext} — the identity every level inherits — from a node's
  * `id` / `name` / optional `description`.
  *
  * @remarks
@@ -506,7 +506,7 @@ export function buildWorkflowContext(node: WorkflowContext): WorkflowContext {
 }
 
 /**
- * Build a {@link PhaseContext} — a phase's own identity plus a back-reference to its
+ * Builds a {@link PhaseContext} — a phase's own identity plus a back-reference to its
  * workflow — from the parent {@link WorkflowContext} and the phase node's identity.
  *
  * @param workflow - The parent workflow context (the lineage pointer UP the tree)
@@ -518,7 +518,7 @@ export function buildPhaseContext(workflow: WorkflowContext, node: WorkflowConte
 }
 
 /**
- * Build a {@link TaskContext} — a task's own identity plus a back-reference to its phase
+ * Builds a {@link TaskContext} — a task's own identity plus a back-reference to its phase
  * (and, transitively, its workflow) — from the parent {@link PhaseContext} and the task
  * node's identity.
  *
@@ -536,7 +536,7 @@ export function buildTaskContext(phase: PhaseContext, node: WorkflowContext): Ta
 // === Definition → initial snapshot (the unified construction input)
 
 /**
- * Convert a {@link WorkflowDefinition} into an INITIAL {@link WorkflowSnapshot} — every
+ * Converts a {@link WorkflowDefinition} into an INITIAL {@link WorkflowSnapshot} — every
  * node `pending`, no results, empty metadata — so the live W-b tree has ONE construction
  * path (snapshot-driven) for both a fresh build and a restore.
  *
@@ -585,7 +585,7 @@ export function definitionToSnapshot(
 }
 
 /**
- * Convert one {@link import('./types.js').PhaseDefinition} into an initial, all-`pending`
+ * Converts one {@link import('./types.js').PhaseDefinition} into an initial, all-`pending`
  * {@link PhaseSnapshot} — the per-phase step of {@link definitionToSnapshot}.
  *
  * @remarks
@@ -614,7 +614,7 @@ export function phaseDefinitionToSnapshot(
 }
 
 /**
- * Convert one {@link import('./types.js').TaskDefinition} into an initial, `pending`
+ * Converts one {@link import('./types.js').TaskDefinition} into an initial, `pending`
  * {@link TaskSnapshot} — the per-task leaf step of {@link definitionToSnapshot} (no
  * result yet, empty metadata).
  *
@@ -644,7 +644,7 @@ export function taskDefinitionToSnapshot(
 }
 
 /**
- * Convert interrupted running work into a recoverable pending suffix or an
+ * Converts interrupted running work into a recoverable pending suffix or an
  * exhausted recovery failure without replenishing attempts.
  *
  * @param snapshot - A fully validated owned snapshot with no terminal overrides
@@ -710,7 +710,7 @@ export function recoverWorkflowSnapshot(snapshot: WorkflowSnapshot): WorkflowSna
 }
 
 /**
- * Compare two optional description values.
+ * Compares two optional description values.
  *
  * @remarks
  * The equality rule a lineage check needs: two descriptions match when they are the same value
@@ -734,7 +734,7 @@ export function matchesDescription(left: unknown, right: unknown): boolean {
 }
 
 /**
- * Test a result's lineage against its containing snapshot nodes.
+ * Tests a result's lineage against its containing snapshot nodes.
  *
  * @remarks
  * The four arguments are the result and the three snapshot nodes it claims to belong to, read
@@ -751,8 +751,8 @@ export function matchesDescription(left: unknown, right: unknown): boolean {
  * @param workflow - The workflow snapshot node containing it
  * @param phase - The phase snapshot node containing it
  * @param task - The task snapshot node the result belongs to
- * @returns True if `value` is a {@link TaskResult} whose lineage and outcome match those nodes;
- *   false otherwise
+ * @returns True if `value` is a {@link TaskResult} whose lineage and outcome match
+ *   those nodes; false otherwise
  *
  * @example
  * ```ts
@@ -867,14 +867,14 @@ export function isTaskResult(
 }
 
 /**
- * Test that every named task has a callable runtime handler before dispatch.
+ * Tests that every named task has a callable runtime handler before dispatch.
  *
  * @remarks
  * A snapshot lookup reads each unique `behavior` binding at most once from `functions`. A live workflow
  * validates its tasks' already-resolved handlers without consulting the retained registry again.
  *
  * @param workflow - The persisted snapshot or constructed live workflow to validate
- * @returns Whether every named task resolves to a callable handler
+ * @returns True if every named task resolves to a callable handler; false otherwise
  */
 export function hasWorkflowHandlers(workflow: WorkflowInterface): boolean
 export function hasWorkflowHandlers(
@@ -939,7 +939,7 @@ export function scanSnapshotContext(value: unknown): Readonly<Record<string, unk
 }
 
 /**
- * Flatten a nested list of per-phase {@link TaskResult} lists into one positional list
+ * Flattens a nested list of per-phase {@link TaskResult} lists into one positional list
  * — the workflow tier of the result tree, built from each phase's `results()`.
  *
  * @remarks
@@ -959,7 +959,7 @@ export function collectResults(
 // === Positional-entry array manipulation (the TaskManager/PhaseManager `add`/`move` core)
 
 /**
- * Insert one `[key, value]` entry at a positional index into a readonly entries array —
+ * Inserts one `[key, value]` entry at a positional index into a readonly entries array —
  * the pure splice-in step behind an insertion-ordered registry's `add`.
  *
  * @remarks
@@ -993,7 +993,7 @@ export function insertEntry<T>(
 }
 
 /**
- * Reposition the entry keyed `key` to a new positional index in a readonly entries
+ * Repositions the entry keyed `key` to a new positional index in a readonly entries
  * array — the pure remove-then-reinsert step behind an insertion-ordered registry's
  * `move`.
  *
@@ -1030,7 +1030,7 @@ export function moveEntry<T>(
 }
 
 /**
- * Schedule one cancellable host operation behind an owned settlement signal.
+ * Schedules one cancellable host operation behind an owned settlement signal.
  *
  * @remarks
  * A defined `signal` that is not a native `AbortSignal` is refused before anything is armed, as a
@@ -1150,7 +1150,7 @@ export function delayHost(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 /**
- * Park until `signal` aborts — a promise-parked wait (AGENTS §21), never a timer or
+ * Parks until `signal` aborts — a promise-parked wait (AGENTS §21), never a timer or
  * busy-loop, that NEVER rejects.
  *
  * @remarks

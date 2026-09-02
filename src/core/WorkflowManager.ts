@@ -15,7 +15,7 @@ import { captureWorkflowOptions } from './helpers.js'
 import { Workflow } from './Workflow.js'
 
 /**
- * The store-backed registry of {@link WorkflowInterface}s keyed by `id`, in insertion order —
+ * Implements the store-backed registry of {@link WorkflowInterface}s keyed by `id`, in insertion order —
  * the additive manager tier mirroring the `@orkestrel/agent` line's `ConversationManager` /
  * `WorkspaceManager`. Event-free (a registry, like its twins); the observability lives on each
  * {@link WorkflowInterface}.

@@ -3,7 +3,7 @@ import type { ControllerInterface } from './types.js'
 import { parkSignal } from './helpers.js'
 
 /**
- * The per-unit handle a runner handler receives — wraps the unit's identity,
+ * Implements the per-unit handle a runner handler receives — wraps the unit's identity,
  * input, cancellation, and the run controls (`wait` / `spawn` / `abort`).
  *
  * @remarks

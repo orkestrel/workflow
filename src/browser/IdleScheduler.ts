@@ -5,7 +5,7 @@ import type { IdleInterface } from './types.js'
 import { isFunction } from '@orkestrel/contract'
 
 /**
- * The idle-time {@link SchedulerInterface} — a browser cooperative-yield backend whose
+ * Implements the idle-time {@link SchedulerInterface} — a browser cooperative-yield backend whose
  * `yield` resumes when the host is idle through `requestIdleCallback`, falling back to a
  * zero-delay macrotask where it is absent.
  *
@@ -38,8 +38,8 @@ import { isFunction } from '@orkestrel/contract'
  */
 export class IdleScheduler implements SchedulerInterface {
 	/**
-	 * Yield control to the host until it is idle through `requestIdleCallback` (or a
-	 * `setTimeout(0)` macrotask where the API is absent), then resume; abort rejects with
+	 * Yields control to the host until it is idle through `requestIdleCallback` (or a
+	 * `setTimeout(0)` macrotask where the API is absent), then resumes; abort rejects with
 	 * `signal.reason`.
 	 */
 	yield(options?: SchedulerOptions): Promise<void> {
@@ -49,7 +49,7 @@ export class IdleScheduler implements SchedulerInterface {
 	}
 
 	/**
-	 * Resume after at least `ms` milliseconds through `setTimeout`; abort rejects with
+	 * Resumes after at least `ms` milliseconds through `setTimeout`; abort rejects with
 	 * `signal.reason`.
 	 *
 	 * @remarks

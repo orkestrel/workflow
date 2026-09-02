@@ -20,7 +20,7 @@ import type { WorkflowError } from './errors.js'
 // === Definition family (pure serializable JSON DATA)
 
 /**
- * The serializable definition of one task — its identity plus an optional reference to
+ * Represents the serializable definition of one task — its identity plus an optional reference to
  * the behavior it runs.
  *
  * @remarks
@@ -38,6 +38,8 @@ export interface TaskDefinition {
 	readonly description?: string
 	readonly behavior?: string
 	/**
+	 * Sets the extra attempts after the first on failure.
+	 *
 	 * @remarks
 	 * Extra attempts after the first on failure (a non-negative integer); the runner threads it
 	 * to this task's substrate unit, OVERRIDING the phase Runner's `retries` default. Omitted ⇒
@@ -47,6 +49,8 @@ export interface TaskDefinition {
 	 */
 	readonly retries?: number
 	/**
+	 * Sets the per-attempt deadline in milliseconds.
+	 *
 	 * @remarks
 	 * The workflow-owned per-attempt deadline in milliseconds, an integer from `0` through
 	 * `MAX_TIMER_MS`. Zero or omission means no deadline. PERSISTED in a {@link TaskSnapshot},
@@ -57,7 +61,7 @@ export interface TaskDefinition {
 }
 
 /**
- * The serializable definition of one phase — its identity, its ordered tasks, and
+ * Represents the serializable definition of one phase — its identity, its ordered tasks, and
  * an optional resource throttle.
  *
  * @remarks
@@ -72,9 +76,11 @@ export interface PhaseDefinition {
 	readonly name: string
 	readonly description?: string
 	readonly tasks: readonly TaskDefinition[]
-	/** Max tasks in flight at once (a resource throttle); omitted ⇒ unbounded. */
+	/** Caps the tasks in flight at once (a resource throttle); omitted ⇒ unbounded. */
 	readonly concurrency?: number
 	/**
+	 * Sets the phase's failure policy.
+	 *
 	 * @remarks
 	 * The per-phase failure-policy OVERRIDE (AGENTS §4.4). Omitted ⇒ the phase INHERITS the
 	 * workflow `bail`; supplied, it wins (`effectiveBail = phase.bail ?? workflow.bail`). A
@@ -85,7 +91,7 @@ export interface PhaseDefinition {
 }
 
 /**
- * The serializable definition of a whole workflow — its identity, its ordered
+ * Represents the serializable definition of a whole workflow — its identity, its ordered
  * phases, and the `bail` failure policy.
  *
  * @remarks
@@ -101,14 +107,14 @@ export interface WorkflowDefinition {
 	readonly name: string
 	readonly description?: string
 	readonly phases: readonly PhaseDefinition[]
-	/** Failure policy: `false` (default) continues gracefully, `true` halts on the first failure. */
+	/** Sets the failure policy: `false` (default) continues gracefully, `true` halts on the first failure. */
 	readonly bail?: boolean
 }
 
 // === Context chain (lineage carried back UP the tree)
 
 /**
- * The ambient context of a workflow — the identity every level inherits.
+ * Represents the ambient context of a workflow — the identity every level inherits.
  *
  * @remarks
  * The root of the context chain: a {@link PhaseContext} and {@link TaskContext}
@@ -122,7 +128,7 @@ export interface WorkflowContext {
 }
 
 /**
- * The ambient context of a phase — its own identity plus a back-reference to the
+ * Represents the ambient context of a phase — its own identity plus a back-reference to the
  * workflow it belongs to.
  *
  * @remarks
@@ -134,7 +140,7 @@ export interface PhaseContext extends WorkflowContext {
 }
 
 /**
- * The ambient context of a task — its own identity plus a back-reference to the
+ * Represents the ambient context of a task — its own identity plus a back-reference to the
  * phase (and, transitively, the workflow) it belongs to.
  *
  * @remarks
@@ -148,14 +154,14 @@ export interface TaskContext extends WorkflowContext {
 
 // === Inputs (AGENTS §4.5 — minimal creation data)
 
-/** The minimal data to create a workflow context — a partial {@link WorkflowContext}. */
+/** Represents the minimal data to create a workflow context — a partial {@link WorkflowContext}. */
 export type WorkflowInput = Partial<WorkflowContext>
 
-/** The minimal data to create a phase context — a partial {@link PhaseContext}. */
+/** Represents the minimal data to create a phase context — a partial {@link PhaseContext}. */
 export type PhaseInput = Partial<PhaseContext>
 
 /**
- * The minimal data to create a task context — a partial {@link TaskContext} plus
+ * Represents the minimal data to create a task context — a partial {@link TaskContext} plus
  * any creation-only fields.
  *
  * @remarks
@@ -164,12 +170,12 @@ export type PhaseInput = Partial<PhaseContext>
  * layer fills identity / lineage).
  */
 export interface TaskInput extends Partial<TaskContext> {
-	/** An open consumer bag — stored and snapshotted, never interpreted by the workflow. */
+	/** Holds an open consumer bag — stored and snapshotted, never interpreted by the workflow. */
 	readonly metadata?: JSONRecord
 }
 
 /**
- * One identified thing a running task claims active, with the moment the claim began.
+ * Represents one identified thing a running task claims active, with the moment the claim began.
  *
  * @remarks
  * The shape {@link TaskOperation} and {@link TaskConstraint} share: `id` is unique within one
@@ -186,7 +192,7 @@ export interface TaskClaim {
 }
 
 /**
- * One operation claimed active when a running task's complete frame was accepted.
+ * Represents one operation claimed active when a running task's complete frame was accepted.
  *
  * @remarks
  * A {@link TaskClaim}: `id` is stable within one complete activity report, `name` is the
@@ -195,7 +201,7 @@ export interface TaskClaim {
 export interface TaskOperation extends TaskClaim {}
 
 /**
- * The aggregate progress most recently reported by a running task.
+ * Represents the aggregate progress most recently reported by a running task.
  *
  * @remarks
  * `progress` and an optional `total` are finite non-negative numbers; when `total` is present
@@ -209,7 +215,7 @@ export interface TaskProgress {
 }
 
 /**
- * One constraint claimed active when a running task's complete frame was accepted.
+ * Represents one constraint claimed active when a running task's complete frame was accepted.
  *
  * @remarks
  * A {@link TaskClaim}. Constraints describe active limits or requirements without embedding
@@ -219,7 +225,7 @@ export interface TaskProgress {
 export interface TaskConstraint extends TaskClaim {}
 
 /**
- * One complete replacement of a running task's observable activity.
+ * Represents one complete replacement of a running task's observable activity.
  *
  * @remarks
  * `note` describes the frame while `progress.message` describes the progress value.
@@ -234,7 +240,7 @@ export interface TaskActivityInput {
 }
 
 /**
- * The bounded, JSON-serializable activity most recently accepted from a task reporter.
+ * Represents the bounded, JSON-serializable activity most recently accepted from a task reporter.
  */
 export interface TaskActivity {
 	readonly note?: string
@@ -247,7 +253,7 @@ export interface TaskActivity {
 // === Patches (declarative partial updates — the mutation API's `update` payloads)
 
 /**
- * A declarative partial update to a {@link TaskInterface} — the fields a `pending`
+ * Represents a declarative partial update to a {@link TaskInterface} — the fields a `pending`
  * task's {@link TaskInterface.patch} (and the owning {@link TaskManagerInterface.update})
  * accept, runtime-validated through {@link import('./shapers.js').taskUpdateShape}.
  *
@@ -268,7 +274,7 @@ export interface TaskUpdate {
 }
 
 /**
- * A declarative partial update to a {@link PhaseInterface} — the fields a `pending`
+ * Represents a declarative partial update to a {@link PhaseInterface} — the fields a `pending`
  * phase's {@link PhaseInterface.patch} (and the owning {@link PhaseManagerInterface.update})
  * accept, runtime-validated through {@link import('./shapers.js').phaseUpdateShape}.
  *
@@ -293,7 +299,7 @@ export interface PhaseUpdate {
 // === Error codes (AGENTS §12 — the machine-readable codes the W-b entities throw)
 
 /**
- * The machine-readable code of a {@link import('./errors.js').WorkflowError} — the
+ * Names the machine-readable code of a {@link import('./errors.js').WorkflowError} — the
  * fault the live W-b state machine raises (AGENTS §12).
  *
  * @remarks
@@ -330,7 +336,7 @@ export type WorkflowErrorCode = 'TRANSITION' | 'RESTORE' | 'MUTATION' | 'SCHEDUL
 // === Status unions (AGENTS §10 lifecycle vocabulary)
 
 /**
- * The shared lifecycle vocabulary every tier draws from — `pending` before it runs,
+ * Names the shared lifecycle vocabulary every tier draws from — `pending` before it runs,
  * `running` while in flight, then one of the terminal states `completed` / `failed` /
  * `skipped` / `stopped`.
  *
@@ -347,7 +353,7 @@ export type WorkflowErrorCode = 'TRANSITION' | 'RESTORE' | 'MUTATION' | 'SCHEDUL
 export type LifecycleStatus = 'pending' | 'running' | 'completed' | 'failed' | 'skipped' | 'stopped'
 
 /**
- * The lifecycle status of a task — `pending` before it runs, `running` while in
+ * Names the lifecycle status of a task — `pending` before it runs, `running` while in
  * flight, then one of the terminal states: `completed` (a success), `failed` (a
  * genuine error), `skipped` (intentionally not executed, AGENTS §10 `skip`), or
  * `stopped` (permanently ended, AGENTS §10 `stop`).
@@ -363,7 +369,7 @@ export type LifecycleStatus = 'pending' | 'running' | 'completed' | 'failed' | '
 export type TaskStatus = LifecycleStatus
 
 /**
- * The lifecycle status of a phase — the same vocabulary as {@link TaskStatus},
+ * Names the lifecycle status of a phase — the same vocabulary as {@link TaskStatus},
  * derived from its tasks' statuses.
  *
  * @remarks
@@ -375,7 +381,7 @@ export type TaskStatus = LifecycleStatus
 export type PhaseStatus = LifecycleStatus
 
 /**
- * The lifecycle status of a workflow — the same vocabulary as {@link TaskStatus},
+ * Names the lifecycle status of a workflow — the same vocabulary as {@link TaskStatus},
  * derived from its phases' statuses under the `bail` policy.
  *
  * @remarks
@@ -387,7 +393,7 @@ export type PhaseStatus = LifecycleStatus
 export type WorkflowStatus = LifecycleStatus
 
 /**
- * One phase's contribution to the workflow-status derivation — its {@link PhaseStatus} paired
+ * Represents one phase's contribution to the workflow-status derivation — its {@link PhaseStatus} paired
  * with the EFFECTIVE `bail` policy it ran under (`phase.bail ?? workflow.bail`, AGENTS §4.4).
  *
  * @remarks
@@ -406,7 +412,7 @@ export interface PhaseDerivation {
 // === Task result (lineage + boxed outcome)
 
 /**
- * Where a task failure arose — the axis a persisted {@link TaskFailure} records.
+ * Names where a task failure arose — the axis a persisted {@link TaskFailure} records.
  *
  * @remarks
  * - `handler` — the task's own {@link WorkflowFunction} threw or rejected, or its `behavior` name had
@@ -418,14 +424,14 @@ export interface PhaseDerivation {
  */
 export type TaskFailureOrigin = 'handler' | 'timeout' | 'recovery'
 
-/** A normalized JSON-safe task failure persisted without a stack or cause. */
+/** Represents a normalized JSON-safe task failure persisted without a stack or cause. */
 export interface TaskFailure {
 	readonly origin: TaskFailureOrigin
 	readonly message: string
 }
 
 /**
- * The structured outcome of a task execution — its full lineage, its terminal
+ * Represents the structured outcome of a task execution — its full lineage, its terminal
  * status, the moment it settled, and its boxed produced outcome.
  *
  * @remarks
@@ -445,7 +451,7 @@ export interface TaskResult {
 	readonly phase: PhaseContext
 	readonly workflow: WorkflowContext
 	readonly status: TaskStatus
-	/** The boxed outcome — present for `completed` (Success) / `failed` (Failure), absent otherwise. */
+	/** Holds the boxed outcome — present for `completed` (Success) / `failed` (Failure), absent otherwise. */
 	readonly result?: Result<JSONValue, TaskFailure>
 	readonly timestamp: number
 }
@@ -453,7 +459,7 @@ export interface TaskResult {
 // === Snapshots (the durable-store payload, pure JSON)
 
 /**
- * A JSON-serializable snapshot of one task's state — the leaf of the snapshot tree
+ * Represents a JSON-serializable snapshot of one task's state — the leaf of the snapshot tree
  * the durable store (W-d) persists.
  *
  * @remarks
@@ -474,20 +480,20 @@ export interface TaskSnapshot {
 	readonly status: TaskStatus
 	readonly result?: TaskResult
 	readonly metadata: JSONRecord
-	/** Total launches already consumed; zero while fresh and never reset by recovery. */
+	/** Counts total launches already consumed; zero while fresh and never reset by recovery. */
 	readonly attempts: number
-	/** The behavior reference — a registry key resolved against {@link WorkflowFunctions} on restore/build. */
+	/** Names the behavior reference — a registry key resolved against {@link WorkflowFunctions} on restore/build. */
 	readonly behavior?: string
-	/** Extra attempts after the first on failure (a non-negative integer); overrides the phase Runner default. */
+	/** Records the extra attempts after the first on failure (a non-negative integer); overrides the phase Runner default. */
 	readonly retries?: number
-	/** Workflow-owned per-attempt deadline (`0..MAX_TIMER_MS`); zero or omission means disabled. */
+	/** Records the workflow-owned per-attempt deadline (`0..MAX_TIMER_MS`); zero or omission means disabled. */
 	readonly timeout?: number
-	/** Pending omits activity; running/completed/failed require it; skipped/stopped may retain it. */
+	/** Holds the task's activity: pending omits it; running/completed/failed require it; skipped/stopped may retain it. */
 	readonly activity?: TaskActivity
 }
 
 /**
- * A JSON-serializable snapshot of one phase's state — its identity, status, its forced
+ * Represents a JSON-serializable snapshot of one phase's state — its identity, status, its forced
  * override (if any), and its nested task snapshots.
  *
  * @remarks
@@ -503,16 +509,16 @@ export interface PhaseSnapshot {
 	readonly name: string
 	readonly description?: string
 	readonly status: PhaseStatus
-	/** The forced status of a whole-phase `skip` / `stop`; present only when an override is in force. */
+	/** Records the forced status of a whole-phase `skip` / `stop`; present only when an override is in force. */
 	readonly override?: PhaseStatus
 	/**
-	 * The EFFECTIVE failure policy this phase ran under (`phase.bail ?? workflow.bail`, AGENTS §4.4)
+	 * Records the EFFECTIVE failure policy this phase ran under (`phase.bail ?? workflow.bail`, AGENTS §4.4)
 	 * — persisted (REQUIRED, like {@link WorkflowSnapshot.bail}) so a restore reinstates the same
 	 * per-phase policy identically without a silent default.
 	 */
 	readonly bail: boolean
 	/**
-	 * Max tasks in flight at once (a resource throttle), persisted so a restore reinstates the
+	 * Caps the tasks in flight at once (a resource throttle), persisted so a restore reinstates the
 	 * same per-phase throttle — mirrors {@link import('./types.js').PhaseDefinition.concurrency}.
 	 * Omitted ⇒ unbounded.
 	 */
@@ -521,7 +527,7 @@ export interface PhaseSnapshot {
 }
 
 /**
- * A JSON-serializable snapshot of a whole workflow's state — its identity, status, its
+ * Represents a JSON-serializable snapshot of a whole workflow's state — its identity, status, its
  * forced override (if any), the `bail` policy it ran under, its nested phase snapshots,
  * and creation / update timestamps.
  *
@@ -543,9 +549,9 @@ export interface WorkflowSnapshot {
 	readonly name: string
 	readonly description?: string
 	readonly status: WorkflowStatus
-	/** Whole-workflow `skip` / `stop` or valid task-free vacuous `completed`; omitted when derived. */
+	/** Records a whole-workflow `skip` / `stop` or a valid task-free vacuous `completed`; omitted when derived. */
 	readonly override?: WorkflowStatus
-	/** The failure policy the workflow ran under (AGENTS §4.4) — persisted so a restore re-derives identically. */
+	/** Records the failure policy the workflow ran under (AGENTS §4.4) — persisted so a restore re-derives identically. */
 	readonly bail: boolean
 	readonly phases: readonly PhaseSnapshot[]
 	readonly created: number
@@ -553,7 +559,7 @@ export interface WorkflowSnapshot {
 }
 
 /**
- * The durable persistence seam for a {@link WorkflowSnapshot} — three async primitives
+ * Declares the durable persistence seam for a {@link WorkflowSnapshot} — three async primitives
  * (`get` / `set` / `delete`) keyed by a workflow id, the snapshot analogue of
  * the server package's `SessionStoreInterface` (and the `@orkestrel/queue`
  * `QueueStoreInterface` driver-swap pattern).
@@ -578,7 +584,7 @@ export interface WorkflowSnapshot {
  */
 export interface WorkflowStoreInterface {
 	/**
-	 * Resolve the persisted snapshot for `id`, or `undefined` if none is stored.
+	 * Resolves the persisted snapshot for `id`, or `undefined` if none is stored.
 	 * A present payload whose own `id` differs from the requested storage key is corrupt and
 	 * rejects with a normalized `RESTORE` error carrying both ids.
 	 *
@@ -587,14 +593,14 @@ export interface WorkflowStoreInterface {
 	 */
 	get(id: string): Promise<WorkflowSnapshot | undefined>
 	/**
-	 * Insert or replace a snapshot under its own `snapshot.id` (no separate id param —
+	 * Inserts or replaces a snapshot under its own `snapshot.id` (no separate id param —
 	 * mirroring `QueueStoreInterface.save` from `@orkestrel/queue`).
 	 *
 	 * @param snapshot - The snapshot to store (keyed by its `id`)
 	 */
 	set(snapshot: WorkflowSnapshot): Promise<void>
 	/**
-	 * Drop a snapshot by id; an absent id is a no-op (no throw).
+	 * Drops a snapshot by id; an absent id is a no-op (no throw).
 	 *
 	 * @param id - The workflow id to drop
 	 */
@@ -602,7 +608,7 @@ export interface WorkflowStoreInterface {
 }
 
 /**
- * One row of the table a {@link import('./stores/DatabaseWorkflowStore.js').DatabaseWorkflowStore}
+ * Represents one row of the table a {@link import('./stores/DatabaseWorkflowStore.js').DatabaseWorkflowStore}
  * persists — a workflow `id` plus its {@link WorkflowSnapshot} held as ONE OPAQUE JSON column.
  *
  * @remarks
@@ -621,14 +627,14 @@ export interface WorkflowStoreInterface {
  */
 export interface WorkflowSnapshotRow {
 	readonly id: string
-	/** The whole {@link WorkflowSnapshot} as one opaque JSON blob — read back as `unknown`, narrowed on `get`. */
+	/** Holds the whole {@link WorkflowSnapshot} as one opaque JSON blob — read back as `unknown`, narrowed on `get`. */
 	readonly snapshot: unknown
 }
 
 // === Event maps (AGENTS §13 — defined here, owned by the W-b entities)
 
 /**
- * The push observation surface (AGENTS §13) of the workflow entity (W-b) — the
+ * Declares the push observation surface (AGENTS §13) of the workflow entity (W-b) — the
  * lifecycle moments a fire-and-forget observer subscribes to through
  * `workflow.emitter.on`.
  *
@@ -647,32 +653,32 @@ export interface WorkflowSnapshotRow {
  * structurally.
  */
 export type WorkflowEventMap = {
-	/** The workflow began — its `id`. */
+	/** Signals that the workflow began — its `id`. */
 	readonly start: readonly [id: string]
-	/** Every phase settled successfully. */
+	/** Signals that every phase settled successfully. */
 	readonly complete: readonly []
-	/** A phase failed under `bail` — the failing task's result. */
+	/** Signals that a phase failed under `bail` — the failing task's result. */
 	readonly fail: readonly [result: TaskResult]
-	/** The workflow's runtime gate closed. */
+	/** Signals that the workflow's runtime gate closed. */
 	readonly pause: readonly []
-	/** The workflow's runtime gate opened. */
+	/** Signals that the workflow's runtime gate opened. */
 	readonly resume: readonly []
-	/** The workflow was intentionally skipped. */
+	/** Signals that the workflow was intentionally skipped. */
 	readonly skip: readonly []
-	/** The workflow was permanently stopped. */
+	/** Signals that the workflow was permanently stopped. */
 	readonly stop: readonly []
-	/** A phase was inserted — the inserted phase + its final index. */
+	/** Signals that a phase was inserted — the inserted phase + its final index. */
 	readonly add: readonly [phase: PhaseInterface, index: number]
-	/** A phase was removed — the removed phase. */
+	/** Signals that a phase was removed — the removed phase. */
 	readonly remove: readonly [phase: PhaseInterface]
-	/** A phase was repositioned — the moved phase + its new index. */
+	/** Signals that a phase was repositioned — the moved phase + its new index. */
 	readonly move: readonly [phase: PhaseInterface, index: number]
-	/** A phase was patched — the patched phase. */
+	/** Signals that a phase was patched — the patched phase. */
 	readonly update: readonly [phase: PhaseInterface]
 }
 
 /**
- * The push observation surface (AGENTS §13) of the phase entity (W-b) — analogous
+ * Declares the push observation surface (AGENTS §13) of the phase entity (W-b) — analogous
  * to {@link WorkflowEventMap}, scoped to one phase.
  *
  * @remarks
@@ -688,32 +694,32 @@ export type WorkflowEventMap = {
  * so it satisfies `EventMap`.
  */
 export type PhaseEventMap = {
-	/** The phase began — its `id`. */
+	/** Signals that the phase began — its `id`. */
 	readonly start: readonly [id: string]
-	/** Every task in the phase settled successfully. */
+	/** Signals that every task in the phase settled successfully. */
 	readonly complete: readonly []
-	/** A task failed under `bail` — the failing task's result. */
+	/** Signals that a task failed under `bail` — the failing task's result. */
 	readonly fail: readonly [result: TaskResult]
-	/** The phase's runtime gate closed. */
+	/** Signals that the phase's runtime gate closed. */
 	readonly pause: readonly []
-	/** The phase's runtime gate opened. */
+	/** Signals that the phase's runtime gate opened. */
 	readonly resume: readonly []
-	/** The phase was intentionally skipped. */
+	/** Signals that the phase was intentionally skipped. */
 	readonly skip: readonly []
-	/** The phase was permanently stopped. */
+	/** Signals that the phase was permanently stopped. */
 	readonly stop: readonly []
-	/** A task was inserted — the inserted task + its final index. */
+	/** Signals that a task was inserted — the inserted task + its final index. */
 	readonly add: readonly [task: TaskInterface, index: number]
-	/** A task was removed — the removed task. */
+	/** Signals that a task was removed — the removed task. */
 	readonly remove: readonly [task: TaskInterface]
-	/** A task was repositioned — the moved task + its new index. */
+	/** Signals that a task was repositioned — the moved task + its new index. */
 	readonly move: readonly [task: TaskInterface, index: number]
-	/** A task was patched — the patched task. */
+	/** Signals that a task was patched — the patched task. */
 	readonly update: readonly [task: TaskInterface]
 }
 
 /**
- * The push observation surface (AGENTS §13) of the task entity (W-b) — the
+ * Declares the push observation surface (AGENTS §13) of the task entity (W-b) — the
  * lifecycle moments of one task.
  *
  * @remarks
@@ -726,43 +732,43 @@ export type PhaseEventMap = {
  * `EventMap`.
  */
 export type TaskEventMap = {
-	/** The task began — its `id`. */
+	/** Signals that the task began — its `id`. */
 	readonly start: readonly [id: string]
-	/** The task finished successfully — its result. */
+	/** Signals that the task finished successfully — its result. */
 	readonly complete: readonly [result: TaskResult]
-	/** The task failed — its result. */
+	/** Signals that the task failed — its result. */
 	readonly fail: readonly [result: TaskResult]
-	/** The task's runtime gate closed. */
+	/** Signals that the task's runtime gate closed. */
 	readonly pause: readonly []
-	/** The task's runtime gate opened. */
+	/** Signals that the task's runtime gate opened. */
 	readonly resume: readonly []
-	/** The task was intentionally skipped. */
+	/** Signals that the task was intentionally skipped. */
 	readonly skip: readonly []
-	/** The task was permanently stopped. */
+	/** Signals that the task was permanently stopped. */
 	readonly stop: readonly []
-	/** A complete activity replacement was committed. */
+	/** Signals that a complete activity replacement was committed. */
 	readonly report: readonly [activity: TaskActivity]
-	/** The task confirmed liveness without replacing its current activity. */
+	/** Signals that the task confirmed liveness without replacing its current activity. */
 	readonly pulse: readonly [activity: TaskActivity]
-	/** No report or pulse was accepted during the effective silence window. */
+	/** Signals that no report or pulse was accepted during the effective silence window. */
 	readonly silence: readonly []
 }
 
 // === Hooks (AGENTS §8 — the reserved `on` option for the W-b entities)
 
-/** Initial {@link WorkflowEventMap} listeners — the reserved `on` option (AGENTS §8). */
+/** Declares the initial {@link WorkflowEventMap} listeners — the reserved `on` option (AGENTS §8). */
 export type WorkflowHooks = EmitterHooks<WorkflowEventMap>
 
-/** Initial {@link PhaseEventMap} listeners — the reserved `on` option (AGENTS §8). */
+/** Declares the initial {@link PhaseEventMap} listeners — the reserved `on` option (AGENTS §8). */
 export type PhaseHooks = EmitterHooks<PhaseEventMap>
 
-/** Initial {@link TaskEventMap} listeners — the reserved `on` option (AGENTS §8). */
+/** Declares the initial {@link TaskEventMap} listeners — the reserved `on` option (AGENTS §8). */
 export type TaskHooks = EmitterHooks<TaskEventMap>
 
 // === Runtime options (AGENTS §8 — the construction bags the W-b entity tree carries)
 
 /**
- * The runtime options for a {@link TaskInterface} — the construction bag the live
+ * Declares the runtime options for a {@link TaskInterface} — the construction bag the live
  * leaf state machine (W-b) carries that the W-a {@link TaskDefinition} did not.
  *
  * @remarks
@@ -775,16 +781,16 @@ export type TaskHooks = EmitterHooks<TaskEventMap>
  */
 export interface TaskOptions {
 	readonly on?: TaskHooks
-	/** The emitter's listener-error handler (AGENTS §13) — a listener throw routes here, not to a domain event. */
+	/** Holds the emitter's listener-error handler (AGENTS §13) — a listener throw routes here, not to a domain event. */
 	readonly error?: EmitterErrorHandler
-	/** An open consumer bag — stored and snapshotted, never interpreted by the workflow. */
+	/** Holds an open consumer bag — stored and snapshotted, never interpreted by the workflow. */
 	readonly metadata?: JSONRecord
-	/** Runtime-only silence window; non-positive, non-finite, or over-`MAX_TIMER_MS` disables inheritance. */
+	/** Sets the runtime-only silence window; non-positive, non-finite, or over-`MAX_TIMER_MS` disables inheritance. */
 	readonly silence?: number
 }
 
 /**
- * The runtime options for a {@link PhaseInterface} — the construction bag the live
+ * Declares the runtime options for a {@link PhaseInterface} — the construction bag the live
  * derived phase state machine (W-b) carries.
  *
  * @remarks
@@ -795,14 +801,14 @@ export interface TaskOptions {
  */
 export interface PhaseOptions {
 	readonly on?: PhaseHooks
-	/** The emitter's listener-error handler (AGENTS §13) — a listener throw routes here, not to a domain event. */
+	/** Holds the emitter's listener-error handler (AGENTS §13) — a listener throw routes here, not to a domain event. */
 	readonly error?: EmitterErrorHandler
-	/** Per-task {@link TaskOptions}, keyed by the task's `id`. */
+	/** Holds the per-task {@link TaskOptions}, keyed by the task's `id`. */
 	readonly tasks?: Readonly<Record<string, TaskOptions>>
 }
 
 /**
- * The runtime options for a {@link WorkflowInterface} — the construction bag the
+ * Declares the runtime options for a {@link WorkflowInterface} — the construction bag the
  * live derived workflow state machine (W-b) carries, the root {@link createWorkflow}
  * accepts.
  *
@@ -815,7 +821,7 @@ export interface PhaseOptions {
 export interface WorkflowOptions {
 	readonly on?: WorkflowHooks
 	/**
-	 * The failure policy (AGENTS §4.4) the live tree applies — the same boolean toggle as
+	 * Sets the failure policy (AGENTS §4.4) the live tree applies — the same boolean toggle as
 	 * {@link WorkflowDefinition.bail}, fed to {@link import('./helpers.js').deriveWorkflowStatus}.
 	 * {@link import('./factories.js').createWorkflow} defaults it to the definition's `bail`. A
 	 * {@link WorkflowSnapshot} PERSISTS the policy, so {@link import('./factories.js').createRestoredWorkflow}
@@ -823,12 +829,12 @@ export interface WorkflowOptions {
 	 * wins when supplied. Omitted on a fresh build ⇒ the graceful {@link import('./constants.js').DEFAULT_BAIL}.
 	 */
 	readonly bail?: boolean
-	/** The emitter's listener-error handler (AGENTS §13) — a listener throw routes here, not to a domain event. */
+	/** Holds the emitter's listener-error handler (AGENTS §13) — a listener throw routes here, not to a domain event. */
 	readonly error?: EmitterErrorHandler
-	/** Per-phase {@link PhaseOptions}, keyed by the phase's `id`. */
+	/** Holds the per-phase {@link PhaseOptions}, keyed by the phase's `id`. */
 	readonly phases?: Readonly<Record<string, PhaseOptions>>
 	/**
-	 * The `function`-task behavior registry ({@link WorkflowFunctions}) each live task's
+	 * Holds the `function`-task behavior registry ({@link WorkflowFunctions}) each live task's
 	 * {@link TaskDefinition.behavior} / {@link TaskSnapshot.behavior} name resolves against ONCE at
 	 * construction into its runtime {@link TaskInterface.handler} — the SAME registry a
 	 * fresh build ({@link import('./factories.js').createWorkflow}) and a restore
@@ -840,7 +846,7 @@ export interface WorkflowOptions {
 	 * Omitted ⇒ an empty registry; only tasks that also omit `behavior` are executable no-ops.
 	 */
 	readonly functions?: WorkflowFunctions
-	/** Runtime-only default silence; non-positive, non-finite, or over-`MAX_TIMER_MS` disables it. */
+	/** Sets the runtime-only default silence; non-positive, non-finite, or over-`MAX_TIMER_MS` disables it. */
 	readonly silence?: number
 }
 
@@ -855,7 +861,7 @@ export interface WorkflowOptions {
 // {@link import('./helpers.js').deriveBoundary}.
 
 /**
- * The live leaf state machine (W-b) for one {@link TaskDefinition} — an observable
+ * Declares the live leaf state machine (W-b) for one {@link TaskDefinition} — an observable
  * (AGENTS §13), guarded synchronous task whose explicit {@link TaskStatus} advances
  * through the AGENTS §10 transitions.
  *
@@ -884,24 +890,24 @@ export interface TaskInterface {
 	readonly emitter: EmitterInterface<TaskEventMap>
 	readonly id: string
 	readonly name: string
-	/** This task's prose, or `undefined` when the definition or snapshot declared none. */
+	/** Holds this task's prose, or `undefined` when the definition or snapshot declared none. */
 	readonly description: string | undefined
 	readonly context: TaskContext
 	readonly phase: PhaseInterface
 	readonly workflow: WorkflowInterface
 	readonly status: TaskStatus
-	/** Total launches already consumed; zero while fresh and one-based after launch. */
+	/** Counts total launches already consumed; zero while fresh and one-based after launch. */
 	readonly attempts: number
-	/** The recorded outcome once the task settled with one (`completed` / `failed`), else `undefined`. */
+	/** Holds the recorded outcome once the task settled with one (`completed` / `failed`), else `undefined`. */
 	readonly result: TaskResult | undefined
 	/**
-	 * The behavior reference — a plain registry key name, PERSISTED (mirrors
+	 * Names the behavior reference — a plain registry key name, PERSISTED (mirrors
 	 * {@link TaskDefinition.behavior} / {@link TaskSnapshot.behavior}), like {@link PhaseInterface.bail}.
 	 * `undefined` when this task has no behavior reference.
 	 */
 	readonly behavior: string | undefined
 	/**
-	 * The RESOLVED runtime handler — RUNTIME-ONLY, NEVER persisted in a {@link TaskSnapshot}.
+	 * Holds the RESOLVED runtime handler — RUNTIME-ONLY, NEVER persisted in a {@link TaskSnapshot}.
 	 * Resolved ONCE at construction (build, restore, or a live mint) by looking `behavior` up in the
 	 * workflow-level {@link WorkflowOptions.functions} registry: `functions?.[behavior]` when `behavior`
 	 * is defined, else `undefined`. An omitted `behavior` is the deliberate no-op form. A present,
@@ -910,25 +916,25 @@ export interface TaskInterface {
 	 */
 	readonly handler: WorkflowFunction | undefined
 	/**
-	 * Extra attempts after the first on failure — PERSISTED (mirrors {@link TaskDefinition.retries}
+	 * Holds the extra attempts after the first on failure — PERSISTED (mirrors {@link TaskDefinition.retries}
 	 * / {@link TaskSnapshot.retries}), like {@link PhaseInterface.concurrency}. `undefined` ⇒ none.
 	 */
 	readonly retries: number | undefined
 	/**
-	 * The workflow-owned per-attempt deadline in milliseconds (`0..MAX_TIMER_MS`) — PERSISTED
+	 * Holds the workflow-owned per-attempt deadline in milliseconds (`0..MAX_TIMER_MS`) — PERSISTED
 	 * (mirrors {@link TaskDefinition.timeout} / {@link TaskSnapshot.timeout}). Zero or
 	 * `undefined` means no deadline.
 	 */
 	readonly timeout: number | undefined
-	/** The last accepted reporter claim, absent while pending. */
+	/** Holds the last accepted reporter claim, absent while pending. */
 	readonly activity: TaskActivity | undefined
-	/** The effective host-safe silence window (`1..MAX_TIMER_MS`), or `undefined` when disabled. */
+	/** Holds the effective host-safe silence window (`1..MAX_TIMER_MS`), or `undefined` when disabled. */
 	readonly silence: number | undefined
-	/** Whether no report or pulse was accepted during the current silence window. */
+	/** Reports whether no report or pulse was accepted during the current silence window. */
 	readonly silent: boolean
-	/** Whether this task's cooperative execution gate is paused. */
+	/** Reports whether this task's cooperative execution gate is paused. */
 	readonly paused: boolean
-	/** This task's own cancellation signal; running/pending {@link stop} or {@link skip} fires it. */
+	/** Holds this task's own cancellation signal; running/pending {@link stop} or {@link skip} fires it. */
 	readonly signal: AbortSignal
 	start(): void
 	complete(value: JSONValue): void
@@ -936,30 +942,30 @@ export interface TaskInterface {
 	skip(): void
 	stop(): void
 	/**
-	 * Replace the complete observable activity of this running task.
+	 * Replaces the complete observable activity of this running task.
 	 *
 	 * @param input - The complete operations, progress, and constraints replacement
 	 * @returns The accepted immutable frame; `MUTATION` for invalid input or `TRANSITION` when not running
 	 */
 	report(input: TaskActivityInput): Result<TaskActivity, WorkflowError>
 	/**
-	 * Confirm liveness without replacing the current operations, progress, or constraints.
+	 * Confirms liveness without replacing the current operations, progress, or constraints.
 	 *
-	 * @returns `true` when committed, or `false` when the task is not running
+	 * @returns True if the pulse was committed while the task is running; false otherwise
 	 */
 	pulse(): boolean
-	/** Suspend this task's cooperative gate while pending or running; idempotent. */
+	/** Suspends this task's cooperative gate while pending or running; idempotent. */
 	pause(): void
-	/** Continue this task's cooperative gate; idempotent. */
+	/** Continues this task's cooperative gate; idempotent. */
 	resume(): void
 	/**
-	 * Park until this task is not paused.
+	 * Parks until this task is not paused.
 	 *
 	 * @returns A promise that resolves once the task gate is released
 	 */
 	wait(): Promise<void>
 	/**
-	 * Apply a validated declarative patch to SELF (`name` / `description`).
+	 * Applies a validated declarative patch to SELF (`name` / `description`).
 	 *
 	 * @remarks
 	 * Defense-in-depth (AGENTS §12): the owning {@link TaskManagerInterface.update} gates
@@ -978,7 +984,7 @@ export interface TaskInterface {
 }
 
 /**
- * The live derived state machine (W-b) for one {@link PhaseDefinition} — an
+ * Declares the live derived state machine (W-b) for one {@link PhaseDefinition} — an
  * observable (AGENTS §13) phase whose {@link PhaseStatus} is DERIVED from its tasks
  * (never set directly) and recomputed reactively as a task transitions (the cascade).
  *
@@ -1008,28 +1014,28 @@ export interface PhaseInterface {
 	readonly emitter: EmitterInterface<PhaseEventMap>
 	readonly id: string
 	readonly name: string
-	/** This phase's prose, or `undefined` when the definition or snapshot declared none. */
+	/** Holds this phase's prose, or `undefined` when the definition or snapshot declared none. */
 	readonly description: string | undefined
 	readonly context: PhaseContext
 	readonly workflow: WorkflowInterface
 	readonly status: PhaseStatus
-	/** The RESOLVED effective failure policy this phase runs under (`phase.bail ?? workflow.bail`); mirrors {@link WorkflowInterface.bail}. */
+	/** Reports the RESOLVED effective failure policy this phase runs under (`phase.bail ?? workflow.bail`); mirrors {@link WorkflowInterface.bail}. */
 	readonly bail: boolean
-	/** Max tasks in flight at once (a resource throttle); mirrors {@link PhaseSnapshot.concurrency}. `undefined` ⇒ unbounded. */
+	/** Caps the tasks in flight at once (a resource throttle); mirrors {@link PhaseSnapshot.concurrency}. `undefined` ⇒ unbounded. */
 	readonly concurrency: number | undefined
 	/**
-	 * Whether the phase is paused (AGENTS §10 — resumable); RUNTIME-ONLY — never a
+	 * Reports whether the phase is paused (AGENTS §10 — resumable); RUNTIME-ONLY — never a
 	 * {@link PhaseStatus}, never persisted in a {@link PhaseSnapshot} (a paused phase's
 	 * `status` still reports its ordinary derived value).
 	 */
 	readonly paused: boolean
 	readonly tasks: TaskManagerInterface
-	/** Look up one live task by its `id`. */
+	/** Looks up one live task by its `id`. */
 	task(id: string): TaskInterface | undefined
-	/** The settled tasks' results, in positional order — the phase tier of the result tree. */
+	/** Lists the settled tasks' results, in positional order — the phase tier of the result tree. */
 	results(): readonly TaskResult[]
 	/**
-	 * FORCE this phase to `skipped` (AGENTS §10), overriding the derived value; idempotent.
+	 * Forces this phase to `skipped` (AGENTS §10), overriding the derived value; idempotent.
 	 *
 	 * @remarks
 	 * A NO-OP once `status` is already terminal — a settled phase cannot be re-forced. Always
@@ -1038,7 +1044,7 @@ export interface PhaseInterface {
 	 */
 	skip(): void
 	/**
-	 * FORCE this phase to `stopped` (AGENTS §10), overriding the derived value; idempotent.
+	 * Forces this phase to `stopped` (AGENTS §10), overriding the derived value; idempotent.
 	 *
 	 * @remarks
 	 * A NO-OP once `status` is already terminal (a settled phase cannot be re-forced). Always
@@ -1047,7 +1053,7 @@ export interface PhaseInterface {
 	 */
 	stop(): void
 	/**
-	 * Suspend the phase (AGENTS §10 — resumable); idempotent.
+	 * Suspends the phase (AGENTS §10 — resumable); idempotent.
 	 *
 	 * @remarks
 	 * A no-op when already `paused` or when `status` is terminal. RUNTIME-ONLY (AGENTS §10) —
@@ -1065,7 +1071,7 @@ export interface PhaseInterface {
 	 */
 	pause(): void
 	/**
-	 * Continue a paused phase (AGENTS §10); idempotent — a no-op unless {@link paused}.
+	 * Continues a paused phase (AGENTS §10); idempotent — a no-op unless {@link paused}.
 	 *
 	 * @example
 	 * ```ts
@@ -1075,7 +1081,7 @@ export interface PhaseInterface {
 	 */
 	resume(): void
 	/**
-	 * Park until this phase is not paused — **promise-parked**, never a timer or busy-loop
+	 * Parks until this phase is not paused — **promise-parked**, never a timer or busy-loop
 	 * (AGENTS §21; mirrors {@link WorkflowInterface.wait}).
 	 *
 	 * @remarks
@@ -1087,7 +1093,7 @@ export interface PhaseInterface {
 	 */
 	wait(): Promise<void>
 	/**
-	 * MINT a live {@link TaskInterface} from `definition` and insert it into this phase
+	 * Mints a live {@link TaskInterface} from `definition` and inserts it into this phase
 	 * (AGENTS §7 the entity structural API) — gated BEFORE delegating to {@link tasks}'
 	 * manager.
 	 *
@@ -1123,7 +1129,7 @@ export interface PhaseInterface {
 	 */
 	add(definition: TaskDefinition, index?: number): Result<TaskInterface, WorkflowError>
 	/**
-	 * Remove the `pending` task `id` from this phase.
+	 * Removes the `pending` task `id` from this phase.
 	 *
 	 * @remarks
 	 * NATIVE gating: allowed only while this phase's own `status` is `pending`. While
@@ -1136,7 +1142,7 @@ export interface PhaseInterface {
 	 */
 	remove(id: string): Result<TaskInterface, WorkflowError>
 	/**
-	 * Reposition the `pending` task `id` to `index` within this phase.
+	 * Repositions the `pending` task `id` to `index` within this phase.
 	 *
 	 * @remarks
 	 * NATIVE gating: allowed only while this phase's own `status` is `pending`; `running` /
@@ -1148,7 +1154,7 @@ export interface PhaseInterface {
 	 */
 	move(id: string, index: number): Result<TaskInterface, WorkflowError>
 	/**
-	 * Apply a validated {@link TaskUpdate} patch to the `pending` task `id` in this phase.
+	 * Applies a validated {@link TaskUpdate} patch to the `pending` task `id` in this phase.
 	 *
 	 * @remarks
 	 * NATIVE gating: allowed only while this phase's own `status` is `pending`; `running` /
@@ -1160,7 +1166,7 @@ export interface PhaseInterface {
 	 */
 	update(id: string, patch: TaskUpdate): Result<TaskInterface, WorkflowError>
 	/**
-	 * Apply a validated declarative patch to SELF (`name` / `description` /
+	 * Applies a validated declarative patch to SELF (`name` / `description` /
 	 * `concurrency` / `bail`).
 	 *
 	 * @remarks
@@ -1180,7 +1186,7 @@ export interface PhaseInterface {
 }
 
 /**
- * The live derived state machine (W-b) for a whole {@link WorkflowDefinition} — the
+ * Declares the live derived state machine (W-b) for a whole {@link WorkflowDefinition} — the
  * observable (AGENTS §13) root whose {@link WorkflowStatus} is DERIVED from its phases
  * under the `bail` policy and recomputed reactively as the cascade propagates up.
  *
@@ -1207,31 +1213,31 @@ export interface WorkflowInterface {
 	readonly emitter: EmitterInterface<WorkflowEventMap>
 	readonly id: string
 	readonly name: string
-	/** This workflow's prose, or `undefined` when the definition or snapshot declared none. */
+	/** Holds this workflow's prose, or `undefined` when the definition or snapshot declared none. */
 	readonly description: string | undefined
 	readonly context: WorkflowContext
 	readonly bail: boolean
 	readonly status: WorkflowStatus
 	readonly phases: PhaseManagerInterface
 	/**
-	 * Whether the workflow is paused (AGENTS §10 — resumable); RUNTIME-ONLY —
+	 * Reports whether the workflow is paused (AGENTS §10 — resumable); RUNTIME-ONLY —
 	 * never a {@link WorkflowStatus}, never persisted in a {@link WorkflowSnapshot} (a
 	 * paused workflow's `status` still reports its ordinary `pending` / `running` value).
 	 */
 	readonly paused: boolean
-	/** Whether {@link destroy} has torn this workflow down; RUNTIME-ONLY, never persisted. */
+	/** Reports whether {@link destroy} has torn this workflow down; RUNTIME-ONLY, never persisted. */
 	readonly destroyed: boolean
 	/**
-	 * This workflow's own cancellation signal — fires on {@link destroy}. RUNTIME-ONLY
+	 * Holds this workflow's own cancellation signal — fires on {@link destroy}. RUNTIME-ONLY
 	 * (implemented over `@orkestrel/abort`, AGENTS core precedent), never persisted.
 	 */
 	readonly signal: AbortSignal
-	/** Look up one live phase by its `id`. */
+	/** Looks up one live phase by its `id`. */
 	phase(id: string): PhaseInterface | undefined
-	/** Every settled task's result across all phases, in positional order — the workflow tier of the result tree. */
+	/** Lists every settled task's result across all phases, in positional order — the workflow tier of the result tree. */
 	results(): readonly TaskResult[]
 	/**
-	 * FORCE this workflow to `skipped` (AGENTS §10), overriding the derived value; idempotent.
+	 * Forces this workflow to `skipped` (AGENTS §10), overriding the derived value; idempotent.
 	 *
 	 * @remarks
 	 * A NO-OP once `status` is already terminal — a settled workflow cannot be re-forced.
@@ -1240,7 +1246,7 @@ export interface WorkflowInterface {
 	 */
 	skip(): void
 	/**
-	 * FORCE this workflow to `stopped` (AGENTS §10), overriding the derived value; idempotent.
+	 * Forces this workflow to `stopped` (AGENTS §10), overriding the derived value; idempotent.
 	 *
 	 * @remarks
 	 * A NO-OP once `status` is already terminal — a settled workflow cannot be re-forced. Always
@@ -1249,7 +1255,7 @@ export interface WorkflowInterface {
 	 */
 	stop(): void
 	/**
-	 * FORCE this workflow to `completed` (AGENTS §10), overriding the derived value.
+	 * Forces this workflow to `completed` (AGENTS §10), overriding the derived value.
 	 *
 	 * @remarks
 	 * A NO-OP unless `status` is `pending` and the tree is genuinely vacuous: zero phases or
@@ -1258,7 +1264,7 @@ export interface WorkflowInterface {
 	 */
 	complete(): void
 	/**
-	 * Suspend the workflow (AGENTS §10 — resumable); idempotent.
+	 * Suspends the workflow (AGENTS §10 — resumable); idempotent.
 	 *
 	 * @remarks
 	 * A no-op when already `paused`, when `status` is terminal, or once {@link destroyed}.
@@ -1278,7 +1284,7 @@ export interface WorkflowInterface {
 	 */
 	pause(): void
 	/**
-	 * Continue a paused workflow (AGENTS §10); idempotent — a no-op unless {@link paused}.
+	 * Continues a paused workflow (AGENTS §10); idempotent — a no-op unless {@link paused}.
 	 *
 	 * @example
 	 * ```ts
@@ -1288,7 +1294,7 @@ export interface WorkflowInterface {
 	 */
 	resume(): void
 	/**
-	 * Tear this workflow down (AGENTS §10) — an atomic TERMINAL teardown: mark
+	 * Tears this workflow down (AGENTS §10) — an atomic TERMINAL teardown: mark
 	 * {@link destroyed}, pin non-terminal workflow/phase overrides to `stopped`, stop every
 	 * non-terminal task, release gates and liveness resources, abort {@link signal}, then
 	 * destroy task, phase, and workflow emitters in ownership order; idempotent.
@@ -1306,7 +1312,7 @@ export interface WorkflowInterface {
 	 */
 	destroy(): void
 	/**
-	 * Park until this workflow is not paused — **promise-parked**, never a timer or
+	 * Parks until this workflow is not paused — **promise-parked**, never a timer or
 	 * busy-loop (AGENTS §21; mirrors {@link ControllerInterface.wait}'s doc style).
 	 *
 	 * @remarks
@@ -1318,7 +1324,7 @@ export interface WorkflowInterface {
 	 */
 	wait(): Promise<void>
 	/**
-	 * MINT a live {@link PhaseInterface} (and its tasks) from `definition` and insert it
+	 * Mints a live {@link PhaseInterface} (and its tasks) from `definition` and inserts it
 	 * into this workflow (AGENTS §7 the entity structural API) — gated BEFORE delegating
 	 * to {@link phases}' manager.
 	 *
@@ -1351,7 +1357,7 @@ export interface WorkflowInterface {
 	 */
 	add(definition: PhaseDefinition, index?: number): Result<PhaseInterface, WorkflowError>
 	/**
-	 * Remove the `pending` phase `id` from this workflow.
+	 * Removes the `pending` phase `id` from this workflow.
 	 *
 	 * @remarks
 	 * NATIVE gating: refused while this workflow's own `status` is terminal. Otherwise the
@@ -1364,7 +1370,7 @@ export interface WorkflowInterface {
 	 */
 	remove(id: string): Result<PhaseInterface, WorkflowError>
 	/**
-	 * Reposition the `pending` phase `id` to `index` within this workflow.
+	 * Repositions the `pending` phase `id` to `index` within this workflow.
 	 *
 	 * @remarks
 	 * NATIVE gating: refused while this workflow's own `status` is terminal. Otherwise BOTH
@@ -1377,7 +1383,7 @@ export interface WorkflowInterface {
 	 */
 	move(id: string, index: number): Result<PhaseInterface, WorkflowError>
 	/**
-	 * Apply a validated {@link PhaseUpdate} patch to the `pending` phase `id` in this workflow.
+	 * Applies a validated {@link PhaseUpdate} patch to the `pending` phase `id` in this workflow.
 	 *
 	 * @remarks
 	 * NATIVE gating: refused while this workflow's own `status` is terminal. Otherwise the
@@ -1394,7 +1400,7 @@ export interface WorkflowInterface {
 // === Positional collection (the one insertion-ordered gated store both managers hold)
 
 /**
- * What the {@link CollectionInterface} store requires of the entities it holds — a stable `id`, a
+ * Declares what the {@link CollectionInterface} store requires of the entities it holds — a stable `id`, a
  * gating {@link LifecycleStatus}, and a `patch` the store applies once a patch validates.
  *
  * @remarks
@@ -1412,7 +1418,7 @@ export interface CollectionEntry<TPatch> {
 }
 
 /**
- * An insertion-ordered store of {@link CollectionEntry} entities keyed by `id`, with the gated
+ * Declares an insertion-ordered store of {@link CollectionEntry} entities keyed by `id`, with the gated
  * mutation quartet a lean manager (AGENTS §9) delegates to.
  *
  * @remarks
@@ -1432,7 +1438,7 @@ export interface CollectionEntry<TPatch> {
 export interface CollectionInterface<TEntry, TPatch> {
 	readonly count: number
 	/**
-	 * Add `entry` at the end — the build-time wiring path.
+	 * Adds `entry` at the end — the build-time wiring path.
 	 *
 	 * @remarks
 	 * THROWS a `MUTATION` {@link import('./errors.js').WorkflowError} on a duplicate `id` instead
@@ -1442,7 +1448,7 @@ export interface CollectionInterface<TEntry, TPatch> {
 	 */
 	append(entry: TEntry): void
 	/**
-	 * Insert `entry` at `index` (default the end) — the gated counterpart to {@link append}.
+	 * Inserts `entry` at `index` (default the end) — the gated counterpart to {@link append}.
 	 *
 	 * @param entry - The entity to insert
 	 * @param index - The insertion position (`[0, count]`); omitted inserts at the end
@@ -1451,7 +1457,7 @@ export interface CollectionInterface<TEntry, TPatch> {
 	 */
 	add(entry: TEntry, index?: number): Result<TEntry, WorkflowError>
 	/**
-	 * Remove the `pending` entity `id`.
+	 * Removes the `pending` entity `id`.
 	 *
 	 * @param id - The entity id to remove
 	 * @returns A {@link Result} boxing the removed entity, or a `MUTATION` failure when `id` is
@@ -1459,7 +1465,7 @@ export interface CollectionInterface<TEntry, TPatch> {
 	 */
 	remove(id: string): Result<TEntry, WorkflowError>
 	/**
-	 * Reposition the `pending` entity `id` to `index`.
+	 * Repositions the `pending` entity `id` to `index`.
 	 *
 	 * @param id - The entity id to move
 	 * @param index - The destination position (`[0, count)`)
@@ -1468,7 +1474,7 @@ export interface CollectionInterface<TEntry, TPatch> {
 	 */
 	move(id: string, index: number): Result<TEntry, WorkflowError>
 	/**
-	 * Apply a validated patch to the `pending` entity `id`.
+	 * Applies a validated patch to the `pending` entity `id`.
 	 *
 	 * @param id - The entity id to patch
 	 * @param patch - The fields to update
@@ -1477,14 +1483,14 @@ export interface CollectionInterface<TEntry, TPatch> {
 	 */
 	update(id: string, patch: TPatch): Result<TEntry, WorkflowError>
 	/**
-	 * Look up one stored entity by its `id`.
+	 * Looks up one stored entity by its `id`.
 	 *
 	 * @param id - The entity id to resolve
 	 * @returns The stored entity, or `undefined` when none is stored under `id`
 	 */
 	entry(id: string): TEntry | undefined
 	/**
-	 * List every stored entity in positional order.
+	 * Lists every stored entity in positional order.
 	 *
 	 * @returns The stored entities, in insertion order
 	 */
@@ -1494,7 +1500,7 @@ export interface CollectionInterface<TEntry, TPatch> {
 // === Manager interfaces (AGENTS §9 — lean: an accessor + count, no batch matrix)
 
 /**
- * The lean child manager (AGENTS §9) of a {@link PhaseInterface}'s live tasks —
+ * Declares the lean child manager (AGENTS §9) of a {@link PhaseInterface}'s live tasks —
  * positional accessors plus `count`, backed by an insertion-ordered store so order
  * is preserved across an interior `skip` / `remove`.
  *
@@ -1511,7 +1517,7 @@ export interface CollectionInterface<TEntry, TPatch> {
 export interface TaskManagerInterface {
 	readonly count: number
 	/**
-	 * Add `task` at the end (the build-time wiring path).
+	 * Adds `task` at the end (the build-time wiring path).
 	 *
 	 * @remarks
 	 * THROWS a `MUTATION` {@link import('./errors.js').WorkflowError} on a duplicate
@@ -1522,7 +1528,7 @@ export interface TaskManagerInterface {
 	 */
 	append(task: TaskInterface): void
 	/**
-	 * Insert `task` at `index` (default the end) — the GATED mutation counterpart to
+	 * Inserts `task` at `index` (default the end) — the GATED mutation counterpart to
 	 * {@link append}: a duplicate `id` or an out-of-bounds `index` fails gracefully
 	 * instead of throwing.
 	 *
@@ -1532,7 +1538,7 @@ export interface TaskManagerInterface {
 	 */
 	add(task: TaskInterface, index?: number): Result<TaskInterface, WorkflowError>
 	/**
-	 * Remove the `pending` task `id`.
+	 * Removes the `pending` task `id`.
 	 *
 	 * @param id - The task id to remove
 	 * @returns A {@link Result} boxing the removed task, or a `MUTATION` failure when
@@ -1540,7 +1546,7 @@ export interface TaskManagerInterface {
 	 */
 	remove(id: string): Result<TaskInterface, WorkflowError>
 	/**
-	 * Reposition the `pending` task `id` to `index`.
+	 * Repositions the `pending` task `id` to `index`.
 	 *
 	 * @param id - The task id to move
 	 * @param index - The destination position (`[0, count)`)
@@ -1549,7 +1555,7 @@ export interface TaskManagerInterface {
 	 */
 	move(id: string, index: number): Result<TaskInterface, WorkflowError>
 	/**
-	 * Apply a validated {@link TaskUpdate} patch to the `pending` task `id`.
+	 * Applies a validated {@link TaskUpdate} patch to the `pending` task `id`.
 	 *
 	 * @param id - The task id to patch
 	 * @param patch - The fields to update
@@ -1562,7 +1568,7 @@ export interface TaskManagerInterface {
 }
 
 /**
- * The lean child manager (AGENTS §9) of a {@link WorkflowInterface}'s live phases —
+ * Declares the lean child manager (AGENTS §9) of a {@link WorkflowInterface}'s live phases —
  * positional accessors plus `count`, the phase analogue of {@link TaskManagerInterface}.
  *
  * @remarks
@@ -1577,7 +1583,7 @@ export interface TaskManagerInterface {
 export interface PhaseManagerInterface {
 	readonly count: number
 	/**
-	 * Add `phase` at the end (the build-time wiring path).
+	 * Adds `phase` at the end (the build-time wiring path).
 	 *
 	 * @remarks
 	 * THROWS a `MUTATION` {@link import('./errors.js').WorkflowError} on a duplicate
@@ -1588,7 +1594,7 @@ export interface PhaseManagerInterface {
 	 */
 	append(phase: PhaseInterface): void
 	/**
-	 * Insert `phase` at `index` (default the end) — the GATED mutation counterpart to
+	 * Inserts `phase` at `index` (default the end) — the GATED mutation counterpart to
 	 * {@link append}: a duplicate `id` or an out-of-bounds `index` fails gracefully
 	 * instead of throwing.
 	 *
@@ -1598,7 +1604,7 @@ export interface PhaseManagerInterface {
 	 */
 	add(phase: PhaseInterface, index?: number): Result<PhaseInterface, WorkflowError>
 	/**
-	 * Remove the `pending` phase `id`.
+	 * Removes the `pending` phase `id`.
 	 *
 	 * @param id - The phase id to remove
 	 * @returns A {@link Result} boxing the removed phase, or a `MUTATION` failure when
@@ -1606,7 +1612,7 @@ export interface PhaseManagerInterface {
 	 */
 	remove(id: string): Result<PhaseInterface, WorkflowError>
 	/**
-	 * Reposition the `pending` phase `id` to `index`.
+	 * Repositions the `pending` phase `id` to `index`.
 	 *
 	 * @param id - The phase id to move
 	 * @param index - The destination position (`[0, count)`)
@@ -1615,7 +1621,7 @@ export interface PhaseManagerInterface {
 	 */
 	move(id: string, index: number): Result<PhaseInterface, WorkflowError>
 	/**
-	 * Apply a validated {@link PhaseUpdate} patch to the `pending` phase `id`.
+	 * Applies a validated {@link PhaseUpdate} patch to the `pending` phase `id`.
 	 *
 	 * @param id - The phase id to patch
 	 * @param patch - The fields to update
@@ -1640,7 +1646,7 @@ export interface PhaseManagerInterface {
 // the agent runtime folds its bounds. Tool and agent adaptation remains outside core.
 
 /**
- * A registered workflow function — the behavior a `function`-form
+ * Declares the registered behavior a `function`-form
  * {@link TaskDefinition} runs, resolved BY NAME through the {@link WorkflowFunctions}
  * registry (AGENTS §4.5 — a `Handler` function type the framework invokes).
  *
@@ -1658,7 +1664,7 @@ export type WorkflowFunction = (
 ) => Promise<JSONValue> | JSONValue
 
 /**
- * The `function`-task behavior registry — workflow function names mapped to their
+ * Declares the `function`-task behavior registry — workflow function names mapped to their
  * {@link WorkflowFunction} handlers.
  *
  * @remarks
@@ -1671,7 +1677,7 @@ export type WorkflowFunction = (
 export type WorkflowFunctions = Readonly<Record<string, WorkflowFunction>>
 
 /**
- * The per-task handle a {@link WorkflowFunction} receives — the running task's
+ * Declares the per-task handle a {@link WorkflowFunction} receives — the running task's
  * cancellation, its input, its lineage, and read-UP access to the result tree.
  *
  * @remarks
@@ -1692,33 +1698,33 @@ export interface TaskControllerInterface {
 	/** Fires on this attempt's deadline, task stop/skip, run cancellation, or sibling fail-fast. */
 	readonly signal: AbortSignal
 	readonly aborted: boolean
-	/** The task's open `metadata` bag (its {@link TaskInput} payload); `{}` when none. */
+	/** Holds the task's open `metadata` bag (its {@link TaskInput} payload); `{}` when none. */
 	readonly input: JSONRecord
 	readonly task: TaskContext
-	/** The one-based persisted launch represented by this handle. */
+	/** Reports the one-based persisted launch represented by this handle. */
 	readonly attempt: number
-	/** Whether the workflow, phase, or task cooperative gate is paused. */
+	/** Reports whether the workflow, phase, or task cooperative gate is paused. */
 	readonly paused: boolean
 	/**
-	 * Replace this running task's complete observable activity.
+	 * Replaces this running task's complete observable activity.
 	 *
 	 * @param input - The complete operations, progress, and constraints replacement
 	 * @returns The accepted frame, or a `TRANSITION` failure after ownership is lost or this attempt aborts
 	 */
 	report(input: TaskActivityInput): Result<TaskActivity, WorkflowError>
 	/**
-	 * Confirm liveness without replacing current activity.
+	 * Confirms liveness without replacing current activity.
 	 *
-	 * @returns `true` when committed, or `false` after ownership is lost or this attempt aborts
+	 * @returns True if the pulse was committed before ownership is lost or this attempt aborts; false otherwise
 	 */
 	pulse(): boolean
 	/**
-	 * Cooperatively park while any workflow, phase, or task gate is paused, or until cancelled.
+	 * Parks cooperatively while any workflow, phase, or task gate is paused, or until cancelled.
 	 *
 	 * @returns A promise that resolves when every applicable gate is open or the signal aborts
 	 */
 	wait(): Promise<void>
-	/** Every settled task's result across already-finished phases — the result tree, read-only. */
+	/** Lists every settled task's result across already-finished phases — the result tree, read-only. */
 	results(): readonly TaskResult[]
 }
 
@@ -1736,10 +1742,10 @@ export interface TaskControllerInterface {
  * `execute` keeps a nested run from clobbering the suspended outer run's.
  */
 export interface RunHolderInterface {
-	/** The phase runner currently held, or `undefined` between phases. */
+	/** Reports the phase runner currently held, or `undefined` between phases. */
 	readonly runner: RunnerInterface<TaskInterface, void> | undefined
 	/**
-	 * Take a phase runner for the phase now starting, or release the held one.
+	 * Takes a phase runner for the phase now starting, or releases the held one.
 	 *
 	 * @param runner - The phase runner to hold; omitted releases the held runner
 	 */
@@ -1747,7 +1753,7 @@ export interface RunHolderInterface {
 }
 
 /**
- * How one task attempt left the race between its handler and its cancellation.
+ * Names how one task attempt left the race between its handler and its cancellation.
  *
  * @remarks
  * The engine races a dispatched {@link WorkflowFunction} against the attempt's folded signal, so
@@ -1764,7 +1770,7 @@ export type AttemptOutcome =
 	| readonly [settled: false, value: undefined, genuine?: boolean]
 
 /**
- * The structured outcome of a {@link WorkflowRunnerInterface.execute} run — the settled
+ * Represents the structured outcome of a {@link WorkflowRunnerInterface.execute} run — the settled
  * live workflow, its final status, and the flattened result tree.
  *
  * @remarks
@@ -1784,16 +1790,16 @@ export interface WorkflowResult {
 	readonly workflow: WorkflowInterface
 	readonly status: WorkflowStatus
 	readonly results: readonly TaskResult[]
-	/** Whether the returned final state is stored; omitted when no store was supplied. */
+	/** Reports whether the returned final state is stored; omitted when no store was supplied. */
 	readonly durable?: boolean
-	/** The first required persistence failure; omitted when none occurred. */
+	/** Records the first required persistence failure; omitted when none occurred. */
 	readonly fault?: WorkflowFault
 }
 
-/** A runner-owned durability boundary. */
+/** Names a runner-owned durability boundary. */
 export type WorkflowCheckpoint = 'initial' | 'attempt' | 'settlement' | 'final'
 
-/** A normalized persistence failure surfaced as workflow result data. */
+/** Represents a normalized persistence failure surfaced as workflow result data. */
 export interface WorkflowFault {
 	readonly checkpoint: WorkflowCheckpoint
 	readonly message: string
@@ -1802,33 +1808,33 @@ export interface WorkflowFault {
 }
 
 /**
- * The advanced run-local durability coordinator normally composed by
+ * Declares the advanced run-local durability coordinator normally composed by
  * {@link WorkflowRunnerInterface.execute} when `store` is supplied.
  */
 export interface WorkflowPersistenceInterface {
-	/** The first required checkpoint failure, if one occurred. */
+	/** Records the first required checkpoint failure, if one occurred. */
 	readonly fault: WorkflowFault | undefined
 	/**
-	 * Make the latest state durable at one required boundary.
+	 * Makes the latest state durable at one required boundary.
 	 *
 	 * @param checkpoint - The required durability boundary
 	 * @param task - The task owning an attempt or settlement
 	 * @param attempt - The persisted one-based attempt number
-	 * @returns Whether the latest live state reached the store
+	 * @returns True if the latest live state reached the store; false otherwise
 	 */
 	checkpoint(
 		checkpoint: WorkflowCheckpoint,
 		task?: TaskInterface,
 		attempt?: number,
 	): Promise<boolean>
-	/** Detach observers and make the final live state durable. */
+	/** Detaches observers and makes the final live state durable. */
 	finalize(): Promise<boolean>
-	/** Stop observing the live workflow tree; idempotent. */
+	/** Stops observing the live workflow tree; idempotent. */
 	detach(): void
 }
 
 /**
- * The options for one {@link WorkflowRunnerInterface.execute} call — the live tree's
+ * Declares the options for one {@link WorkflowRunnerInterface.execute} call — the live tree's
  * CONSTRUCTION options ({@link WorkflowOptions}) PLUS the per-run RUN CONTROLS: the bounds
  * (an external abort, a deadline, and a cost ceiling), each folded into every task's
  * cancellation, and the optional durable `store`.
@@ -1877,7 +1883,7 @@ export type WorkflowRunOptions = WorkflowOptions & {
 }
 
 /**
- * The options for `createWorkflowRunner` — the optional pacing scheduler the runner
+ * Declares the options for `createWorkflowRunner` — the optional pacing scheduler the runner
  * paces phase boundaries with.
  *
  * @remarks
@@ -1898,7 +1904,7 @@ export interface WorkflowRunnerOptions {
 }
 
 /**
- * A thin orchestrator that EXECUTES a live {@link WorkflowInterface} tree by composing the
+ * Declares a thin orchestrator that EXECUTES a live {@link WorkflowInterface} tree by composing the
  * shipped substrate — phases sequential, tasks concurrent, each task dispatched through its
  * OWN resolved handler under the `bail` policy.
  *
@@ -1928,7 +1934,7 @@ export interface WorkflowRunnerOptions {
  */
 export interface WorkflowRunnerInterface {
 	/**
-	 * Execute a workflow definition to completion — BUILD its live tree, run the phases
+	 * Executes a workflow definition to completion — BUILDS its live tree, runs the phases
 	 * sequentially with each phase's tasks concurrent — resolving its terminal
 	 * {@link WorkflowResult} (whose `workflow` is the freshly-built live tree).
 	 *
@@ -1964,7 +1970,7 @@ export interface WorkflowRunnerInterface {
 	 */
 	execute(definition: WorkflowDefinition, options?: WorkflowRunOptions): Promise<WorkflowResult>
 	/**
-	 * Drive an ALREADY-BUILT, CALLER-OWNED live {@link WorkflowInterface} — the
+	 * Drives an ALREADY-BUILT, CALLER-OWNED live {@link WorkflowInterface} — the
 	 * ENTITY-NATIVE counterpart to the definition-building {@link execute} overload.
 	 *
 	 * @remarks
@@ -2023,7 +2029,7 @@ export interface WorkflowRunnerInterface {
 // inspectable exact state mirror and the runner refuses execution.
 
 /**
- * Options for `createWorkflowManager` — the optional durable {@link WorkflowStoreInterface}
+ * Declares the options for `createWorkflowManager` — the optional durable {@link WorkflowStoreInterface}
  * seam plus the {@link WorkflowFunctions} registry every workflow the manager mints or
  * hydrates resolves its tasks' handlers against.
  *
@@ -2041,7 +2047,7 @@ export interface WorkflowRunnerInterface {
  */
 export interface WorkflowManagerOptions {
 	/**
-	 * The optional durable {@link WorkflowStoreInterface} backing
+	 * Holds the optional durable {@link WorkflowStoreInterface} backing
 	 * {@link WorkflowManagerInterface.open} / {@link WorkflowManagerInterface.save} — a memory
 	 * / JSON / SQLite / IndexedDB store a workflow is HYDRATED from (`open` a registry miss)
 	 * and PERSISTED to (`save`). Omitted ⇒ the manager is registry-only: `open` resolves only
@@ -2049,7 +2055,7 @@ export interface WorkflowManagerOptions {
 	 */
 	readonly store?: WorkflowStoreInterface
 	/**
-	 * The {@link WorkflowFunctions} registry threaded into every workflow this manager mints
+	 * Holds the {@link WorkflowFunctions} registry threaded into every workflow this manager mints
 	 * (`add`, through {@link import('./factories.js').createWorkflow}) or hydrates (`open`'s
 	 * registry-miss path, through {@link import('./factories.js').createRestoredWorkflow}) — so a
 	 * hydrated workflow is RUNNABLE, its tasks carrying real resolved `handler`s. Omitted ⇒
@@ -2059,7 +2065,7 @@ export interface WorkflowManagerOptions {
 }
 
 /**
- * A store-backed registry of {@link WorkflowInterface}s keyed by their `id`, in insertion
+ * Declares a store-backed registry of {@link WorkflowInterface}s keyed by their `id`, in insertion
  * order — the additive manager tier mirroring `ConversationManagerInterface` /
  * `WorkspaceManagerInterface` from the `@orkestrel/agent` line, adapted for the workflow
  * domain: `add` mints from a {@link WorkflowDefinition} (not an empty `Input`, since a
@@ -2116,7 +2122,7 @@ export interface WorkflowManagerInterface {
 	workflow(id: string): WorkflowInterface | undefined
 	workflows(): readonly WorkflowInterface[]
 	/**
-	 * MINT a live {@link WorkflowInterface} from `definition` (through
+	 * Mints a live {@link WorkflowInterface} from `definition` (through
 	 * {@link import('./factories.js').createWorkflow}, flowing this manager's `functions`
 	 * registry in) and register it under `definition.id`.
 	 *
@@ -2130,7 +2136,7 @@ export interface WorkflowManagerInterface {
 	 */
 	add(definition: WorkflowDefinition): WorkflowInterface
 	/**
-	 * Resolve a workflow by id — from the registry if present, else HYDRATED from the
+	 * Resolves a workflow by id — from the registry if present, else HYDRATED from the
 	 * optional {@link WorkflowStoreInterface} (`store`), RUNNABLE (this manager's `functions`
 	 * registry is threaded into the rehydration).
 	 *
@@ -2154,7 +2160,7 @@ export interface WorkflowManagerInterface {
 	 */
 	open(id: string): Promise<WorkflowInterface | undefined>
 	/**
-	 * Persist a REGISTERED workflow's {@link WorkflowInterface.snapshot} to the optional
+	 * Persists a REGISTERED workflow's {@link WorkflowInterface.snapshot} to the optional
 	 * {@link WorkflowStoreInterface} (`store`).
 	 *
 	 * @remarks
@@ -2164,7 +2170,7 @@ export interface WorkflowManagerInterface {
 	 * queued write. Otherwise (no store, OR an unknown id) it is a NO-OP returning `false`.
 	 *
 	 * @param id - The id of the registered workflow to persist
-	 * @returns `true` when the snapshot was persisted; `false` when no store / unknown id
+	 * @returns True if the snapshot was persisted; false otherwise (no store, or an unknown id)
 	 */
 	save(id: string): Promise<boolean>
 	remove(ids: readonly string[]): boolean
@@ -2173,39 +2179,39 @@ export interface WorkflowManagerInterface {
 }
 
 /**
- * Relative urgency hint for cooperative scheduling. Honoured by environment
+ * Names the relative urgency hint for cooperative scheduling. Honoured by environment
  * backends; the cross-environment default treats all priorities uniformly.
  */
 export type SchedulerPriority = 'user' | 'normal' | 'background'
 
-/** Options for a single cooperative yield/delay. */
+/** Declares the options for a single cooperative yield/delay. */
 export interface SchedulerOptions {
 	/**
-	 * A relative urgency hint. Honoured by environment backends; the
+	 * Carries a relative urgency hint. Honoured by environment backends; the
 	 * cross-environment default treats all priorities the same.
 	 */
 	readonly priority?: SchedulerPriority
-	/** A signal whose abort rejects a pending yield/delay with its `reason`. */
+	/** Carries a signal whose abort rejects a pending yield/delay with its `reason`. */
 	readonly signal?: AbortSignal
 }
 
 /**
- * A cooperative host-yield primitive: a loop decides WHAT to do; the scheduler
+ * Declares a cooperative host-yield primitive: a loop decides WHAT to do; the scheduler
  * decides WHEN the host regains control. Abort-aware — a pending yield/delay
  * rejects with the signal's reason when aborted.
  */
 export interface SchedulerInterface {
 	/**
-	 * Yield control back to the host so other tasks (I/O, timers, rendering) can
-	 * run, then resume.
+	 * Yields control back to the host so other tasks (I/O, timers, rendering) can
+	 * run, then resumes.
 	 */
 	yield(options?: SchedulerOptions): Promise<void>
-	/** Resume after at least `ms` milliseconds. */
+	/** Resumes after at least `ms` milliseconds. */
 	delay(ms: number, options?: SchedulerOptions): Promise<void>
 }
 
 /**
- * The push observation surface of a {@link RunnerInterface} (AGENTS §13) — the run
+ * Declares the push observation surface of a {@link RunnerInterface} (AGENTS §13) — the run
  * lifecycle a fire-and-forget observer (logging, metrics, tracing) subscribes to,
  * ALONGSIDE the eventual `execute` result.
  *
@@ -2227,24 +2233,24 @@ export interface SchedulerInterface {
  * required index signature.
  */
 export type RunnerEventMap<TResult> = {
-	/** `execute` began — emitted once at the top of a non-empty run. */
+	/** Signals that `execute` began — emitted once at the top of a non-empty run. */
 	readonly start: readonly []
-	/** A unit's handler began running — the unit's id (declared or spawned). */
+	/** Signals that a unit's handler began running — the unit's id (declared or spawned). */
 	readonly unit: readonly [id: string]
-	/** A sub-unit was spawned — its id + the spawning parent's id (when known). */
+	/** Signals that a sub-unit was spawned — its id + the spawning parent's id (when known). */
 	readonly spawn: readonly [id: string, parent: string | undefined]
-	/** A unit completed successfully — its id (after its outcome was recorded). */
+	/** Signals that a unit completed successfully — its id (after its outcome was recorded). */
 	readonly settle: readonly [id: string]
-	/** A unit failed — its id + the error (always `unknown`). */
+	/** Signals that a unit failed — its id + the error (always `unknown`). */
 	readonly fail: readonly [id: string, error: unknown]
-	/** The batch settled — the run's ordered results (the same array `execute` resolves). */
+	/** Signals that the batch settled — the run's ordered results (the same array `execute` resolves). */
 	readonly finish: readonly [results: readonly TResult[]]
-	/** The run was aborted (fail-fast, a user `abort`, or `destroy`) — the cancel reason. */
+	/** Signals that the run was aborted (fail-fast, a user `abort`, or `destroy`) — the cancel reason. */
 	readonly abort: readonly [reason: unknown]
 }
 
 /**
- * The per-unit handle a {@link RunnerHandler} receives — the running unit's
+ * Declares the per-unit handle a {@link RunnerHandler} receives — the running unit's
  * identity, input, cancellation, and the controls to cooperate with the run.
  *
  * @remarks
@@ -2268,7 +2274,7 @@ export interface ControllerInterface<TInput, TResult> {
 	readonly signal: AbortSignal
 	readonly aborted: boolean
 	/**
-	 * Park until this unit's `signal` aborts — **promise-parked**, never a timer.
+	 * Parks until this unit's `signal` aborts — **promise-parked**, never a timer.
 	 *
 	 * @remarks
 	 * Resolves the moment the unit's `signal` fires (unit abort, runner abort, or
@@ -2280,7 +2286,7 @@ export interface ControllerInterface<TInput, TResult> {
 	 */
 	wait(): Promise<void>
 	/**
-	 * Add a sibling unit to the run; returns its result promise.
+	 * Adds a sibling unit to the run; returns its result promise.
 	 *
 	 * @remarks
 	 * **Fire-and-track.** The spawned unit is routed through the same backing queue
@@ -2301,7 +2307,7 @@ export interface ControllerInterface<TInput, TResult> {
 	 */
 	spawn(input: TInput): Promise<TResult>
 	/**
-	 * Cancel this unit — fires its `signal` with the optional reason.
+	 * Cancels this unit — fires its `signal` with the optional reason.
 	 *
 	 * @param reason - An optional cancellation reason carried on the signal
 	 */
@@ -2319,7 +2325,7 @@ export type RunnerHandler<TInput, TResult> = (
 ) => Promise<TResult> | TResult
 
 /**
- * The per-entry reliability OVERRIDES for one unit — its extra attempts on failure and its
+ * Declares the per-entry reliability OVERRIDES for one unit — its extra attempts on failure and its
  * per-attempt deadline, resolved from the unit's input through {@link RunnerOptions.entries}.
  *
  * @remarks
@@ -2336,7 +2342,7 @@ export interface RunnerEntryOptions {
 }
 
 /**
- * Options for `createRunner`.
+ * Declares the options for `createRunner`.
  *
  * @remarks
  * - `handler` — runs each unit's work against its {@link ControllerInterface};
@@ -2354,18 +2360,18 @@ export interface RunnerEntryOptions {
  */
 export interface RunnerOptions<TInput, TResult> {
 	readonly on?: EmitterHooks<RunnerEventMap<TResult>>
-	/** The emitter's listener-error handler (AGENTS §13) — a listener throw routes here, not to a domain event. */
+	/** Holds the emitter's listener-error handler (AGENTS §13) — a listener throw routes here, not to a domain event. */
 	readonly error?: EmitterErrorHandler
 	readonly handler: RunnerHandler<TInput, TResult>
 	readonly concurrency?: number
 	readonly retries?: number
 	readonly timeout?: number
-	/** Per-entry `retries` / `timeout` overrides, resolved from each input; falls back to the runner-level defaults. */
+	/** Resolves per-entry `retries` / `timeout` overrides from each input; falls back to the runner-level defaults. */
 	readonly entries?: (input: TInput) => RunnerEntryOptions
 }
 
 /**
- * One unit the {@link RunnerInterface} is tracking: the queue payload it was enqueued
+ * Represents one unit the {@link RunnerInterface} is tracking: the queue payload it was enqueued
  * with — its `id` (a random UUID) keys it in the runner's ordered launch list and value
  * map, and `input` is the unit's work payload handed to the handler's `Controller`.
  *
@@ -2383,7 +2389,7 @@ export interface RunnerUnit<TInput> {
 }
 
 /**
- * One settled unit's value, held in a box so presence is tracked by the box itself.
+ * Represents one settled unit's value, held in a box so presence is tracked by the box itself.
  *
  * @remarks
  * The {@link RunnerInterface} records each settled unit's value in this box and reads it back by
@@ -2398,7 +2404,7 @@ export interface RunnerValue<TResult> {
 }
 
 /**
- * The first unit failure a {@link RunnerInterface} run recorded, held in a box so presence is
+ * Represents the first unit failure a {@link RunnerInterface} run recorded, held in a box so presence is
  * tracked by the box itself.
  *
  * @remarks
@@ -2412,7 +2418,7 @@ export interface RunnerFailure {
 }
 
 /**
- * A thin generic orchestrator that drives declared units — plus any they `spawn` —
+ * Declares a thin generic orchestrator that drives declared units — plus any they `spawn` —
  * through a bounded-concurrency queue, collecting their results in order.
  *
  * @remarks
@@ -2436,10 +2442,10 @@ export interface RunnerInterface<TInput, TResult> {
 	readonly emitter: EmitterInterface<RunnerEventMap<TResult>>
 	readonly active: number
 	readonly stopped: boolean
-	/** Whether the runner is paused (AGENTS §10 — resumable, no new dispatch); rides the backing queue's own `paused`. */
+	/** Reports whether the runner is paused (AGENTS §10 — resumable, no new dispatch); rides the backing queue's own `paused`. */
 	readonly paused: boolean
 	/**
-	 * Run all `inputs` — and anything they `spawn` — to completion; resolve their
+	 * Runs all `inputs` — and anything they `spawn` — to completion; resolves their
 	 * results in order: the declared inputs first (in input order), then the spawned
 	 * units (in spawn order).
 	 *
@@ -2453,7 +2459,7 @@ export interface RunnerInterface<TInput, TResult> {
 	 */
 	execute(inputs: readonly TInput[]): Promise<readonly TResult[]>
 	/**
-	 * Inject one more unit into an IN-FLIGHT `execute` run — a LIVE counterpart to a
+	 * Injects one more unit into an IN-FLIGHT `execute` run — a LIVE counterpart to a
 	 * `Controller.spawn`, called from OUTSIDE any unit's handler (the seam a live
 	 * `running` {@link PhaseInterface}'s `add` event lets a subscribed run offer a newly
 	 * added task to the SAME execution substrate).
@@ -2472,7 +2478,7 @@ export interface RunnerInterface<TInput, TResult> {
 	 */
 	spawn(input: TInput): Promise<TResult> | undefined
 	/**
-	 * Cancel every in-flight + pending unit (and the backing queue), making a running
+	 * Cancels every in-flight + pending unit (and the backing queue), making a running
 	 * `execute` reject.
 	 *
 	 * @param reason - An optional cancellation reason propagated to every unit's signal
@@ -2480,7 +2486,7 @@ export interface RunnerInterface<TInput, TResult> {
 	 */
 	abort(reason?: unknown): Promise<void>
 	/**
-	 * Suspend dispatch (AGENTS §10 — resumable): the backing queue holds the NEXT dispatch
+	 * Suspends dispatch (AGENTS §10 — resumable): the backing queue holds the NEXT dispatch
 	 * while any in-flight unit finishes; idempotent.
 	 *
 	 * @example
@@ -2491,7 +2497,7 @@ export interface RunnerInterface<TInput, TResult> {
 	 */
 	pause(): void
 	/**
-	 * Continue a paused runner (AGENTS §10); idempotent.
+	 * Continues a paused runner (AGENTS §10); idempotent.
 	 *
 	 * @example
 	 * ```ts
@@ -2501,7 +2507,7 @@ export interface RunnerInterface<TInput, TResult> {
 	 */
 	resume(): void
 	/**
-	 * Permanently end the runner (AGENTS §10) — a GRACEFUL stop: no further unit is
+	 * Ends the runner permanently (AGENTS §10) — a GRACEFUL stop: no further unit is
 	 * dispatched, but every already-in-flight unit runs to completion and settles
 	 * normally. A never-dispatched (still-pending) unit is rejected by the backing queue
 	 * and is NOT recorded as a failure (it never trips fail-fast); a genuine in-flight
@@ -2519,7 +2525,7 @@ export interface RunnerInterface<TInput, TResult> {
 	 */
 	stop(): Promise<void>
 	/**
-	 * Tear the runner down, awaiting backing-queue cleanup before destroying the emitter last.
+	 * Tears the runner down, awaiting backing-queue cleanup before destroying the emitter last.
 	 *
 	 * @returns The stable teardown barrier
 	 */

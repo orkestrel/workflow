@@ -6,7 +6,7 @@ import { Collection } from '../Collection.js'
 import { taskUpdateShape } from '../shapers.js'
 
 /**
- * The lean child manager (AGENTS §9) of a {@link import('../phases/Phase.js').Phase}'s live
+ * Implements the lean child manager (AGENTS §9) of a {@link import('../phases/Phase.js').Phase}'s live
  * tasks — the task vocabulary over one insertion-ordered {@link Collection}, so positional order
  * is preserved across an interior `skip` / `remove`.
  *

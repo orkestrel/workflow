@@ -18,7 +18,7 @@ import { failure, success } from './helpers.js'
 import { Controller } from './Controller.js'
 
 /**
- * A thin generic orchestrator that drives declared units — and any they `spawn` —
+ * Implements a thin generic orchestrator that drives declared units — and any they `spawn` —
  * through a bounded-concurrency {@link createQueue}, collecting ordered results.
  *
  * @remarks
@@ -147,7 +147,7 @@ export class Runner<TInput, TResult> implements RunnerInterface<TInput, TResult>
 	}
 
 	/**
-	 * Inject one more unit into an IN-FLIGHT `execute` run — a LIVE counterpart to a
+	 * Injects one more unit into an IN-FLIGHT `execute` run — a LIVE counterpart to a
 	 * `Controller.spawn`, called from OUTSIDE any unit's handler.
 	 *
 	 * @remarks
@@ -237,7 +237,7 @@ export class Runner<TInput, TResult> implements RunnerInterface<TInput, TResult>
 	}
 
 	/**
-	 * Suspend dispatch (AGENTS §10 — resumable): delegates to the backing queue's own
+	 * Suspends dispatch (AGENTS §10 — resumable): delegates to the backing queue's own
 	 * `pause`, which holds the NEXT dispatch while any in-flight unit finishes.
 	 *
 	 * @remarks
@@ -251,7 +251,7 @@ export class Runner<TInput, TResult> implements RunnerInterface<TInput, TResult>
 	}
 
 	/**
-	 * Continue a paused runner (AGENTS §10); delegates to the backing queue's `resume`.
+	 * Continues a paused runner (AGENTS §10); delegates to the backing queue's `resume`.
 	 *
 	 * @remarks
 	 * A no-op once the runner is `stopped` (nothing left to resume) and a no-op when the
@@ -264,7 +264,7 @@ export class Runner<TInput, TResult> implements RunnerInterface<TInput, TResult>
 	}
 
 	/**
-	 * Permanently end the runner (AGENTS §10) — a GRACEFUL stop, distinct from `abort`.
+	 * Ends the runner permanently (AGENTS §10) — a GRACEFUL stop, distinct from `abort`.
 	 * Marks the runner `stopping` + `stopped`, then stops the backing queue: every
 	 * still-PENDING (never-dispatched) unit is rejected by the queue with its own
 	 * "queue is stopped" error, WITHOUT running its handler; every already-in-flight unit

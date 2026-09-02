@@ -14,11 +14,11 @@ import type {
 // and `isTerminalStatus` scans `TERMINAL_TASK_STATUSES`, so the vocabulary has one
 // definition rather than a hard-coded copy per predicate.
 
-/** The default {@link import('./types.js').WorkflowDefinition.bail} — graceful (continue on a leaf failure). */
+/** Names the default {@link import('./types.js').WorkflowDefinition.bail} — graceful (continue on a leaf failure). */
 export const DEFAULT_BAIL = false
 
 /**
- * Every {@link TaskStatus} value, frozen — the lifecycle vocabulary of a task.
+ * Lists every {@link TaskStatus} value, frozen — the lifecycle vocabulary of a task.
  *
  * @remarks
  * Ordered pending → running → terminal (`completed` / `failed` / `skipped` /
@@ -36,7 +36,7 @@ export const TASK_STATUSES: readonly TaskStatus[] = Object.freeze([
 ])
 
 /**
- * Every {@link PhaseStatus} value, frozen — the lifecycle vocabulary of a phase.
+ * Lists every {@link PhaseStatus} value, frozen — the lifecycle vocabulary of a phase.
  *
  * @remarks
  * The three tiers alias one {@link import('./types.js').LifecycleStatus} vocabulary, so this names
@@ -46,7 +46,7 @@ export const TASK_STATUSES: readonly TaskStatus[] = Object.freeze([
 export const PHASE_STATUSES: readonly PhaseStatus[] = TASK_STATUSES
 
 /**
- * Every {@link WorkflowStatus} value, frozen — the lifecycle vocabulary of a workflow.
+ * Lists every {@link WorkflowStatus} value, frozen — the lifecycle vocabulary of a workflow.
  *
  * @remarks
  * The workflow tier of the same aliased vocabulary; it names the {@link TASK_STATUSES} array
@@ -55,7 +55,7 @@ export const PHASE_STATUSES: readonly PhaseStatus[] = TASK_STATUSES
 export const WORKFLOW_STATUSES: readonly WorkflowStatus[] = TASK_STATUSES
 
 /**
- * The {@link TaskStatus} values that are TERMINAL — a task in one of these will
+ * Lists the {@link TaskStatus} values that are TERMINAL — a task in one of these will
  * not transition further, frozen.
  *
  * @remarks
@@ -70,7 +70,7 @@ export const TERMINAL_TASK_STATUSES: readonly TaskStatus[] = Object.freeze([
 ])
 
 /**
- * The legal {@link TaskStatus} transition graph of the live W-b task state machine —
+ * Declares the legal {@link TaskStatus} transition graph of the live W-b task state machine —
  * each current status mapped to the statuses it may move to directly, frozen.
  *
  * @remarks
@@ -92,7 +92,7 @@ export const TASK_TRANSITIONS: Readonly<Record<TaskStatus, readonly TaskStatus[]
 })
 
 /**
- * The default per-phase task concurrency the {@link import('./factories.js').createWorkflowRunner}
+ * Names the default per-phase task concurrency the {@link import('./factories.js').createWorkflowRunner}
  * runner applies when a {@link import('./types.js').PhaseDefinition} omits its `concurrency`
  * throttle — a cap that is effectively unbounded for any realistic phase.
  *
@@ -113,12 +113,12 @@ export const TASK_TRANSITIONS: Readonly<Record<TaskStatus, readonly TaskStatus[]
 export const DEFAULT_PHASE_CONCURRENCY = 1024
 
 /**
- * The largest delay representable by the host timer APIs without overflow or clamping.
+ * Names the largest delay representable by the host timer APIs without overflow or clamping.
  */
 export const MAX_TIMER_MS = 2_147_483_647
 
 /**
- * The {@link WorkflowEventMap} / {@link PhaseEventMap} events that make a durable observer
+ * Lists the {@link WorkflowEventMap} / {@link PhaseEventMap} events that make a durable observer
  * re-persist the live tree, frozen.
  *
  * @remarks
@@ -132,7 +132,7 @@ export const PERSISTED_NODE_EVENTS: ReadonlyArray<keyof WorkflowEventMap & keyof
 	Object.freeze(['start', 'complete', 'fail', 'skip', 'stop', 'move', 'update'])
 
 /**
- * The {@link TaskEventMap} events that make a durable observer re-persist the live tree, frozen.
+ * Lists the {@link TaskEventMap} events that make a durable observer re-persist the live tree, frozen.
  *
  * @remarks
  * The leaf counterpart of {@link PERSISTED_NODE_EVENTS}, and the source of truth behind the task

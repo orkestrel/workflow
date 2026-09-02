@@ -11,7 +11,7 @@ import type { WorkflowError } from '../errors.js'
 import { isTerminalStatus } from '../helpers.js'
 
 /**
- * The attempt-scoped handle a {@link import('./types.js').WorkflowFunction} receives.
+ * Implements the attempt-scoped handle a {@link import('./types.js').WorkflowFunction} receives.
  *
  * @remarks
  * - **A leaf handle, NOT the runner `Controller`.** A workflow task is a leaf of the

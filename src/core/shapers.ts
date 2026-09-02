@@ -29,7 +29,7 @@ import { MAX_TIMER_MS } from './constants.js'
 // `literalShape([value], { description })`, so no module-local helper is needed.
 
 /**
- * The shape of a {@link import('./types.js').TaskDefinition} — identity plus an optional
+ * Describes the shape of a {@link import('./types.js').TaskDefinition} — identity plus an optional
  * `behavior` behavior reference (a plain registry-key string, min length 1). `description` is
  * optional prose.
  */
@@ -62,7 +62,7 @@ export const taskShape = objectShape({
 })
 
 /**
- * The shape of a {@link import('./types.js').PhaseDefinition} — identity, its ordered
+ * Describes the shape of a {@link import('./types.js').PhaseDefinition} — identity, its ordered
  * {@link taskShape} tasks, and an optional positive-integer `concurrency` throttle
  * (max tasks in flight; omitted ⇒ unbounded).
  */
@@ -85,7 +85,7 @@ export const phaseShape = objectShape({
 })
 
 /**
- * The shape of a {@link import('./types.js').WorkflowDefinition} — the contract root:
+ * Describes the shape of a {@link import('./types.js').WorkflowDefinition} — the contract root:
  * identity, its ordered {@link phaseShape} phases, and the optional `bail` boolean
  * failure policy (the literal pair `true`/`false`, the runtime mirror of the boolean
  * toggle; omitted ⇒ the graceful default).
@@ -115,7 +115,7 @@ export const workflowShape = objectShape({
 // an invalid value.
 
 /**
- * The shape of a {@link import('./types.js').TaskUpdate} — a partial edit to a
+ * Describes the shape of a {@link import('./types.js').TaskUpdate} — a partial edit to a
  * `pending` task's `name` / `description`, both optional.
  *
  * @remarks
@@ -129,7 +129,7 @@ export const taskUpdateShape = objectShape({
 })
 
 /**
- * The shape of a {@link import('./types.js').PhaseUpdate} — a partial edit to a
+ * Describes the shape of a {@link import('./types.js').PhaseUpdate} — a partial edit to a
  * `pending` phase's `name` / `description` / `concurrency` / `bail`, all optional.
  *
  * @remarks

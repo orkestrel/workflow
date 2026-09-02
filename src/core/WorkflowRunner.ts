@@ -48,7 +48,7 @@ import { WorkflowPersistence } from './WorkflowPersistence.js'
 // suspended awaiting that handler. Each run cancels exactly its own phase Runner.
 
 /**
- * The thin orchestrator that EXECUTES a live W-b workflow tree by COMPOSING the shipped
+ * Implements the thin orchestrator that EXECUTES a live W-b workflow tree by COMPOSING the shipped
  * substrate — phases sequential, tasks concurrent — dispatching each task through its OWN
  * resolved handler under the `bail` policy.
  *
@@ -135,7 +135,7 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 	}
 
 	/**
-	 * Execute a workflow definition to completion — BUILD its live tree, run the phases
+	 * Executes a workflow definition to completion — BUILDS its live tree, runs the phases
 	 * sequentially with each phase's tasks concurrent — resolving its terminal
 	 * {@link WorkflowResult} (whose `workflow` is the freshly-built live tree).
 	 *
@@ -168,7 +168,7 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 	 */
 	execute(definition: WorkflowDefinition, options?: WorkflowRunOptions): Promise<WorkflowResult>
 	/**
-	 * Drive an ALREADY-BUILT, CALLER-OWNED live {@link WorkflowInterface} — the entity-native
+	 * Drives an ALREADY-BUILT, CALLER-OWNED live {@link WorkflowInterface} — the entity-native
 	 * counterpart to the definition-building {@link execute} overload.
 	 *
 	 * @remarks

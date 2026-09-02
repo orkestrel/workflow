@@ -4,7 +4,7 @@ import { isFunction, isPromise, isRecord } from '@orkestrel/contract'
 import { POST_TASK_PRIORITY } from './constants.js'
 
 /**
- * The browser {@link SchedulerInterface} — the browser-native cooperative-yield backend
+ * Implements the browser {@link SchedulerInterface} — the browser-native cooperative-yield backend
  * built on the Prioritized Task Scheduling API (`scheduler.postTask`), falling back to a
  * zero-delay macrotask where it is absent.
  *
@@ -39,8 +39,8 @@ import { POST_TASK_PRIORITY } from './constants.js'
  */
 export class BrowserScheduler implements SchedulerInterface {
 	/**
-	 * Yield control to the host through `scheduler.postTask` at the given priority (or a
-	 * `setTimeout(0)` macrotask where the API is absent), then resume; abort rejects with
+	 * Yields control to the host through `scheduler.postTask` at the given priority (or a
+	 * `setTimeout(0)` macrotask where the API is absent), then resumes; abort rejects with
 	 * `signal.reason`.
 	 */
 	yield(options?: SchedulerOptions): Promise<void> {
@@ -50,7 +50,7 @@ export class BrowserScheduler implements SchedulerInterface {
 	}
 
 	/**
-	 * Resume after at least `ms` milliseconds through `setTimeout`; abort rejects with
+	 * Resumes after at least `ms` milliseconds through `setTimeout`; abort rejects with
 	 * `signal.reason`.
 	 *
 	 * @remarks

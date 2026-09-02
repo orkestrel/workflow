@@ -33,7 +33,7 @@ import {
 } from '../helpers.js'
 
 /**
- * The live leaf state machine (W-b) for one task — an observable (AGENTS §13), guarded
+ * Implements the live leaf state machine (W-b) for one task — an observable (AGENTS §13), guarded
  * synchronous task whose explicit {@link TaskStatus} advances through the AGENTS §10
  * transitions, recording a {@link TaskResult} on a terminal outcome.
  *
@@ -395,7 +395,7 @@ export class Task implements TaskInterface {
 	}
 
 	/**
-	 * Apply a validated declarative patch to SELF (`name` / `description`).
+	 * Applies a validated declarative patch to SELF (`name` / `description`).
 	 *
 	 * @remarks
 	 * Defense-in-depth (AGENTS §12): the owning

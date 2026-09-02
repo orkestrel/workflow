@@ -2,7 +2,7 @@ import type { WorkflowSnapshot, WorkflowStoreInterface } from '../types.js'
 import { cloneWorkflowSnapshot } from '../cloners.js'
 
 /**
- * The in-memory {@link WorkflowStoreInterface} — a process-lifetime `Map` of
+ * Implements the in-memory {@link WorkflowStoreInterface} — a process-lifetime `Map` of
  * {@link WorkflowSnapshot}s keyed by workflow id, the DEFAULT store
  * {@link import('../factories.js').createMemoryWorkflowStore} builds.
  *

@@ -2,7 +2,7 @@ import type { SchedulerInterface, SchedulerOptions } from './types.js'
 import { delayHost } from './helpers.js'
 
 /**
- * The safe cross-environment cooperative-yield default — a {@link SchedulerInterface}
+ * Implements the safe cross-environment cooperative-yield default — a {@link SchedulerInterface}
  * built on `setTimeout` / `clearTimeout` alone, so it runs unchanged in both the
  * browser and Node.
  *
@@ -37,8 +37,8 @@ import { delayHost } from './helpers.js'
  */
 export class Scheduler implements SchedulerInterface {
 	/**
-	 * Yield control back to the host so other tasks (I/O, timers, rendering) can
-	 * run, then resume — a macrotask turn through `setTimeout(0)` (NOT a microtask,
+	 * Yields control back to the host so other tasks (I/O, timers, rendering) can
+	 * run, then resumes — a macrotask turn through `setTimeout(0)` (NOT a microtask,
 	 * which would resume before the host regains control).
 	 */
 	yield(options?: SchedulerOptions): Promise<void> {
@@ -46,7 +46,7 @@ export class Scheduler implements SchedulerInterface {
 	}
 
 	/**
-	 * Resume after at least `ms` milliseconds; abort rejects with `signal.reason`.
+	 * Resumes after at least `ms` milliseconds; abort rejects with `signal.reason`.
 	 *
 	 * @remarks
 	 * Pass a non-negative finite `ms`. The primitive stays minimal and does no

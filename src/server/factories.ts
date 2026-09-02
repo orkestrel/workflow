@@ -2,7 +2,7 @@ import type { SchedulerInterface } from '@src/core'
 import { NodeScheduler } from './NodeScheduler.js'
 
 /**
- * Create the Node-native cooperative-yield {@link SchedulerInterface} — `yield()` is a
+ * Creates the Node-native cooperative-yield {@link SchedulerInterface} — `yield()` is a
  * `setImmediate` host-turn (the canonical Node "give the event loop a turn"), `delay(ms)`
  * a real `setTimeout`.
  *

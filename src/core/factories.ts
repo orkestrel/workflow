@@ -55,7 +55,7 @@ import { Runner } from './Runner.js'
 // at the contract level, so no guard-gate wrapper is needed here.
 
 /**
- * Compile the workflow definition contract — the JSON Schema, guard, parser, and
+ * Compiles the workflow definition contract — the JSON Schema, guard, parser, and
  * seeded generator for a {@link WorkflowDefinition}, all derived from one shape and
  * kept in lockstep.
  *
@@ -86,7 +86,7 @@ export function createWorkflowContract(): ContractInterface<WorkflowDefinition> 
 }
 
 /**
- * Build the live W-b entity tree from a {@link WorkflowDefinition} — the whole
+ * Builds the live W-b entity tree from a {@link WorkflowDefinition} — the whole
  * {@link WorkflowInterface} → {@link import('./types.js').PhaseInterface} →
  * {@link import('./types.js').TaskInterface} tree, each level wired with its lineage
  * context, its emitter, and the cascade.
@@ -169,7 +169,7 @@ export function createWorkflowTree(
 }
 
 /**
- * Build an equivalent live W-b entity tree from a {@link WorkflowSnapshot} — the
+ * Builds an equivalent live W-b entity tree from a {@link WorkflowSnapshot} — the
  * inverse of {@link WorkflowInterface.snapshot}, restoring structure + each node's status
  * + recorded results + positional order + the persisted `#override`.
  *
@@ -210,7 +210,7 @@ export function createRestoredWorkflow(
 }
 
 /**
- * Build an interrupted workflow back to life at its remaining retry budget.
+ * Builds an interrupted workflow back to life at its remaining retry budget.
  *
  * @remarks
  * Each phase captures every unique initial `behavior` binding once before constructing tasks. Recovery
@@ -251,7 +251,7 @@ export function createRecoveredWorkflow(
 }
 
 /**
- * Create the in-memory durable {@link WorkflowStoreInterface} — a process-lifetime
+ * Creates the in-memory durable {@link WorkflowStoreInterface} — a process-lifetime
  * {@link MemoryWorkflowStore} persisting {@link WorkflowSnapshot}s by workflow id, the DEFAULT
  * backend behind the W-d persistence seam.
  *
@@ -283,7 +283,7 @@ export function createMemoryWorkflowStore(): WorkflowStoreInterface {
 }
 
 /**
- * Create a {@link DatabaseWorkflowStore} over any {@link DriverInterface} — the durable,
+ * Creates a {@link DatabaseWorkflowStore} over any {@link DriverInterface} — the durable,
  * driver-pluggable backing for the W-d persistence seam, the opt-in twin of
  * {@link createMemoryWorkflowStore}.
  *
@@ -330,9 +330,9 @@ export function createDatabaseWorkflowStore(
 }
 
 /**
- * Create a workflow runner — a {@link WorkflowRunnerInterface} that EXECUTES a live W-b
- * workflow tree by COMPOSING the shipped substrate: phases sequential, tasks concurrent,
- * each task dispatched through its OWN resolved handler under the workflow's `bail` policy.
+ * Creates the thin orchestrator — a {@link WorkflowRunnerInterface} — that EXECUTES a live W-b
+ * workflow tree by COMPOSING the shipped substrate: phases sequential, tasks concurrent, each
+ * task dispatched through its OWN resolved handler under the workflow's `bail` policy.
  *
  * @remarks
  * The runner is a PURE engine — it re-implements no concurrency / retry / abort logic, AND it
@@ -379,7 +379,7 @@ export function createWorkflowRunner(options?: WorkflowRunnerOptions): WorkflowR
 }
 
 /**
- * Create a {@link WorkflowManagerInterface} — the store-backed registry of
+ * Creates a {@link WorkflowManagerInterface} — the store-backed registry of
  * {@link WorkflowInterface}s, the additive manager tier mirroring the `@orkestrel/agent`
  * line's `createConversationManager` / `createWorkspaceManager`.
  *
@@ -414,7 +414,7 @@ export function createWorkflowManager(options?: WorkflowManagerOptions): Workflo
 }
 
 /**
- * Create the safe cross-environment cooperative-yield default — a
+ * Creates the safe cross-environment cooperative-yield default — a
  * {@link SchedulerInterface} built on `setTimeout` / `clearTimeout` alone, so it
  * runs unchanged in both the browser and Node.
  *
@@ -461,7 +461,7 @@ export function createScheduler(): SchedulerInterface {
 }
 
 /**
- * Create a thin generic orchestrator that drives declared units — and any they
+ * Creates a thin generic orchestrator that drives declared units — and any they
  * `spawn` — through a bounded-concurrency queue, collecting their results in order.
  *
  * @remarks

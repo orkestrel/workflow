@@ -4,7 +4,7 @@ import { WorkflowError } from './errors.js'
 import { failure, insertEntry, moveEntry, success } from './helpers.js'
 
 /**
- * The insertion-ordered gated store both lean managers (AGENTS §9) hold — entities keyed by `id`,
+ * Implements the insertion-ordered gated store both lean managers (AGENTS §9) hold — entities keyed by `id`,
  * positional order preserved across an interior `skip` or `remove`.
  *
  * @remarks

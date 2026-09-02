@@ -4,7 +4,7 @@ import { FrameScheduler } from './FrameScheduler.js'
 import { IdleScheduler } from './IdleScheduler.js'
 
 /**
- * Create the browser-native cooperative-yield {@link SchedulerInterface} — `yield()` uses
+ * Creates the browser-native cooperative-yield {@link SchedulerInterface} — `yield()` uses
  * the Prioritized Task Scheduling API (`scheduler.postTask`) at the requested priority
  * when present, falling back to a `setTimeout(0)` macrotask; `delay(ms)` is a real
  * `setTimeout`.
@@ -33,7 +33,7 @@ export function createBrowserScheduler(): SchedulerInterface {
 }
 
 /**
- * Create the frame-aligned cooperative-yield {@link SchedulerInterface} — `yield()` resumes
+ * Creates the frame-aligned cooperative-yield {@link SchedulerInterface} — `yield()` resumes
  * just before the next paint through `requestAnimationFrame`; `delay(ms)` is a real
  * `setTimeout`.
  *
@@ -59,7 +59,7 @@ export function createFrameScheduler(): SchedulerInterface {
 }
 
 /**
- * Create the idle-time cooperative-yield {@link SchedulerInterface} — `yield()` resumes when
+ * Creates the idle-time cooperative-yield {@link SchedulerInterface} — `yield()` resumes when
  * the host is idle through `requestIdleCallback` when present, falling back to a `setTimeout(0)`
  * macrotask; `delay(ms)` is a real `setTimeout`.
  *

@@ -6,7 +6,7 @@ import { Collection } from '../Collection.js'
 import { phaseUpdateShape } from '../shapers.js'
 
 /**
- * The lean child manager (AGENTS §9) of a {@link import('../Workflow.js').Workflow}'s live
+ * Implements the lean child manager (AGENTS §9) of a {@link import('../Workflow.js').Workflow}'s live
  * phases — the phase vocabulary over one insertion-ordered {@link Collection}, the phase analogue
  * of {@link import('../tasks/TaskManager.js').TaskManager}.
  *

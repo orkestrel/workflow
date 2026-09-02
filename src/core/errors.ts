@@ -7,7 +7,7 @@ import type { WorkflowErrorCode } from './types.js'
 // `undefined` — they never throw.
 
 /**
- * An error raised by the workflow runtime.
+ * Represents an error raised by the workflow runtime.
  *
  * @remarks
  * Carries a {@link WorkflowErrorCode} and an optional `context` bag naming the
@@ -35,10 +35,10 @@ export class WorkflowError extends Error {
 }
 
 /**
- * Narrow an unknown caught value to a {@link WorkflowError}.
+ * Narrows an unknown caught value to a {@link WorkflowError}.
  *
  * @param value - The value to test (typically a `catch` binding)
- * @returns `true` when `value` is a {@link WorkflowError}
+ * @returns True if `value` is a {@link WorkflowError}; false otherwise
  *
  * @example
  * ```ts

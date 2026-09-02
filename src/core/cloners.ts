@@ -5,7 +5,7 @@ import { scanSnapshotContext } from './helpers.js'
 import { isOwnedWorkflowSnapshot, isTaskActivity } from './validators.js'
 
 /**
- * Validate and own a workflow snapshot before live construction.
+ * Validates and owns a workflow snapshot before live construction.
  *
  * @param input - The hostile snapshot boundary
  * @param id - The optional storage key the owned snapshot must match
@@ -92,7 +92,7 @@ export function cloneTaskClaims(input: unknown, noun: string): readonly unknown[
 }
 
 /**
- * Validate and clone one complete task activity frame.
+ * Validates and clones one complete task activity frame.
  *
  * @remarks
  * This is the hostile boundary behind task reports and snapshot hydration. Supplying

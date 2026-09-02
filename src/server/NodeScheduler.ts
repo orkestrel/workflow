@@ -2,7 +2,7 @@ import type { SchedulerInterface, SchedulerOptions } from '@src/core'
 import { delayHost, scheduleHost } from '@src/core'
 
 /**
- * The Node {@link SchedulerInterface} — the server-native cooperative-yield backend.
+ * Implements the Node {@link SchedulerInterface} — the server-native cooperative-yield backend.
  *
  * @remarks
  * - **`yield` is a `setImmediate` host-turn.** `yield()` waits on `setImmediate`, the
@@ -36,15 +36,15 @@ import { delayHost, scheduleHost } from '@src/core'
  */
 export class NodeScheduler implements SchedulerInterface {
 	/**
-	 * Yield control back to the event loop through `setImmediate` so pending I/O and timers
-	 * can run, then resume; abort rejects with `signal.reason`.
+	 * Yields control back to the event loop through `setImmediate` so pending I/O and timers
+	 * can run, then resumes; abort rejects with `signal.reason`.
 	 */
 	yield(options?: SchedulerOptions): Promise<void> {
 		return this.#immediate(options?.signal)
 	}
 
 	/**
-	 * Resume after at least `ms` milliseconds through `setTimeout`; abort rejects with
+	 * Resumes after at least `ms` milliseconds through `setTimeout`; abort rejects with
 	 * `signal.reason`.
 	 *
 	 * @remarks

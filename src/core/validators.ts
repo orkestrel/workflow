@@ -44,7 +44,7 @@ export function isLifecycleStatus(value: unknown): value is LifecycleStatus {
 }
 
 /**
- * Test a normalized persisted task failure.
+ * Tests a normalized persisted task failure.
  *
  * @remarks
  * The exact-record guard behind a persisted {@link TaskFailure}: exactly `origin` and `message`,
@@ -108,7 +108,7 @@ export function isWorkflowInterface(value: unknown): value is WorkflowInterface 
 }
 
 /**
- * Validate a safe owned JSON graph as a coherent workflow snapshot.
+ * Validates a safe owned JSON graph as a coherent workflow snapshot.
  *
  * @remarks
  * Callers at hostile boundaries use {@link isWorkflowSnapshot}, which owns the
@@ -281,7 +281,7 @@ export function isOwnedWorkflowSnapshot(value: unknown): value is WorkflowSnapsh
 }
 
 /**
- * Total hostile-boundary workflow snapshot guard.
+ * Guards the hostile boundary totally for a workflow snapshot.
  *
  * @remarks
  * Owns the value first through the exact-JSON clone of `@orkestrel/contract`, then runs the
@@ -356,7 +356,7 @@ export function isTaskClaimList(value: unknown): value is readonly TaskClaim[] {
 }
 
 /**
- * Test whether an unknown value is a valid whole-frame activity report.
+ * Tests whether an unknown value is a valid whole-frame activity report.
  *
  * @remarks
  * The guard behind {@link import('./types.js').TaskInterface.report}: exactly the optional `note`,
@@ -422,7 +422,7 @@ export function isTaskActivityInput(value: unknown): value is TaskActivityInput 
 }
 
 /**
- * Test whether an unknown value is valid persisted task activity.
+ * Tests whether an unknown value is valid persisted task activity.
  *
  * @remarks
  * The persisted counterpart of {@link isTaskActivityInput}: the same frame plus the REQUIRED

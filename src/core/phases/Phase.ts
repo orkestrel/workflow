@@ -34,7 +34,7 @@ import { Task } from '../tasks/Task.js'
 import { TaskManager } from '../tasks/TaskManager.js'
 
 /**
- * The live DERIVED state machine (W-b) for one phase — an observable (AGENTS §13) whose
+ * Implements the live DERIVED state machine (W-b) for one phase — an observable (AGENTS §13) whose
  * {@link PhaseStatus} is computed from its tasks (never set directly) and recomputed
  * reactively as a task transitions (the middle tier of the cascade).
  *

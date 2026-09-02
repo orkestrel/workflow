@@ -3,7 +3,7 @@ import type { WorkflowSnapshot, WorkflowSnapshotRow, WorkflowStoreInterface } fr
 import { cloneWorkflowSnapshot } from '../cloners.js'
 
 /**
- * A {@link WorkflowStoreInterface} backed by one table of the `databases` layer — a
+ * Implements a {@link WorkflowStoreInterface} backed by one table of the `databases` layer — a
  * workflow's durable run-state IS a row, so persistence reduces to keyed point-access
  * (`get` / `set` / `delete`) over a `TableInterface`, the driver-pluggable twin of the
  * plain-`Map` {@link import('./MemoryWorkflowStore.js').MemoryWorkflowStore}.
@@ -58,7 +58,7 @@ export class DatabaseWorkflowStore implements WorkflowStoreInterface {
 	readonly #table: TableInterface<WorkflowSnapshotRow>
 
 	/**
-	 * Wrap a table as a workflow store.
+	 * Wraps a table as a workflow store.
 	 *
 	 * @param table - The {@link TableInterface} holding the snapshots — its row is the
 	 *   {@link WorkflowSnapshotRow} `{ id; snapshot }` shape (the snapshot one opaque JSON column)
@@ -67,7 +67,7 @@ export class DatabaseWorkflowStore implements WorkflowStoreInterface {
 		this.#table = table
 	}
 
-	/** Resolve and key-check the snapshot for `id`, narrowing the opaque column to `WorkflowSnapshot`. */
+	/** Resolves and key-checks the snapshot for `id`, narrowing the opaque column to `WorkflowSnapshot`. */
 	async get(id: string): Promise<WorkflowSnapshot | undefined> {
 		const row = await this.#table.get(id)
 		if (row === undefined) return undefined
@@ -76,13 +76,13 @@ export class DatabaseWorkflowStore implements WorkflowStoreInterface {
 		return cloneWorkflowSnapshot(row.snapshot, id)
 	}
 
-	/** Insert or replace under the snapshot's OWN `id` (no separate id param) — the row is `{ id, snapshot }`. */
+	/** Inserts or replaces under the snapshot's OWN `id` (no separate id param) — the row is `{ id, snapshot }`. */
 	async set(snapshot: WorkflowSnapshot): Promise<void> {
 		const owned = cloneWorkflowSnapshot(snapshot)
 		await this.#table.set({ id: owned.id, snapshot: owned })
 	}
 
-	/** Drop a snapshot by id; an absent id is a no-op (no throw). */
+	/** Drops a snapshot by id; an absent id is a no-op (no throw). */
 	async delete(id: string): Promise<void> {
 		await this.#table.remove(id)
 	}
