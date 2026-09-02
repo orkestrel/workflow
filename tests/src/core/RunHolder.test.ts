@@ -1,7 +1,7 @@
 import type { RunnerInterface, TaskInterface } from '@src/core'
 import { describe, expect, it } from 'vitest'
 import { createRunner } from '@src/core'
-import { RunHolder } from '@src/core'
+import { RunHolder } from '../../../src/core/RunHolder.js'
 
 /** A substrate runner over live tasks — the exact shape a phase hands the holder. */
 function buildPhaseRunner(): RunnerInterface<TaskInterface, void> {

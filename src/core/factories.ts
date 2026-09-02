@@ -124,7 +124,7 @@ export function createWorkflow(
 	options?: WorkflowOptions,
 ): WorkflowInterface {
 	const captured = captureWorkflowOptions(options)
-	return createWorkflowTree(definition, captured.bail, captured)
+	return createWorkflowTree(definition, captured)
 }
 
 /**
@@ -148,8 +148,8 @@ export function createWorkflow(
  * without re-capturing.
  *
  * @param definition - The workflow definition to bring to life
- * @param bail - The caller's failure-policy override, or `undefined` to take the definition's
- * @param captured - The already-owned {@link WorkflowOptions} bag the entity is constructed with
+ * @param captured - The already-owned {@link WorkflowOptions} bag the entity is constructed with,
+ * whose `bail` is the caller's failure-policy override, or `undefined` to take the definition's
  * @returns The live {@link WorkflowInterface} root
  *
  * @example
@@ -157,16 +157,15 @@ export function createWorkflow(
  * import { captureWorkflowOptions, createWorkflowTree } from '@orkestrel/workflow'
  *
  * const captured = captureWorkflowOptions({ bail: true })
- * const workflow = createWorkflowTree(definition, captured.bail, captured)
+ * const workflow = createWorkflowTree(definition, captured)
  * workflow.bail // true — the override reached the workflow and every inheriting phase
  * ```
  */
 export function createWorkflowTree(
 	definition: WorkflowDefinition,
-	bail: boolean | undefined,
 	captured: WorkflowOptions,
 ): WorkflowInterface {
-	return new Workflow(definitionToSnapshot(definition, bail), captured)
+	return new Workflow(definitionToSnapshot(definition, captured.bail), captured)
 }
 
 /**

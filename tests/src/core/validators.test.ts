@@ -11,7 +11,7 @@ import {
 	isWorkflowSnapshot,
 	matchesDescription,
 	recoverWorkflowSnapshot,
-	locateSnapshotContext,
+	scanSnapshotContext,
 } from '@src/core'
 import { INVALID_TASK_ACTIVITIES } from '../../setup.js'
 import { describe, expect, it } from 'vitest'
@@ -430,15 +430,15 @@ describe('snapshot logical leaves', () => {
 		const task = phase?.tasks[0]
 		if (phase === undefined || task === undefined) throw new Error('expected context task')
 
-		expect(locateSnapshotContext(snapshot)).toBeUndefined()
+		expect(scanSnapshotContext(snapshot)).toBeUndefined()
 		expect(
-			locateSnapshotContext({
+			scanSnapshotContext({
 				...snapshot,
 				phases: [{ ...phase, concurrency: 0 }],
 			}),
 		).toEqual({ phase: 'phase' })
 		expect(
-			locateSnapshotContext({
+			scanSnapshotContext({
 				...snapshot,
 				phases: [
 					{
@@ -448,7 +448,7 @@ describe('snapshot logical leaves', () => {
 				],
 			}),
 		).toEqual({ phase: 'phase', task: 'task' })
-		expect(locateSnapshotContext(null)).toBeUndefined()
+		expect(scanSnapshotContext(null)).toBeUndefined()
 	})
 
 	it('projects retryable and exhausted running work directly', () => {

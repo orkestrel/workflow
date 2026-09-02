@@ -15,17 +15,6 @@ import type { RunHolderInterface, RunnerInterface, TaskInterface } from './types
  *   fires, so it reaches whichever phase runner is live at that moment rather than the one that
  *   was live when the listener was armed.
  * - **Event-free.** A plain cell — no emitter, no lifecycle of its own.
- *
- * @example
- * ```ts
- * import { createRunner, RunHolder } from '@orkestrel/workflow'
- *
- * const holder = new RunHolder()
- * holder.hold(createRunner({ handler: (controller) => void controller.input }))
- * holder.runner?.stopped // false — the phase runner this run is driving
- * holder.hold() // the phase settled
- * holder.runner // undefined
- * ```
  */
 export class RunHolder implements RunHolderInterface {
 	#runner: RunnerInterface<TaskInterface, void> | undefined
@@ -40,10 +29,12 @@ export class RunHolder implements RunHolderInterface {
 	 * @param runner - The phase runner to hold; omitted releases the held runner
 	 * @example
 	 * ```ts
-	 * import { createRunner, RunHolder } from '@orkestrel/workflow'
+	 * import type { TaskInterface } from '@orkestrel/workflow'
+	 * import { createRunner } from '@orkestrel/workflow'
+	 * import { RunHolder } from './RunHolder.js'
 	 *
 	 * const holder = new RunHolder()
-	 * holder.hold(createRunner({ handler: (controller) => void controller.input }))
+	 * holder.hold(createRunner<TaskInterface, void>({ handler: () => undefined }))
 	 * holder.hold() // released — `runner` reads `undefined` again
 	 * ```
 	 */

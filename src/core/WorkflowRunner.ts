@@ -224,7 +224,7 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 		// bounds (signal/timeout/budget) feed the fold in `#execute`. The tree goes through the one
 		// shared `createWorkflowTree` path `createWorkflow` and `WorkflowManager` also take, so a
 		// definition run and a hand-built tree can never diverge.
-		const workflow = createWorkflowTree(target, captured.bail, captured)
+		const workflow = createWorkflowTree(target, captured)
 		this.#acquire(workflow)
 		return this.#execute(workflow, signal, timeout, budget, store)
 	}

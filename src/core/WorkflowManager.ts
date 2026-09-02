@@ -200,7 +200,7 @@ export class WorkflowManager implements WorkflowManagerInterface {
 	// runner also take, so a minted workflow can never drift from a directly built one.
 	#build(definition: WorkflowDefinition): WorkflowInterface {
 		const captured = this.#captured()
-		return createWorkflowTree(definition, captured.bail, captured)
+		return createWorkflowTree(definition, captured)
 	}
 
 	// Rebuild the live tree from an already-owned snapshot exactly as `createRestoredWorkflow`

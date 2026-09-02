@@ -43,9 +43,9 @@ export class IdleScheduler implements SchedulerInterface {
 	 * `signal.reason`.
 	 */
 	yield(options?: SchedulerOptions): Promise<void> {
-		const idle = this.#idle()
+		const idle = this.#idleCallback()
 		if (idle === undefined) return delayHost(0, options?.signal)
-		return this.#schedule(idle, options?.signal)
+		return this.#idle(idle, options?.signal)
 	}
 
 	/**
@@ -66,7 +66,7 @@ export class IdleScheduler implements SchedulerInterface {
 	// Feature-detect `requestIdleCallback` / `cancelIdleCallback` off `globalThis` through
 	// guards (no `as`): both must be callable. Returns the narrowed pair, or `undefined`
 	// when the API is absent (the macrotask fallback).
-	#idle(): IdleInterface | undefined {
+	#idleCallback(): IdleInterface | undefined {
 		const request: unknown = Reflect.get(globalThis, 'requestIdleCallback')
 		const cancel: unknown = Reflect.get(globalThis, 'cancelIdleCallback')
 		if (!isFunction(request) || !isFunction(cancel)) return undefined
@@ -76,8 +76,8 @@ export class IdleScheduler implements SchedulerInterface {
 		}
 	}
 
-	// The idle callback boundary; `scheduleHost` owns cancellation lifecycle.
-	#schedule(idle: IdleInterface, signal?: AbortSignal): Promise<void> {
+	// The idle yield boundary; `scheduleHost` owns cancellation lifecycle.
+	#idle(idle: IdleInterface, signal?: AbortSignal): Promise<void> {
 		return scheduleHost((complete) => {
 			const handle = idle.request(complete)
 			return () => idle.cancel(handle)

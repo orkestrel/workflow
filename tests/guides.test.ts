@@ -43,6 +43,7 @@ const MODULES = Object.freeze({
 const INTERNAL: readonly string[] = Object.freeze([
 	'class Controller',
 	'class Phase',
+	'class RunHolder',
 	'class Task',
 	'class TaskController',
 ])

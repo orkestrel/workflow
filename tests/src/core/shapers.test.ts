@@ -183,18 +183,18 @@ describe('the new optional fields flow through the compiled contract', () => {
 	})
 
 	it('accepts an omitted run (no handler), and rejects an empty-string run', () => {
-		const noRun: WorkflowDefinition = {
+		const noBehavior: WorkflowDefinition = {
 			id: 'w',
 			name: 'W',
 			phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T' }] }],
 		}
-		expect(contract.is(noRun)).toBe(true)
-		const emptyRun: WorkflowDefinition = {
+		expect(contract.is(noBehavior)).toBe(true)
+		const emptyBehavior: WorkflowDefinition = {
 			id: 'w',
 			name: 'W',
 			phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', behavior: '' }] }],
 		}
-		expect(contract.is(emptyRun)).toBe(false)
+		expect(contract.is(emptyBehavior)).toBe(false)
 	})
 
 	it('rejects the old object-form behavior ({ via, name }) — behavior is now a plain string', () => {

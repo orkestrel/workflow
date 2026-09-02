@@ -905,9 +905,7 @@ export function hasWorkflowHandlers(
 }
 
 /** Locates the nearest identifiable node for an inconsistent owned snapshot. */
-export function locateSnapshotContext(
-	value: unknown,
-): Readonly<Record<string, unknown>> | undefined {
+export function scanSnapshotContext(value: unknown): Readonly<Record<string, unknown>> | undefined {
 	if (!isRecord(value) || !isArray(value.phases)) return undefined
 	for (const phase of value.phases) {
 		if (!isRecord(phase)) continue

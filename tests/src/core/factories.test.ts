@@ -216,7 +216,7 @@ describe('createWorkflowTree — the shared construction path', () => {
 		const definition = localDefinition()
 		const captured = captureWorkflowOptions({ functions: RESTORE_FUNCTIONS })
 
-		const direct = createWorkflowTree(definition, captured.bail, captured)
+		const direct = createWorkflowTree(definition, captured)
 		const through = createWorkflow(definition, { functions: RESTORE_FUNCTIONS })
 
 		// The `created` / `updated` stamps are wall-clock, so the structural payload is what the two
@@ -233,8 +233,8 @@ describe('createWorkflowTree — the shared construction path', () => {
 	it('takes the definition policy when the override is undefined', () => {
 		const captured = captureWorkflowOptions({})
 
-		const graceful = createWorkflowTree(localDefinition({ bail: false }), captured.bail, captured)
-		const halting = createWorkflowTree(localDefinition({ bail: true }), captured.bail, captured)
+		const graceful = createWorkflowTree(localDefinition({ bail: false }), captured)
+		const halting = createWorkflowTree(localDefinition({ bail: true }), captured)
 
 		expect(graceful.bail).toBe(false)
 		expect(halting.bail).toBe(true)
@@ -243,7 +243,7 @@ describe('createWorkflowTree — the shared construction path', () => {
 	it('seeds the override onto the workflow and every inheriting phase', () => {
 		const captured = captureWorkflowOptions({ bail: true })
 
-		const workflow = createWorkflowTree(localDefinition({ bail: false }), captured.bail, captured)
+		const workflow = createWorkflowTree(localDefinition({ bail: false }), captured)
 
 		expect(workflow.bail).toBe(true)
 		expect(workflow.phases.phases().map((phase) => phase.bail)).toEqual([true, true])
@@ -259,7 +259,7 @@ describe('createWorkflowTree — the shared construction path', () => {
 			],
 		})
 
-		const workflow = createWorkflowTree(definition, captured.bail, captured)
+		const workflow = createWorkflowTree(definition, captured)
 
 		expect(workflow.phases.phases().map((phase) => phase.bail)).toEqual([true, false])
 	})
@@ -267,7 +267,7 @@ describe('createWorkflowTree — the shared construction path', () => {
 	it('resolves each task handler from the bag it is handed', () => {
 		const captured = captureWorkflowOptions({ functions: RESTORE_FUNCTIONS })
 
-		const workflow = createWorkflowTree(localDefinition(), captured.bail, captured)
+		const workflow = createWorkflowTree(localDefinition(), captured)
 
 		expect(workflow.phase('phase-build')?.task('task-compile')?.handler).toBe(
 			RESTORE_FUNCTIONS.compile,

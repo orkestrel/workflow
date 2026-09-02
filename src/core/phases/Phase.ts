@@ -161,7 +161,7 @@ export class Phase implements PhaseInterface {
 			...(error === undefined ? {} : { error }),
 		})
 		// Build the live tasks positionally from the snapshot — each wired to recompute THIS phase
-		// on a transition, carrying its own restore state and the once-captured handler for its run.
+		// on a transition, carrying its own restore state and the once-captured handler for its `behavior`.
 		for (const task of snapshot.tasks) {
 			const taskOptions = tasks?.[task.id]
 			const handler = task.behavior === undefined ? undefined : handlers.get(task.behavior)

@@ -685,7 +685,7 @@ describe('taskDefinitionToSnapshot — the declarative trio copies verbatim, omi
 
 	it('omits behavior/retries/timeout when the definition declares none (no undefined keys)', () => {
 		const snapshot = taskDefinitionToSnapshot({ id: 't', name: 'T' })
-		expect('run' in snapshot).toBe(false)
+		expect('behavior' in snapshot).toBe(false)
 		expect('retries' in snapshot).toBe(false)
 		expect('timeout' in snapshot).toBe(false)
 	})
@@ -1358,8 +1358,8 @@ describe('workflow recovery', () => {
 
 	it('captures each unique initial behavior once and retains the registry for later live additions', () => {
 		const definition: WorkflowDefinition = {
-			id: 'captured-runs',
-			name: 'Captured runs',
+			id: 'captured-behaviors',
+			name: 'Captured behaviors',
 			phases: [
 				{
 					id: 'phase',

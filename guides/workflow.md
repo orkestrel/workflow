@@ -7,7 +7,7 @@ Read the module as five layers of one substrate, top to bottom:
 - **The tree describes.** The **definition** family (`WorkflowDefinition → PhaseDefinition → TaskDefinition`) is pure JSON — behavior referenced BY NAME, never inline functions — so the whole tree serializes, round-trips, and is safe for a 2B model to emit. One compiled [contract](contract.md) (`createWorkflowContract`) keeps the JSON Schema + guard + parser + seeded generator in lockstep with the hand-written interfaces, so definition and runtime can never drift.
 - **The entities control.** The live **entity** family (`Workflow` / `Phase` / `Task`) is the runtime mirror BUILT from a definition: each node is an [§13-observable](emitter.md) synchronous state machine whose status is DERIVED from its children, mutable through its own `add` / `remove` / `move` / `update`, pausable, and snapshot-able at any instant.
 - **The engine drives.** The `WorkflowRunner` is a PURE engine that walks the live tree — phases sequentially, each phase's tasks concurrently — COMPOSING the substrate rather than re-implementing status / concurrency / retries / abort, under a `bail` failure policy: `false` (graceful, the default) records each leaf failure as data and finishes every phase; `true` (the database-transaction halt) aborts the in-flight siblings on the first failure and skips the rest.
-- **The substrate executes.** Underneath sit the shipped primitives the engine composes: the `Scheduler` paces the host between work, the queue-backed `Runner` bounds and drives a set of units, and a `Controller` is the per-unit handle a handler receives. The engine folds [abort](abort.md) / [timeout](timeout.md) / [budget](budget.md) through this same substrate.
+- **The substrate executes.** Underneath sit the shipped primitives the engine composes: the `Scheduler` paces the host between work, the queue-backed `Runner` bounds and drives a set of units, and a `ControllerInterface` is the per-unit handle a handler receives. The engine folds [abort](abort.md) / [timeout](timeout.md) / [budget](budget.md) through this same substrate.
 - **The consumer supplies behavior.** A task's `behavior` is a PLAIN STRING naming a behavior in the `WorkflowOptions.functions` registry — resolved ONCE at construction into the task's `handler` (a `WorkflowFunction`); the engine dispatches by invoking `task.handler` directly and carries no registry or provider knowledge of its own. Integrations compose real `WorkflowFunction`s at the application edge.
 
 **Determinism is fixed by design, not configured: tasks within a phase run concurrently; phases run sequentially.** A dependency is expressed STRUCTURALLY — a task that needs another's output goes in a later phase — so the same tree always sequences the same way and there is no DAG to misconfigure. The only per-phase knob is an optional `concurrency` throttle (max-in-flight), never a sequencing control.
@@ -122,7 +122,6 @@ Both handles are minted per dispatch from values only the driving engine holds �
 | `WorkflowRunner`      | class | The PURE engine — phases sequential (a plain await loop), each phase's tasks concurrent (one substrate `createRunner` per phase), dispatching each task's OWN resolved `handler`. `execute` has TWO overloads: build-and-drive from a `WorkflowDefinition`, or drive an ALREADY-BUILT caller-owned `WorkflowInterface` (re-reading its live phases/tasks every iteration so a mid-run `add` lands). |
 | `WorkflowPersistence` | class | Advanced runner-owned one-writer durability infrastructure, normally composed through `execute({ store })`; implements `WorkflowPersistenceInterface`.                                                                                                                                                                                                                                              |
 | `Runner`              | class | The substrate orchestrator over a set of units — drives a `Queue`, ordered result aggregation, fail-fast, `pause` / `resume` / graceful `stop`, one-shot.                                                                                                                                                                                                                                           |
-| `RunHolder`           | class | The run-scoped cell holding the phase `Runner` one `execute` call is driving — `hold(runner)` takes it as a phase starts, `hold()` releases it, and `runner` reads it back.                                                                                                                                                                                                                         |
 
 ### Scheduler (pacing)
 
@@ -227,7 +226,7 @@ workflow-specific validation and translate ownership failures into `WorkflowErro
 | `isTaskResult`              | function | Validate a boxed result and its full lineage against its containing snapshot nodes.                                                             |
 | `matchesDescription`        | function | Compare two optional description values without inventing an absence sentinel.                                                                  |
 | `hasWorkflowHandlers`       | function | Whether every snapshot behavior resolves to a once-read callable registry binding, or every live named task already carries a callable handler. |
-| `locateSnapshotContext`     | function | Locate the nearest identifiable phase/task for an inconsistent snapshot diagnostic.                                                             |
+| `scanSnapshotContext`       | function | Locate the nearest identifiable phase/task for an inconsistent snapshot diagnostic.                                                             |
 | `isTerminalStatus`          | function | Whether a `LifecycleStatus` is terminal — the ONE check across all three tiers (`completed` / `failed` / `skipped` / `stopped`).                |
 | `derivePhaseStatus`         | function | Derive a `PhaseStatus` from its tasks' statuses (order-insensitive; most-severe terminal wins; `bail`-agnostic).                                |
 | `deriveWorkflowStatus`      | function | Derive a `WorkflowStatus` from its phases' statuses UNDER `bail` (`failed` reachable only when `bail: true`).                                   |
@@ -282,7 +281,7 @@ import {
 	isTaskResult,
 	matchesDescription,
 	recoverWorkflowSnapshot,
-	locateSnapshotContext,
+	scanSnapshotContext,
 } from '@orkestrel/workflow'
 
 const functions = { work: () => null }
@@ -312,7 +311,7 @@ if (phase !== undefined && task !== undefined) {
 }
 matchesDescription(snapshot.description, workflow.description)
 hasWorkflowHandlers(snapshot, functions)
-locateSnapshotContext({ ...snapshot, bail: 'invalid' })
+scanSnapshotContext({ ...snapshot, bail: 'invalid' })
 errorToMessage(new Error('provider failed'))
 recoverWorkflowSnapshot(snapshot)
 ```
@@ -429,7 +428,7 @@ The shape VALUES `createWorkflowContract` compiles into the four lockstep output
 | `SchedulerOptions`             | interface | `{ priority?: SchedulerPriority; signal?: AbortSignal }` — options for a single `yield` / `delay`.                                                                                                                                                                       |
 | `SchedulerInterface`           | interface | The `yield` / `delay` cooperative-yield methods.                                                                                                                                                                                                                         |
 | `ControllerInterface`          | interface | The per-unit handle a runner handler receives — `id` / `input` / `signal` / `aborted` data members + `wait` / `spawn` / `abort` methods.                                                                                                                                 |
-| `RunnerHandler`                | type      | `(controller) => Promise<TResult> \| TResult` — runs one unit's work against its `Controller`.                                                                                                                                                                           |
+| `RunnerHandler`                | type      | `(controller) => Promise<TResult> \| TResult` — runs one unit's work against its `ControllerInterface`.                                                                                                                                                                  |
 | `RunnerOptions`                | interface | `createRunner` options — `handler` + strict Queue values: positive-safe-integer `concurrency?`, nonnegative-safe-integer `retries?`, integer `timeout?` in `0..2_147_483_647` (`0` disables), plus `entries?` / `on?` / `error?`.                                        |
 | `RunnerEntryOptions`           | interface | The per-entry reliability overrides for one unit — `{ retries?, timeout? }`, resolved from its input via `entries`.                                                                                                                                                      |
 | `RunnerInterface`              | interface | `emitter` / `active` / `stopped` / `paused` data members + `execute` / `spawn` / `abort` / `pause` / `resume` / `stop` / `destroy` methods.                                                                                                                              |
@@ -1107,6 +1106,8 @@ await store.delete(definition.id) // drop it (an absent id is a no-op)
 
 Both stores clone and validate on write and read, so stored snapshots never alias caller-owned data. A present database row whose snapshot id differs from the requested row key rejects with normalized `WorkflowError` code `RESTORE`; its safe context carries `requested` and `payload`. The store has NO TTL / eviction — a persisted workflow run-state is durable until an explicit `delete`.
 
+A `WorkflowSnapshot` written before the release that renames `run` to `behavior` carries the task registry key as `run`. `cloneWorkflowSnapshot` and every restore path — `store.get`, `createRestoredWorkflow`, `WorkflowManager.open` — refuse that snapshot with a `RESTORE` `WorkflowError`, because the exact-key validation no longer admits `run`. Rewrite the persisted key from `run` to `behavior` before restoring a snapshot written before that release.
+
 For automatic run durability, pass the same store to `execute`:
 
 ```ts
@@ -1216,7 +1217,7 @@ await parked // resolves
 
 Every one is pure and side-effect-free: the guards and predicates never throw, and the builders and synthesizers are deterministic given the same input. The throwing snapshot boundary is `cloneWorkflowSnapshot`, which owns and validates a hostile snapshot and raises a `RESTORE` `WorkflowError`.
 
-**The execution substrate.** Beneath the engine sit the shipped primitives it composes. The `Scheduler` paces the host between work; the queue-backed `Runner` bounds and drives a set of units; a `Controller` is the per-unit handle a handler receives; and the `WorkflowRunner` engine composes all of it over the entity tree — with `TaskController` mirroring `Controller` one tier up, as the handle a workflow-task `WorkflowFunction` receives (its read-up `results()` is the inter-task data-flow map). The patterns below build that stack up from pacing to driving to the per-unit handle.
+**The execution substrate.** Beneath the engine sit the shipped primitives it composes. The `Scheduler` paces the host between work; the queue-backed `Runner` bounds and drives a set of units; a `ControllerInterface` is the per-unit handle a handler receives; and the `WorkflowRunner` engine composes all of it over the entity tree — with `TaskControllerInterface` mirroring `ControllerInterface` one tier up, as the handle a workflow-task `WorkflowFunction` receives (its read-up `results()` is the inter-task data-flow map). The patterns below build that stack up from pacing to driving to the per-unit handle.
 
 ### Pacing with the scheduler — a cooperative loop
 
@@ -1282,7 +1283,7 @@ async function pump(work: () => void, signal: AbortSignal): Promise<void> {
 import { createRunner } from '@orkestrel/workflow'
 
 // Ordered (concurrency defaults to 1): each unit runs to completion before the next.
-const runner = createRunner<Job, Output>({ handler: (controller) => run(controller.input) })
+const runner = createRunner<Job, Output>({ handler: (controller) => compile(controller.input) })
 
 const outputs = await runner.execute(jobs) // results in input order
 ```
@@ -1306,7 +1307,7 @@ const responses = await runner.execute(urls)
 // (its result is a RunnerEntryOptions — { retries?, timeout? }). An omitted field falls back.
 const runner = createRunner<Job, Output>({
 	retries: 0, // the default for every unit…
-	handler: (controller) => run(controller.input, controller.signal),
+	handler: (controller) => compile(controller.input, controller.signal),
 	entries: (job) => (job.flaky ? { retries: 3 } : {}), // …overridden per input
 })
 ```
@@ -1336,9 +1337,9 @@ const results = await runner.execute(roots) // every declared root first, then e
 
 `spawn` returns the sibling's result promise, but the run drains it whether or not you await it — so fan out and return. All declared inputs are reserved before `start` is emitted, so even a public `spawn()` from a start listener is ordered after the complete declared list; Queue dispatch remains asynchronous, so `start` still precedes handler execution. On a bounded runner, awaiting a spawn _inline_ from a slot-holding handler can deadlock; let the runner drain the closure instead.
 
-### The per-unit `Controller` handle — `wait` / `spawn` / `abort`
+### The per-unit `ControllerInterface` handle — `wait` / `spawn` / `abort`
 
-A `Runner` handler receives a `Controller` — the per-unit handle: its `id` / `input` / `signal` data plus `wait` (park until this unit is cancelled), `spawn` (fan out a sibling), and `abort` (cancel THIS unit, firing its signal with an optional reason).
+A `Runner` handler receives a `ControllerInterface` — the per-unit handle: its `id` / `input` / `signal` data plus `wait` (park until this unit is cancelled), `spawn` (fan out a sibling), and `abort` (cancel THIS unit, firing its signal with an optional reason).
 
 ```ts
 import { createRunner } from '@orkestrel/workflow'
@@ -1349,7 +1350,7 @@ const runner = createRunner<Job, Output>({
 		for (const child of discover(controller.input)) {
 			void controller.spawn(child) // fan out a sibling unit through the same queue
 		}
-		const work = run(controller.input, controller.signal) // honour the signal
+		const work = compile(controller.input, controller.signal) // honour the signal
 		await Promise.race([work, controller.wait()]) // wait() parks until cancelled — never a timer
 		if (overBudget(controller.input)) controller.abort(new Error('over budget')) // cancel THIS unit
 		return work
@@ -1364,7 +1365,7 @@ A handler observes its `controller.signal` (pass it to `fetch` / child aborts) a
 ```ts
 const runner = createRunner<Job, Output>({
 	concurrency: 4,
-	handler: (controller) => run(controller.input, controller.signal),
+	handler: (controller) => compile(controller.input, controller.signal),
 })
 const run = runner.execute(jobs)
 
@@ -1387,7 +1388,7 @@ The `Runner` exposes a typed `emitter` (AGENTS §13) carrying its run lifecycle 
 import { createRunner } from '@orkestrel/workflow'
 
 const runner = createRunner<Job, Output>({
-	handler: (controller) => run(controller.input),
+	handler: (controller) => compile(controller.input),
 	on: { finish: (results) => console.log(`done: ${results.length}`) }, // initial listener
 })
 

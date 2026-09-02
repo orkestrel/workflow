@@ -903,7 +903,7 @@ export interface TaskInterface {
 	/**
 	 * The RESOLVED runtime handler — RUNTIME-ONLY, NEVER persisted in a {@link TaskSnapshot}.
 	 * Resolved ONCE at construction (build, restore, or a live mint) by looking `behavior` up in the
-	 * workflow-level {@link WorkflowOptions.functions} registry: `functions?.[run]` when `behavior`
+	 * workflow-level {@link WorkflowOptions.functions} registry: `functions?.[behavior]` when `behavior`
 	 * is defined, else `undefined`. An omitted `behavior` is the deliberate no-op form. A present,
 	 * unresolved `behavior` remains visible on exact restore, but the runner rejects it before
 	 * dispatch instead of falsely completing named work.
