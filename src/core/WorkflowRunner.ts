@@ -4,7 +4,7 @@ import type {
 	AttemptOutcome,
 	ControllerInterface,
 	PhaseInterface,
-	RunHolder,
+	RunHolderInterface,
 	RunnerEntryOptions,
 	SchedulerInterface,
 	TaskInterface,
@@ -16,11 +16,11 @@ import type {
 	WorkflowRunnerInterface,
 } from './types.js'
 import { createTimeout } from '@orkestrel/timeout'
-import { DEFAULT_BAIL, DEFAULT_PHASE_CONCURRENCY, MAX_TIMER_MS } from './constants.js'
+import { DEFAULT_PHASE_CONCURRENCY, MAX_TIMER_MS } from './constants.js'
 import { WorkflowError } from './errors.js'
+import { createWorkflowTree } from './factories.js'
 import {
 	captureWorkflowOptions,
-	definitionToSnapshot,
 	errorToMessage,
 	failure,
 	hasWorkflowHandlers,
@@ -32,9 +32,9 @@ import {
 	ownsAttempt,
 } from './helpers.js'
 import { isWorkflowInterface } from './validators.js'
+import { RunHolder } from './RunHolder.js'
 import { Runner } from './Runner.js'
 import { TaskController } from './tasks/TaskController.js'
-import { Workflow } from './Workflow.js'
 import { WorkflowPersistence } from './WorkflowPersistence.js'
 
 // A unit of phase work is one live `TaskInterface` — the substrate Runner's `TInput`. Its
@@ -42,11 +42,10 @@ import { WorkflowPersistence } from './WorkflowPersistence.js'
 // `complete` / `fail` / `skip`, NOT in the Runner's ordered results), so the Runner's
 // `TResult` is `void`: the runner DRIVES the entity, the substrate only sequences + bounds.
 //
-// The run-level cancel reads the active phase Runner through a LOCAL per-`#execute` cell (an
-// inline `{ runner }` holder threaded into `#runPhase`), NOT a shared `#active` field — so a
-// NESTED `execute` through application composition gets its OWN cell and can never clobber the
-// outer run's while it is suspended awaiting that handler. Each run cancels exactly its own
-// phase Runner.
+// The run-level cancel reads the active phase Runner through a `RunHolder` minted per `#execute`
+// and threaded into `#runPhase`, NOT a shared `#active` field — so a NESTED `execute` through
+// application composition gets its OWN holder and can never clobber the outer run's while it is
+// suspended awaiting that handler. Each run cancels exactly its own phase Runner.
 
 /**
  * The thin orchestrator that EXECUTES a live W-b workflow tree by COMPOSING the shipped
@@ -74,7 +73,7 @@ import { WorkflowPersistence } from './WorkflowPersistence.js'
  *   integrations remain application-owned {@link import('./types.js').WorkflowFunction}s
  *   composed into {@link WorkflowOptions.functions}. This module imports none of them.
  * - **Two `execute` forms, one engine.** `execute(definition, options)` BUILDS the live tree
- *   from a {@link WorkflowDefinition} (single source of truth for the `run` / `concurrency`
+ *   from a {@link WorkflowDefinition} (single source of truth for the `behavior` / `concurrency`
  *   metadata); `execute(workflow, options)` DRIVES a caller-owned, ALREADY-BUILT
  *   {@link WorkflowInterface} instead — the entity-native control surface (AGENTS §10:
  *   `pause` / `resume` / `add` / `stop` / `destroy` live on the entity itself). Both forms
@@ -92,7 +91,7 @@ import { WorkflowPersistence } from './WorkflowPersistence.js'
  *   for `spawn` to accept (the runner already drained) is swept `skip`ped afterward so the
  *   phase always reaches a coherent terminal state.
  * - **Dispatch by handler.** `#runTask` invokes the live task's own
- *   {@link import('./types.js').TaskInterface.handler} directly. An omitted `run` deliberately
+ *   {@link import('./types.js').TaskInterface.handler} directly. An omitted `behavior` deliberately
  *   auto-completes with JSON `null`; a present unresolved name is rejected by the synchronous
  *   execution claim and never false-completes.
  * - **`bail` → substrate.** Under `bail: true` (halt) a genuine task failure `fail`s the leaf
@@ -123,9 +122,9 @@ import { WorkflowPersistence } from './WorkflowPersistence.js'
  *   and the workflow is force-`stop`ped (settles `stopped`). Each task's
  *   {@link TaskController} signal `AbortSignal.any`-combines the substrate per-unit signal with
  *   `runSignal`, so a handler observes either cause directly.
- * - **Re-entrant-safe.** No shared per-run mutable field: the active-Runner holder is LOCAL to
- *   each `#execute`, so a nested application-level `execute` cannot clobber the outer run's
- *   state.
+ * - **Re-entrant-safe.** No shared per-run mutable field: each `#execute` mints its own
+ *   {@link import('./RunHolder.js').RunHolder}, so a nested application-level `execute` cannot
+ *   clobber the outer run's state.
  */
 export class WorkflowRunner implements WorkflowRunnerInterface {
 	static readonly #executions = new WeakSet<WorkflowInterface>()
@@ -142,11 +141,11 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 	 *
 	 * @remarks
 	 * One-shot. The runner BUILDS the live tree from `definition` internally (one source of
-	 * truth — the per-task `run` and per-phase `concurrency` come from the same definition
+	 * truth — the per-task `behavior` and per-phase `concurrency` come from the same definition
 	 * the tree is constructed from, so the executed tree can never drift from the metadata).
 	 * The {@link WorkflowOptions} part of `options` (initial `on` listeners, a `bail` override,
 	 * the per-node `phases` bag, the {@link WorkflowOptions.functions} registry each task's
-	 * `run` resolves against) is forwarded to the build. Under `bail: false` (graceful) every
+	 * `behavior` resolves against) is forwarded to the build. Under `bail: false` (graceful) every
 	 * task settles (a failure is recorded on its {@link TaskInterface}) and the workflow
 	 * reaches `completed`; under `bail: true` (halt) the first failure aborts the in-flight
 	 * sibling tasks AND `skip`s the remaining tasks / phases, settling the workflow `failed`. A
@@ -219,24 +218,13 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 		const budget = options?.budget
 		const store = options?.store
 		// SINGLE SOURCE OF TRUTH: build the live tree from the SAME definition we drive, so the
-		// executed entity can never drift from the `run` / `concurrency` metadata. The
+		// executed entity can never drift from the `behavior` / `concurrency` metadata. The
 		// WorkflowOptions half (initial `on` listeners + a `bail` override + the per-node `phases`
-		// bag + the `functions` registry) is applied to the constructed `Workflow` (resolving
-		// `bail` as `options.bail ?? definition.bail ?? DEFAULT_BAIL`); the run-control bounds
-		// (signal/timeout/budget) feed the fold in `#execute`. The tree is built DIRECTLY (not through
-		// `createWorkflow`) so the runner never imports its own module's factory — preserving this
-		// codebase's factories→classes direction (no class↔factory cycle).
-		const bail = captured.bail ?? target.bail ?? DEFAULT_BAIL
-		// Seed BOTH tiers of the snapshot with the effective bail (`definitionToSnapshot`'s 2nd arg) so
-		// an `options.bail` override reaches each INHERITING phase's snapshot (a per-phase `bail` still
-		// wins). The captured `options.bail` value is preserved (NOT overwritten with the resolved
-		// `bail`): the snapshot already carries the resolved bail at both tiers, so `Workflow` reads
-		// `#bail` from it; injecting a resolved `bail` would make `Workflow` treat it as an EXPLICIT
-		// uniform override and clobber the per-phase overrides. A caller's genuine `options.bail` stays
-		// as given and cascades uniformly. The owned top-level `captured` bag is forwarded — `Workflow`
-		// resolves each task's `handler` from its retained `functions` registry at construction (V-c),
-		// so a definition run and a `createWorkflow` build follow the SAME construction path.
-		const workflow = new Workflow(definitionToSnapshot(target, bail), captured)
+		// bag + the `functions` registry) is applied to the constructed `Workflow`; the run-control
+		// bounds (signal/timeout/budget) feed the fold in `#execute`. The tree goes through the one
+		// shared `createWorkflowTree` path `createWorkflow` and `WorkflowManager` also take, so a
+		// definition run and a hand-built tree can never diverge.
+		const workflow = createWorkflowTree(target, captured.bail, captured)
 		this.#acquire(workflow)
 		return this.#execute(workflow, signal, timeout, budget, store)
 	}
@@ -263,7 +251,7 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 	// assemble the terminal result. A run-level cancel (incl. `workflow.destroy()`, folded into
 	// `runSignal`) halts the loop and force-`stop`s the workflow; a graceful `workflow.stop()`
 	// (no signal) is caught at the same halt check without forcing anything (it is already the
-	// terminal status). The active-Runner `holder` is LOCAL (re-entrant-safe).
+	// terminal status). Each run mints its own active-Runner holder (re-entrant-safe).
 	async #execute(
 		workflow: WorkflowInterface,
 		signal: AbortSignal | undefined,
@@ -277,9 +265,10 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 		// Arm only a host-safe deadline. Non-positive, non-finite, and over-max values disable
 		// the bound instead of clamping into an immediate host-timer cancellation.
 		// On a run-level cancel, abort the ACTIVE phase's Runner (cancelling its in-flight tasks).
-		// The active Runner is swapped per phase through the LOCAL holder; a closure over it always
-		// fires the current one. A one-shot listener (the run halts once); cleared in the `finally`.
-		const holder: RunHolder = { runner: undefined }
+		// The active Runner is swapped per phase through this run's own holder; a closure over the
+		// holder always fires the current one. A one-shot listener (the run halts once); cleared
+		// in the `finally`.
+		const holder = new RunHolder()
 		let timeout: TimeoutInterface | undefined
 		let persistence: WorkflowPersistence | undefined
 		let runSignal: AbortSignal | undefined
@@ -407,7 +396,7 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 		workflow: WorkflowInterface,
 		phase: PhaseInterface,
 		runSignal: AbortSignal,
-		holder: RunHolder,
+		holder: RunHolderInterface,
 		persistence: WorkflowPersistence | undefined,
 	): Promise<boolean> {
 		const launched = new Set<string>()
@@ -443,7 +432,7 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 				entries: this.#entry.bind(this),
 				handler: this.#runUnit.bind(this, workflow, runSignal, bail, attempts, owners, persistence),
 			})
-			holder.runner = created
+			holder.hold(created)
 			try {
 				// The Runner sequences + bounds the work; its ordered results are unused (the OUTCOME
 				// lives on each live task). Under bail-true the FIRST failure rejects this — fail-fast.
@@ -460,7 +449,7 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 				try {
 					await created.destroy()
 				} finally {
-					holder.runner = undefined
+					holder.hold()
 				}
 			}
 		} finally {
@@ -480,11 +469,11 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 		}
 	}
 
-	#abortActive(holder: RunHolder, runSignal: AbortSignal): void {
+	#abortActive(holder: RunHolderInterface, runSignal: AbortSignal): void {
 		void holder.runner?.abort(runSignal.reason)
 	}
 
-	#spawnAdded(launched: Set<string>, holder: RunHolder, task: TaskInterface): void {
+	#spawnAdded(launched: Set<string>, holder: RunHolderInterface, task: TaskInterface): void {
 		if (launched.has(task.id)) return
 		launched.add(task.id)
 		void holder.runner?.spawn(task)
@@ -517,7 +506,7 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 	}
 
 	// Run ONE task: drive the live entity through its transitions around its OWN resolved
-	// handler. `start` (once), invoke `task.handler` (or auto-complete an omitted `run`), then
+	// handler. `start` (once), invoke `task.handler` (or auto-complete an omitted `behavior`), then
 	// `complete(value)` on a returned value or `fail(error)` on a FINAL-attempt failure. A
 	// genuine CANCEL (`isSkipping` — a run-level bound, or a sibling's fail-fast under bail-true)
 	// `skip`s the task instead; a GRACEFUL `workflow.stop()` reaching this pre-dispatch gate
@@ -598,11 +587,11 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 				if (isStoppable(workflow)) workflow.stop()
 				return
 			}
-			if (task.run !== undefined && task.handler === undefined) {
+			if (task.behavior !== undefined && task.handler === undefined) {
 				const error = new WorkflowError(
 					'TRANSITION',
-					`task '${task.id}' has an unresolved run '${task.run}'`,
-					{ task: task.id, run: task.run },
+					`task '${task.id}' has an unresolved behavior '${task.behavior}'`,
+					{ task: task.id, behavior: task.behavior },
 				)
 				task.fail({ origin: 'handler', message: error.message })
 				if (bail) throw error
@@ -688,7 +677,7 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 			let outcome: AttemptOutcome
 			try {
 				// Invoke the task's OWN resolved handler directly. `undefined` is reachable here only
-				// for an omitted `run`, the deliberate JSON-null no-op form.
+				// for an omitted `behavior`, the deliberate JSON-null no-op form.
 				outcome =
 					task.handler === undefined
 						? [true, null]

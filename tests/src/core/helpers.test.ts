@@ -594,7 +594,7 @@ describe('definitionToSnapshot — the initial, all-pending construction input',
 						id: 't',
 						name: 'T',
 						description: 'leaf',
-						run: 'x',
+						behavior: 'x',
 						retries: 2,
 						timeout: 500,
 					},
@@ -603,7 +603,7 @@ describe('definitionToSnapshot — the initial, all-pending construction input',
 		],
 	}
 
-	it('seeds every node pending, and PERSISTS declarative fields (concurrency, and the task trio run/retries/timeout)', () => {
+	it('seeds every node pending, and PERSISTS declarative fields (concurrency, and the task trio behavior/retries/timeout)', () => {
 		const snapshot = definitionToSnapshot(definition)
 		expect(snapshot.status).toBe('pending')
 		expect(snapshot.description).toBe('top')
@@ -614,10 +614,10 @@ describe('definitionToSnapshot — the initial, all-pending construction input',
 		expect(snapshot.phases[0]?.concurrency).toBe(2)
 		// The declarative task trio PERSISTS in the snapshot (like bail/concurrency) — no longer
 		// execution-only.
-		expect(snapshot.phases[0]?.tasks[0]?.run).toBe('x')
+		expect(snapshot.phases[0]?.tasks[0]?.behavior).toBe('x')
 		expect(snapshot.phases[0]?.tasks[0]?.retries).toBe(2)
 		expect(snapshot.phases[0]?.tasks[0]?.timeout).toBe(500)
-		expect(JSON.stringify(snapshot)).toContain('"run"')
+		expect(JSON.stringify(snapshot)).toContain('"behavior"')
 	})
 
 	it('is pure JSON and preserves identity + order', () => {
@@ -638,7 +638,7 @@ describe('definitionToSnapshot — the initial, all-pending construction input',
 		const task = taskDefinitionToSnapshot({
 			id: 't',
 			name: 'T',
-			run: 'f',
+			behavior: 'f',
 		})
 		expect(task).toEqual({
 			id: 't',
@@ -646,7 +646,7 @@ describe('definitionToSnapshot — the initial, all-pending construction input',
 			status: 'pending',
 			metadata: {},
 			attempts: 0,
-			run: 'f',
+			behavior: 'f',
 		})
 	})
 
@@ -670,20 +670,20 @@ describe('definitionToSnapshot — the initial, all-pending construction input',
 })
 
 describe('taskDefinitionToSnapshot — the declarative trio copies verbatim, omits when absent', () => {
-	it('copies run/retries/timeout when the definition declares them', () => {
+	it('copies behavior/retries/timeout when the definition declares them', () => {
 		const snapshot = taskDefinitionToSnapshot({
 			id: 't',
 			name: 'T',
-			run: 'x',
+			behavior: 'x',
 			retries: 3,
 			timeout: 250,
 		})
-		expect(snapshot.run).toBe('x')
+		expect(snapshot.behavior).toBe('x')
 		expect(snapshot.retries).toBe(3)
 		expect(snapshot.timeout).toBe(250)
 	})
 
-	it('omits run/retries/timeout when the definition declares none (no undefined keys)', () => {
+	it('omits behavior/retries/timeout when the definition declares none (no undefined keys)', () => {
 		const snapshot = taskDefinitionToSnapshot({ id: 't', name: 'T' })
 		expect('run' in snapshot).toBe(false)
 		expect('retries' in snapshot).toBe(false)
@@ -1323,7 +1323,7 @@ const RECOVERY_DEFINITION: WorkflowDefinition = {
 		{
 			id: 'phase',
 			name: 'Phase',
-			tasks: [{ id: 'task', name: 'Task', run: 'work', retries: 1 }],
+			tasks: [{ id: 'task', name: 'Task', behavior: 'work', retries: 1 }],
 		},
 	],
 }
@@ -1356,7 +1356,7 @@ describe('workflow recovery', () => {
 		expect(recovered.phase('phase')?.task('task')?.handler).toBe(VALIDATED_FUNCTIONS.work)
 	})
 
-	it('captures each unique initial run once and retains the registry for later live additions', () => {
+	it('captures each unique initial behavior once and retains the registry for later live additions', () => {
 		const definition: WorkflowDefinition = {
 			id: 'captured-runs',
 			name: 'Captured runs',
@@ -1365,8 +1365,8 @@ describe('workflow recovery', () => {
 					id: 'phase',
 					name: 'Phase',
 					tasks: [
-						{ id: 'first', name: 'First', run: 'work' },
-						{ id: 'second', name: 'Second', run: 'work' },
+						{ id: 'first', name: 'First', behavior: 'work' },
+						{ id: 'second', name: 'Second', behavior: 'work' },
 					],
 				},
 			],
@@ -1386,7 +1386,7 @@ describe('workflow recovery', () => {
 		expect(reads).toBe(1)
 		expect(recovered.phase('phase')?.task('first')?.handler).toBe(VALIDATED_FUNCTIONS.work)
 		expect(recovered.phase('phase')?.task('second')?.handler).toBe(VALIDATED_FUNCTIONS.work)
-		const added = recovered.phase('phase')?.add({ id: 'later', name: 'Later', run: 'work' })
+		const added = recovered.phase('phase')?.add({ id: 'later', name: 'Later', behavior: 'work' })
 		if (added === undefined || !added.success) throw new Error('expected live task addition')
 		expect(reads).toBe(2)
 		expect(added.value.handler).toBe(SHIFTED_FUNCTIONS.work)
@@ -1421,9 +1421,9 @@ describe('workflow recovery', () => {
 					id: 'phase',
 					name: 'Phase',
 					tasks: [
-						{ id: 'first', name: 'First', run: 'first' },
-						{ id: 'done', name: 'Done', run: 'done' },
-						{ id: 'interrupted', name: 'Interrupted', run: 'interrupted', retries: 1 },
+						{ id: 'first', name: 'First', behavior: 'first' },
+						{ id: 'done', name: 'Done', behavior: 'done' },
+						{ id: 'interrupted', name: 'Interrupted', behavior: 'interrupted', retries: 1 },
 					],
 				},
 			],
@@ -1532,7 +1532,7 @@ describe('workflow recovery', () => {
 					{
 						id: 'phase',
 						name: 'Phase',
-						tasks: [{ id: 'task', name: 'Task', run: 'work' }],
+						tasks: [{ id: 'task', name: 'Task', behavior: 'work' }],
 					},
 				],
 			},
@@ -1564,7 +1564,7 @@ describe('workflow recovery', () => {
 					{
 						id: 'phase',
 						name: 'Phase',
-						tasks: [{ id: 'task', name: 'Task', run: 'work', retries: 2 }],
+						tasks: [{ id: 'task', name: 'Task', behavior: 'work', retries: 2 }],
 					},
 				],
 			},
@@ -1610,16 +1610,16 @@ describe('workflow recovery', () => {
 						id: 'current',
 						name: 'Current',
 						tasks: [
-							{ id: 'left', name: 'Left', run: 'work' },
-							{ id: 'exhausted', name: 'Exhausted', run: 'work' },
-							{ id: 'retryable', name: 'Retryable', run: 'work', retries: 1 },
-							{ id: 'right', name: 'Right', run: 'work' },
+							{ id: 'left', name: 'Left', behavior: 'work' },
+							{ id: 'exhausted', name: 'Exhausted', behavior: 'work' },
+							{ id: 'retryable', name: 'Retryable', behavior: 'work', retries: 1 },
+							{ id: 'right', name: 'Right', behavior: 'work' },
 						],
 					},
 					{
 						id: 'later',
 						name: 'Later',
-						tasks: [{ id: 'later', name: 'Later', run: 'work' }],
+						tasks: [{ id: 'later', name: 'Later', behavior: 'work' }],
 					},
 				],
 			}
@@ -1656,15 +1656,15 @@ describe('workflow recovery', () => {
 						id: 'current',
 						name: 'Current',
 						tasks: [
-							{ id: 'failed', name: 'Failed', run: 'work' },
-							{ id: 'interrupted', name: 'Interrupted', run: 'work', retries: 1 },
-							{ id: 'pending', name: 'Pending', run: 'work' },
+							{ id: 'failed', name: 'Failed', behavior: 'work' },
+							{ id: 'interrupted', name: 'Interrupted', behavior: 'work', retries: 1 },
+							{ id: 'pending', name: 'Pending', behavior: 'work' },
 						],
 					},
 					{
 						id: 'later',
 						name: 'Later',
-						tasks: [{ id: 'later', name: 'Later', run: 'work' }],
+						tasks: [{ id: 'later', name: 'Later', behavior: 'work' }],
 					},
 				],
 			},
@@ -1712,7 +1712,7 @@ describe('workflow recovery', () => {
 			functions: { work: () => null },
 		}).snapshot()
 		const restored = createRestoredWorkflow(snapshot)
-		expect(restored.phase('phase')?.task('task')?.run).toBe('work')
+		expect(restored.phase('phase')?.task('task')?.behavior).toBe('work')
 		expect(() => recoveryRunner().execute(restored)).toThrow(/not drivable/)
 
 		const hostile = {

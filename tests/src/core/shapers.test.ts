@@ -14,14 +14,17 @@ import { describe, expect, it } from 'vitest'
 // on the descriptors — the four-way-parity behavior is covered in factories.test.ts.
 
 describe('taskShape', () => {
-	it('requires id / name and makes description / run optional', () => {
+	it('requires id / name and makes description / behavior optional', () => {
 		expect(taskShape.type).toBe('object')
 		expect(taskShape.properties.id).toMatchObject({ type: 'string', min: 1 })
 		expect(taskShape.properties.name).toMatchObject({ type: 'string', min: 1 })
 		expect(taskShape.properties.description.type).toBe('optional')
-		const run = taskShape.properties.run
-		expect(run.type).toBe('optional')
-		expect(run.type === 'optional' && run.inner).toMatchObject({ type: 'string', min: 1 })
+		const behavior = taskShape.properties.behavior
+		expect(behavior.type).toBe('optional')
+		expect(behavior.type === 'optional' && behavior.inner).toMatchObject({
+			type: 'string',
+			min: 1,
+		})
 	})
 
 	it('carries optional non-negative-integer retries / timeout reliability settings', () => {
@@ -109,10 +112,14 @@ describe('per-field descriptions (Rank 1)', () => {
 		).toBe('string')
 	})
 
-	it('the run field describes itself (a registry key, not a label)', () => {
-		const run = taskShape.properties.run
+	it('the behavior field describes itself (a registry key, not a label)', () => {
+		const behavior = taskShape.properties.behavior
 		expect(
-			typeof (run.type === 'optional' && run.inner.type === 'string' && run.inner.description),
+			typeof (
+				behavior.type === 'optional' &&
+				behavior.inner.type === 'string' &&
+				behavior.inner.description
+			),
 		).toBe('string')
 	})
 })
@@ -138,7 +145,7 @@ describe('the new optional fields flow through the compiled contract', () => {
 					{
 						id: 't',
 						name: 'T',
-						run: 'f',
+						behavior: 'f',
 						...(overrides.retries === undefined ? {} : { retries: overrides.retries }),
 						...(overrides.timeout === undefined ? {} : { timeout: overrides.timeout }),
 					},
@@ -185,12 +192,12 @@ describe('the new optional fields flow through the compiled contract', () => {
 		const emptyRun: WorkflowDefinition = {
 			id: 'w',
 			name: 'W',
-			phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', run: '' }] }],
+			phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', behavior: '' }] }],
 		}
 		expect(contract.is(emptyRun)).toBe(false)
 	})
 
-	it('rejects the old object-form run ({ via, name }) — run is now a plain string', () => {
+	it('rejects the old object-form behavior ({ via, name }) — behavior is now a plain string', () => {
 		const oldForm = {
 			id: 'w',
 			name: 'W',
@@ -198,7 +205,7 @@ describe('the new optional fields flow through the compiled contract', () => {
 				{
 					id: 'p',
 					name: 'P',
-					tasks: [{ id: 't', name: 'T', run: { via: 'function', name: 'f' } }],
+					tasks: [{ id: 't', name: 'T', behavior: { via: 'function', name: 'f' } }],
 				},
 			],
 		}

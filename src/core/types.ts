@@ -26,17 +26,17 @@ import type { WorkflowError } from './errors.js'
  * @remarks
  * Pure JSON DATA: a UI or an LLM authors it, it round-trips through the contract
  * (factories.ts), and it carries NO functions. `id` is the positional identity within
- * its phase; `name` is the human label; `description` is optional prose. `run` is a
+ * its phase; `name` is the human label; `description` is optional prose. `behavior` is a
  * PLAIN NAME — a key resolved ONCE at construction against a workflow-level
  * {@link WorkflowFunctions} registry into a runtime {@link TaskInterface.handler}
- * carried on the live task. An omitted `run` is the deliberate no-op form and completes
+ * carried on the live task. An omitted `behavior` is the deliberate no-op form and completes
  * with JSON `null`; an unresolved present name remains inspectable but is not executable.
  */
 export interface TaskDefinition {
 	readonly id: string
 	readonly name: string
 	readonly description?: string
-	readonly run?: string
+	readonly behavior?: string
 	/**
 	 * @remarks
 	 * Extra attempts after the first on failure (a non-negative integer); the runner threads it
@@ -253,7 +253,7 @@ export interface TaskActivity {
  *
  * @remarks
  * Mirrors the identity fields of {@link TaskDefinition} (`name` / `description`) —
- * never `run` / `retries` / `timeout` (a form/reliability change is a structural
+ * never `behavior` / `retries` / `timeout` (a form/reliability change is a structural
  * replace, not a patch) and never `id` (identity is immutable once created). Every
  * field is optional; an omitted field is left unchanged.
  *
@@ -409,7 +409,7 @@ export interface PhaseDerivation {
  * Where a task failure arose — the axis a persisted {@link TaskFailure} records.
  *
  * @remarks
- * - `handler` — the task's own {@link WorkflowFunction} threw or rejected, or its `run` name had
+ * - `handler` — the task's own {@link WorkflowFunction} threw or rejected, or its `behavior` name had
  *   no registered handler to dispatch.
  * - `timeout` — the task's per-attempt deadline expired on its final attempt.
  * - `recovery` — an interrupted `running` task was rebuilt by
@@ -460,9 +460,9 @@ export interface TaskResult {
  * Pure JSON DATA (no class instances, no functions). `result` is the task's
  * {@link TaskResult} when it has settled with an outcome, else `undefined`.
  * `metadata` is the open consumer bag carried from the task's {@link TaskInput}.
- * `run` / `retries` / `timeout` are the DECLARATIVE config the task carries — persisted
+ * `behavior` / `retries` / `timeout` are the DECLARATIVE config the task carries — persisted
  * like a {@link PhaseSnapshot}'s `bail` / `concurrency`, so a restore reinstates the same
- * behavior reference and reliability overrides (`run` re-resolves against the
+ * behavior reference and reliability overrides (`behavior` re-resolves against the
  * {@link WorkflowOptions.functions} registry supplied to
  * {@link import('./factories.js').createRestoredWorkflow}); each omitted ⇒ the corresponding
  * unset default.
@@ -477,7 +477,7 @@ export interface TaskSnapshot {
 	/** Total launches already consumed; zero while fresh and never reset by recovery. */
 	readonly attempts: number
 	/** The behavior reference — a registry key resolved against {@link WorkflowFunctions} on restore/build. */
-	readonly run?: string
+	readonly behavior?: string
 	/** Extra attempts after the first on failure (a non-negative integer); overrides the phase Runner default. */
 	readonly retries?: number
 	/** Workflow-owned per-attempt deadline (`0..MAX_TIMER_MS`); zero or omission means disabled. */
@@ -829,15 +829,15 @@ export interface WorkflowOptions {
 	readonly phases?: Readonly<Record<string, PhaseOptions>>
 	/**
 	 * The `function`-task behavior registry ({@link WorkflowFunctions}) each live task's
-	 * {@link TaskDefinition.run} / {@link TaskSnapshot.run} name resolves against ONCE at
+	 * {@link TaskDefinition.behavior} / {@link TaskSnapshot.behavior} name resolves against ONCE at
 	 * construction into its runtime {@link TaskInterface.handler} — the SAME registry a
 	 * fresh build ({@link import('./factories.js').createWorkflow}) and a restore
 	 * ({@link import('./factories.js').createRestoredWorkflow}) both consume, and the same shape a
 	 * live {@link WorkflowInterface.add} / {@link PhaseInterface.add} mint resolves a newly
-	 * minted task against. An omitted `run` resolves to no handler and is the deliberate
+	 * minted task against. An omitted `behavior` resolves to no handler and is the deliberate
 	 * no-op form. A present name absent from `functions` also has no handler so exact restore
 	 * remains inspectable, but {@link WorkflowRunnerInterface.execute} rejects that tree.
-	 * Omitted ⇒ an empty registry; only tasks that also omit `run` are executable no-ops.
+	 * Omitted ⇒ an empty registry; only tasks that also omit `behavior` are executable no-ops.
 	 */
 	readonly functions?: WorkflowFunctions
 	/** Runtime-only default silence; non-positive, non-finite, or over-`MAX_TIMER_MS` disables it. */
@@ -884,7 +884,8 @@ export interface TaskInterface {
 	readonly emitter: EmitterInterface<TaskEventMap>
 	readonly id: string
 	readonly name: string
-	readonly description?: string
+	/** This task's prose, or `undefined` when the definition or snapshot declared none. */
+	readonly description: string | undefined
 	readonly context: TaskContext
 	readonly phase: PhaseInterface
 	readonly workflow: WorkflowInterface
@@ -895,16 +896,16 @@ export interface TaskInterface {
 	readonly result: TaskResult | undefined
 	/**
 	 * The behavior reference — a plain registry key name, PERSISTED (mirrors
-	 * {@link TaskDefinition.run} / {@link TaskSnapshot.run}), like {@link PhaseInterface.bail}.
+	 * {@link TaskDefinition.behavior} / {@link TaskSnapshot.behavior}), like {@link PhaseInterface.bail}.
 	 * `undefined` when this task has no behavior reference.
 	 */
-	readonly run: string | undefined
+	readonly behavior: string | undefined
 	/**
 	 * The RESOLVED runtime handler — RUNTIME-ONLY, NEVER persisted in a {@link TaskSnapshot}.
-	 * Resolved ONCE at construction (build, restore, or a live mint) by looking `run` up in the
-	 * workflow-level {@link WorkflowOptions.functions} registry: `functions?.[run]` when `run`
-	 * is defined, else `undefined`. An omitted `run` is the deliberate no-op form. A present,
-	 * unresolved `run` remains visible on exact restore, but the runner rejects it before
+	 * Resolved ONCE at construction (build, restore, or a live mint) by looking `behavior` up in the
+	 * workflow-level {@link WorkflowOptions.functions} registry: `functions?.[run]` when `behavior`
+	 * is defined, else `undefined`. An omitted `behavior` is the deliberate no-op form. A present,
+	 * unresolved `behavior` remains visible on exact restore, but the runner rejects it before
 	 * dispatch instead of falsely completing named work.
 	 */
 	readonly handler: WorkflowFunction | undefined
@@ -1007,7 +1008,8 @@ export interface PhaseInterface {
 	readonly emitter: EmitterInterface<PhaseEventMap>
 	readonly id: string
 	readonly name: string
-	readonly description?: string
+	/** This phase's prose, or `undefined` when the definition or snapshot declared none. */
+	readonly description: string | undefined
 	readonly context: PhaseContext
 	readonly workflow: WorkflowInterface
 	readonly status: PhaseStatus
@@ -1091,7 +1093,7 @@ export interface PhaseInterface {
 	 *
 	 * @remarks
 	 * Converts `definition` → {@link TaskSnapshot} and constructs the live task (wired to
-	 * THIS phase, its recompute cascade, and its emitter hooks), carrying its `run` /
+	 * THIS phase, its recompute cascade, and its emitter hooks), carrying its `behavior` /
 	 * `retries` / `timeout` from `definition` and resolving its {@link TaskInterface.handler}
 	 * against the workflow-level {@link WorkflowOptions.functions} registry — the SAME
 	 * resolution {@link import('./factories.js').createWorkflow} performs at build time.
@@ -1205,7 +1207,8 @@ export interface WorkflowInterface {
 	readonly emitter: EmitterInterface<WorkflowEventMap>
 	readonly id: string
 	readonly name: string
-	readonly description?: string
+	/** This workflow's prose, or `undefined` when the definition or snapshot declared none. */
+	readonly description: string | undefined
 	readonly context: WorkflowContext
 	readonly bail: boolean
 	readonly status: WorkflowStatus
@@ -1322,7 +1325,7 @@ export interface WorkflowInterface {
 	 * @remarks
 	 * Converts `definition` → {@link PhaseSnapshot} and constructs the live phase (wired to
 	 * THIS workflow, its recompute cascade, and its emitter hooks) plus each of its live
-	 * tasks — each task's `run` / `retries` / `timeout` carried from its {@link TaskDefinition}
+	 * tasks — each task's `behavior` / `retries` / `timeout` carried from its {@link TaskDefinition}
 	 * and its {@link TaskInterface.handler} resolved against the workflow-level
 	 * {@link WorkflowOptions.functions} registry (mirrors
 	 * {@link import('./factories.js').createWorkflow}'s build-time resolution). The
@@ -1630,7 +1633,7 @@ export interface PhaseManagerInterface {
 // not re-implement status, concurrency, retries, or abort. Phases run SEQUENTIALLY (a
 // plain await loop); a phase's tasks run CONCURRENTLY through ONE substrate
 // `createRunner`/`Queue` per phase (concurrency = `PhaseDefinition.concurrency`). A task
-// is dispatched through its construction-resolved handler; only an omitted-`run` task
+// is dispatched through its construction-resolved handler; only an omitted-`behavior` task
 // auto-completes as a deliberate no-op.
 // The `bail` policy maps onto the substrate Runner's fail-fast (`bail: true`) vs settle-all
 // (`bail: false`). Abort / Timeout / Budget fold per run through `AbortSignal.any`, exactly as
@@ -1659,8 +1662,8 @@ export type WorkflowFunction = (
  * {@link WorkflowFunction} handlers.
  *
  * @remarks
- * A live {@link TaskInterface} resolves its `run` name against this registry ONCE at
- * construction into its {@link TaskInterface.handler}. An omitted `run` is the deliberate
+ * A live {@link TaskInterface} resolves its `behavior` name against this registry ONCE at
+ * construction into its {@link TaskInterface.handler}. An omitted `behavior` is the deliberate
  * no-op case. A present name absent from the registry remains inspectable but makes the tree
  * non-drivable until restored with a matching handler. A plain record (not a manager) — the
  * registry is a lookup, with no lifecycle of its own.
@@ -1720,20 +1723,27 @@ export interface TaskControllerInterface {
 }
 
 /**
- * The per-run cell holding the phase {@link RunnerInterface} a
- * {@link WorkflowRunnerInterface.execute} call is driving.
+ * Holds the phase {@link RunnerInterface} one {@link WorkflowRunnerInterface.execute} call is
+ * driving, for the lifetime of that run.
  *
  * @remarks
- * Phases run sequentially, so one run has at most one active phase runner at a time and the cell
- * is swapped as each phase starts and cleared as it settles. `runner` is the one deliberately
- * MUTABLE member in this file: the cell IS the mutation, and a fresh cell per `execute` is what
- * keeps a nested run from clobbering the suspended outer run's active runner. A run-level cancel
- * closes over the cell, so it always aborts the phase runner that is live when the cancel fires
- * rather than the one that was live when the listener was armed. `undefined` between phases and
- * after the last one settles.
+ * Phases run sequentially, so one run drives at most one phase runner at a time: `hold(runner)`
+ * takes the runner as a phase starts and `hold()` releases it as that phase settles, leaving
+ * `runner` `undefined` between phases and after the last one. `runner` is a readonly projection
+ * of the held state, so the swap goes through `hold` alone. A run-level cancel closes over the
+ * holder rather than over a runner, so it aborts whichever phase runner is live when the cancel
+ * fires rather than the one that was live when the listener was armed, and a fresh holder per
+ * `execute` keeps a nested run from clobbering the suspended outer run's.
  */
-export interface RunHolder {
-	runner: RunnerInterface<TaskInterface, void> | undefined
+export interface RunHolderInterface {
+	/** The phase runner currently held, or `undefined` between phases. */
+	readonly runner: RunnerInterface<TaskInterface, void> | undefined
+	/**
+	 * Take a phase runner for the phase now starting, or release the held one.
+	 *
+	 * @param runner - The phase runner to hold; omitted releases the held runner
+	 */
+	hold(runner?: RunnerInterface<TaskInterface, void>): void
 }
 
 /**
@@ -1785,7 +1795,6 @@ export type WorkflowCheckpoint = 'initial' | 'attempt' | 'settlement' | 'final'
 
 /** A normalized persistence failure surfaced as workflow result data. */
 export interface WorkflowFault {
-	readonly origin: 'persistence'
 	readonly checkpoint: WorkflowCheckpoint
 	readonly message: string
 	readonly task?: string
@@ -1900,12 +1909,12 @@ export interface WorkflowRunnerOptions {
  * through ONE substrate {@link RunnerInterface} (concurrency =
  * the phase's {@link PhaseDefinition.concurrency}). The definition is the SINGLE source of
  * truth: the runner owns both the declarative state (the live tree it constructs) and the
- * EXECUTION-ONLY field the snapshot deliberately dropped — each task's `run` (resolved into
+ * EXECUTION-ONLY field the snapshot deliberately dropped — each task's `behavior` (resolved into
  * its {@link TaskInterface.handler} once at construction, against
  * {@link WorkflowOptions.functions}) and each phase's `concurrency` (so there is no
  * separately-supplied workflow to drift from the definition). The freshly-built live tree is
  * returned in {@link WorkflowResult.workflow}. The runner carries NO registry of its own — it
- * invokes each task's OWN {@link TaskInterface.handler}; an omitted `run` is the only
+ * invokes each task's OWN {@link TaskInterface.handler}; an omitted `behavior` is the only
  * auto-completing no-op. The runner DRIVES the live entity (`start` → `complete` / `fail`), never
  * re-implementing status. The `bail` policy maps onto the substrate's fail-fast (`bail: true`
  * — the first failure aborts in-flight siblings and skips the rest) vs settle-all (`bail:
@@ -1925,7 +1934,7 @@ export interface WorkflowRunnerInterface {
 	 *
 	 * @remarks
 	 * One-shot. The runner BUILDS the live tree from `definition` internally (one source of
-	 * truth — the per-task `run` (resolved into its {@link TaskInterface.handler}) and per-phase
+	 * truth — the per-task `behavior` (resolved into its {@link TaskInterface.handler}) and per-phase
 	 * `concurrency` come from the same definition the tree is constructed from, so the executed
 	 * tree can never drift from the metadata). The {@link WorkflowOptions} part of `options`
 	 * (initial `on` listeners, a `bail` override, the per-node `phases` bag, the `functions`
@@ -1982,9 +1991,9 @@ export interface WorkflowRunnerInterface {
 	 * **Run round-trips through the snapshot.** Driving a tree rebuilt by
 	 * {@link import('./factories.js').createRestoredWorkflow} behaves according to whether a
 	 * {@link WorkflowFunctions} registry was supplied at that build: WITH a registry,
-	 * each task's `run` name is re-resolved against it, so a matched task carries a real
+	 * each task's `behavior` name is re-resolved against it, so a matched task carries a real
 	 * handler and this overload actually DISPATCHES it, resuming real work. Without a registry,
-	 * the persisted {@link TaskInterface.run} remains visible for inspection while `handler` is
+	 * the persisted {@link TaskInterface.behavior} remains visible for inspection while `handler` is
 	 * `undefined`, and this overload rejects the tree before dispatch. A quiescent recovered tree may contain
 	 * terminal work plus pending work; a tree with any `running` leaf is not drivable.
 	 *
@@ -2028,7 +2037,7 @@ export interface WorkflowRunnerInterface {
  * and every {@link import('./factories.js').createRestoredWorkflow}
  * ({@link WorkflowManagerInterface.open}'s hydration path) the manager performs — so a
  * hydrated workflow carries real resolved `handler`s and is RUNNABLE. Omitted ⇒ named work
- * remains inspectable but cannot be driven; omitted-`run` tasks remain deliberate no-ops.
+ * remains inspectable but cannot be driven; omitted-`behavior` tasks remain deliberate no-ops.
  */
 export interface WorkflowManagerOptions {
 	/**
@@ -2374,22 +2383,6 @@ export interface RunnerUnit<TInput> {
 }
 
 /**
- * One unit's settled outcome — a discriminated union so a value of `undefined` is still
- * a success (`{ ok: true, value: undefined }`), never mistaken for a failure or an
- * absent result.
- *
- * @remarks
- * The runner records each settled unit's outcome through this shape: a success boxes the
- * resolved `value` (presence tracked by the union tag, so `undefined` is a valid result),
- * a failure carries the `error` (always `unknown`). The FIRST failure is fail-fast.
- *
- * @typeParam TResult - The value a unit resolves
- */
-export type UnitOutcome<TResult> =
-	| { readonly ok: true; readonly value: TResult }
-	| { readonly ok: false; readonly error: unknown }
-
-/**
  * One settled unit's value, held in a box so presence is tracked by the box itself.
  *
  * @remarks
@@ -2531,16 +2524,4 @@ export interface RunnerInterface<TInput, TResult> {
 	 * @returns The stable teardown barrier
 	 */
 	destroy(): Promise<void>
-}
-
-/**
- * A promise paired with its externally-callable `resolve`/`reject` — the settle path
- * is exposed to the caller instead of being buried in an executor closure.
- *
- * @typeParam T - The value the deferred's `promise` resolves
- */
-export interface DeferredInterface<T> {
-	readonly promise: Promise<T>
-	resolve(value: T): void
-	reject(reason: unknown): void
 }

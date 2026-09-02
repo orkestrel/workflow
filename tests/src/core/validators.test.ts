@@ -11,7 +11,7 @@ import {
 	isWorkflowSnapshot,
 	matchesDescription,
 	recoverWorkflowSnapshot,
-	workflowSnapshotContext,
+	locateSnapshotContext,
 } from '@src/core'
 import { INVALID_TASK_ACTIVITIES } from '../../setup.js'
 import { describe, expect, it } from 'vitest'
@@ -99,7 +99,7 @@ describe('snapshot logical leaves', () => {
 				{
 					id: 'phase',
 					name: 'Phase',
-					tasks: [{ id: 'task', name: 'Task', run: 'work' }],
+					tasks: [{ id: 'task', name: 'Task', behavior: 'work' }],
 				},
 			],
 		}).snapshot()
@@ -353,7 +353,7 @@ describe('snapshot logical leaves', () => {
 					id: 'phase',
 					name: 'Phase',
 					tasks: [
-						{ id: 'named', name: 'Named', run: 'work' },
+						{ id: 'named', name: 'Named', behavior: 'work' },
 						{ id: 'noop', name: 'No-op' },
 					],
 				},
@@ -370,7 +370,7 @@ describe('snapshot logical leaves', () => {
 		).toBe(true)
 	})
 
-	it('reads each unique persisted run once and requires a callable binding', () => {
+	it('reads each unique persisted behavior once and requires a callable binding', () => {
 		const named = createWorkflow({
 			id: 'unique-handlers',
 			name: 'Unique handlers',
@@ -379,8 +379,8 @@ describe('snapshot logical leaves', () => {
 					id: 'phase',
 					name: 'Phase',
 					tasks: [
-						{ id: 'first', name: 'First', run: 'work' },
-						{ id: 'second', name: 'Second', run: 'work' },
+						{ id: 'first', name: 'First', behavior: 'work' },
+						{ id: 'second', name: 'Second', behavior: 'work' },
 					],
 				},
 			],
@@ -410,7 +410,7 @@ describe('snapshot logical leaves', () => {
 				{
 					id: 'phase',
 					name: 'Phase',
-					tasks: [{ id: 'task', name: 'Task', run: 'work' }],
+					tasks: [{ id: 'task', name: 'Task', behavior: 'work' }],
 				},
 			],
 		}
@@ -430,15 +430,15 @@ describe('snapshot logical leaves', () => {
 		const task = phase?.tasks[0]
 		if (phase === undefined || task === undefined) throw new Error('expected context task')
 
-		expect(workflowSnapshotContext(snapshot)).toBeUndefined()
+		expect(locateSnapshotContext(snapshot)).toBeUndefined()
 		expect(
-			workflowSnapshotContext({
+			locateSnapshotContext({
 				...snapshot,
 				phases: [{ ...phase, concurrency: 0 }],
 			}),
 		).toEqual({ phase: 'phase' })
 		expect(
-			workflowSnapshotContext({
+			locateSnapshotContext({
 				...snapshot,
 				phases: [
 					{
@@ -448,7 +448,7 @@ describe('snapshot logical leaves', () => {
 				],
 			}),
 		).toEqual({ phase: 'phase', task: 'task' })
-		expect(workflowSnapshotContext(null)).toBeUndefined()
+		expect(locateSnapshotContext(null)).toBeUndefined()
 	})
 
 	it('projects retryable and exhausted running work directly', () => {

@@ -37,14 +37,14 @@ function buildTwoPhaseWorkflow(bail: boolean): WorkflowDefinition {
 				id: 'a',
 				name: 'A',
 				tasks: [
-					{ id: 't0', name: 'T0', run: 'f' },
-					{ id: 't1', name: 'T1', run: 'f' },
+					{ id: 't0', name: 'T0', behavior: 'f' },
+					{ id: 't1', name: 'T1', behavior: 'f' },
 				],
 			},
 			{
 				id: 'b',
 				name: 'B',
-				tasks: [{ id: 't2', name: 'T2', run: 'f' }],
+				tasks: [{ id: 't2', name: 'T2', behavior: 'f' }],
 			},
 		],
 	}
@@ -138,7 +138,7 @@ describe('Workflow — direct construction option ownership', () => {
 		})
 
 		const workflow = new Workflow(definitionToSnapshot(buildTwoPhaseWorkflow(false)), options)
-		const added = workflow.phase('a')?.add({ id: 'late', name: 'Late', run: 'f' })
+		const added = workflow.phase('a')?.add({ id: 'late', name: 'Late', behavior: 'f' })
 		if (added === undefined || !added.success) throw new Error('expected live task addition')
 		workflow.emitter.on('start', () => {
 			throw failure
@@ -191,6 +191,25 @@ describe('Workflow — construction from a definition', () => {
 	it('an options.bail overrides the definition bail', () => {
 		const workflow = createWorkflow(buildTwoPhaseWorkflow(false), { bail: true })
 		expect(workflow.bail).toBe(true)
+	})
+})
+
+describe('Workflow — description membership', () => {
+	it('reports the member present whether or not the definition declared prose', () => {
+		const described = createWorkflow({
+			...buildTwoPhaseWorkflow(false),
+			description: 'root prose',
+		})
+		const bare = createWorkflow(buildTwoPhaseWorkflow(false))
+
+		// The getter lives on the prototype, so a reader probing membership gets the same answer
+		// either way and reads absence off the value alone.
+		expect('description' in described).toBe(true)
+		expect('description' in bare).toBe(true)
+		expect(described.description).toBe('root prose')
+		expect(bare.description).toBeUndefined()
+		// An omitted description stays omitted in the pure-JSON payload rather than serializing null.
+		expect('description' in bare.snapshot()).toBe(false)
 	})
 })
 
@@ -726,12 +745,12 @@ describe('Workflow — the snapshot is self-contained (bail + override persist)'
 					id: 'a',
 					name: 'A',
 					bail: true, // …but THIS phase is strict
-					tasks: [{ id: 't0', name: 'T0', run: 'f' }],
+					tasks: [{ id: 't0', name: 'T0', behavior: 'f' }],
 				},
 				{
 					id: 'b',
 					name: 'B',
-					tasks: [{ id: 't1', name: 'T1', run: 'f' }],
+					tasks: [{ id: 't1', name: 'T1', behavior: 'f' }],
 				},
 			],
 		}
@@ -890,7 +909,7 @@ function buildMultiPhaseWorkflow(count: number): WorkflowDefinition {
 		phases: Array.from({ length: count }, (_unused, index) => ({
 			id: `p${index}`,
 			name: `P${index}`,
-			tasks: [{ id: `t${index}`, name: `T${index}`, run: 'f' }],
+			tasks: [{ id: `t${index}`, name: `T${index}`, behavior: 'f' }],
 		})),
 	}
 }
@@ -1217,7 +1236,7 @@ describe('Workflow — structural API: add() mints a live phase', () => {
 		const result = workflow.add({
 			id: 'p1',
 			name: 'P1',
-			tasks: [{ id: 't1', name: 'T1', run: 'f' }],
+			tasks: [{ id: 't1', name: 'T1', behavior: 'f' }],
 		})
 		expect(result.success).toBe(true)
 		if (!result.success) throw new Error('expected add to succeed')
@@ -1232,7 +1251,7 @@ describe('Workflow — structural API: add() mints a live phase', () => {
 		const result = workflow.add({
 			id: 'p1',
 			name: 'P1',
-			tasks: [{ id: 't1', name: 'T1', run: 'f' }],
+			tasks: [{ id: 't1', name: 'T1', behavior: 'f' }],
 		})
 		if (!result.success) throw new Error('expected add to succeed')
 		const phase = result.value

@@ -1,21 +1,20 @@
 import type { AbortInterface } from '@orkestrel/abort'
+import type { Result } from '@orkestrel/contract'
 import type { EmitterInterface } from '@orkestrel/emitter'
 import type { QueueExecution, QueueInterface } from '@orkestrel/queue'
 import type {
-	DeferredInterface,
 	RunnerEventMap,
 	RunnerFailure,
 	RunnerInterface,
 	RunnerOptions,
 	RunnerUnit,
 	RunnerValue,
-	UnitOutcome,
 } from './types.js'
 import { createAbort } from '@orkestrel/abort'
 import { createQueue } from '@orkestrel/queue'
 import { Emitter } from '@orkestrel/emitter'
 import { WorkflowError } from './errors.js'
-import { createDeferred } from './helpers.js'
+import { failure, success } from './helpers.js'
 import { Controller } from './Controller.js'
 
 /**
@@ -96,7 +95,7 @@ export class Runner<TInput, TResult> implements RunnerInterface<TInput, TResult>
 	readonly #queued = new Set<string>()
 	// Outstanding (launched-but-unsettled) units; `#drained` resolves when it hits 0.
 	#count = 0
-	#drained: DeferredInterface<void> | undefined
+	#drained: PromiseWithResolvers<void> | undefined
 	#started = false
 	#running = false
 	#stopped = false
@@ -185,7 +184,7 @@ export class Runner<TInput, TResult> implements RunnerInterface<TInput, TResult>
 		if (this.#stopped) throw new WorkflowError('TRANSITION', 'runner is stopped', { stopped: true })
 		this.#started = true
 		this.#running = true
-		const drained = createDeferred<void>()
+		const drained = Promise.withResolvers<void>()
 		this.#drained = drained
 		for (const input of inputs) {
 			if (!this.#accepts()) break
@@ -213,7 +212,7 @@ export class Runner<TInput, TResult> implements RunnerInterface<TInput, TResult>
 
 	abort(reason?: unknown): Promise<void> {
 		if (this.#abortPromise !== undefined) return this.#abortPromise
-		const barrier = createDeferred<void>()
+		const barrier = Promise.withResolvers<void>()
 		this.#abortPromise = barrier.promise
 		void barrier.promise.catch(() => {})
 		// Record an abort as the run's failure (if none yet) so a parked `execute` rejects
@@ -282,7 +281,7 @@ export class Runner<TInput, TResult> implements RunnerInterface<TInput, TResult>
 			return this.#abortPromise
 		}
 		if (this.#stopPromise !== undefined) return this.#stopPromise
-		const barrier = createDeferred<void>()
+		const barrier = Promise.withResolvers<void>()
 		this.#stopPromise = barrier.promise
 		void barrier.promise.catch(() => {})
 		this.#stopping = true
@@ -294,7 +293,7 @@ export class Runner<TInput, TResult> implements RunnerInterface<TInput, TResult>
 
 	destroy(): Promise<void> {
 		if (this.#destroyPromise !== undefined) return this.#destroyPromise
-		const barrier = createDeferred<void>()
+		const barrier = Promise.withResolvers<void>()
 		this.#destroyPromise = barrier.promise
 		void barrier.promise.catch(() => {})
 		this.#stopped = true
@@ -343,8 +342,8 @@ export class Runner<TInput, TResult> implements RunnerInterface<TInput, TResult>
 			promise = Promise.reject(error)
 		}
 		void promise.then(
-			(value) => this.#settle(id, { ok: true, value }),
-			(error: unknown) => this.#settle(id, { ok: false, error }),
+			(value) => this.#settle(id, success(value)),
+			(error: unknown) => this.#settle(id, failure(error)),
 		)
 		return promise
 	}
@@ -394,7 +393,9 @@ export class Runner<TInput, TResult> implements RunnerInterface<TInput, TResult>
 		return this.#launch(input, parent)
 	}
 
-	// Record one unit's outcome, then decrement the outstanding count and drain at zero.
+	// Record one unit's outcome as the package `Result` its `success` / `failure` helpers box,
+	// then decrement the outstanding count and drain at zero. The discriminant carries presence,
+	// so a `TResult` of `undefined` settles as a success rather than an absent result.
 	// The FIRST failure is fail-fast: store it and `abort()` so every sibling's signal
 	// fires; later failures (incl. the abort-induced rejections) are ignored. A success
 	// boxes its value by id (presence by membership, so `undefined` is a valid result). A
@@ -402,8 +403,8 @@ export class Runner<TInput, TResult> implements RunnerInterface<TInput, TResult>
 	// lacks `id`) is neither a success nor a failure: it settles the count gate silently,
 	// with no recorded failure and no fail-fast trip, so `execute` still resolves with
 	// whatever DID settle rather than rejecting.
-	#settle(id: string, outcome: UnitOutcome<TResult>): void {
-		if (outcome.ok) {
+	#settle(id: string, outcome: Result<TResult, unknown>): void {
+		if (outcome.success) {
 			this.#values.set(id, { value: outcome.value })
 			// Observe the successful unit — AFTER its value is recorded (the unit is settled);
 			// the emit only OBSERVES it and runs before the count decrement, so it cannot
@@ -460,20 +461,20 @@ export class Runner<TInput, TResult> implements RunnerInterface<TInput, TResult>
 	// `destroy()` ordering, which a caller awaiting the barrier relies on; false leaves the emitter
 	// live, which is what a graceful `stop()` and an `abort()` need.
 	async #settleBarrier(
-		barrier: DeferredInterface<void>,
+		barrier: PromiseWithResolvers<void>,
 		cleanup: Promise<void>,
 		teardown: boolean,
 	): Promise<void> {
-		let failure: RunnerFailure | undefined
+		let cleanupFailure: RunnerFailure | undefined
 		try {
 			await cleanup
 		} catch (error) {
-			failure = { error }
+			cleanupFailure = { error }
 		}
 		await this.#waitDrain()
 		if (teardown) this.#emitter.destroy()
-		if (failure === undefined) barrier.resolve()
-		else barrier.reject(failure.error)
+		if (cleanupFailure === undefined) barrier.resolve()
+		else barrier.reject(cleanupFailure.error)
 	}
 
 	async #waitDrain(): Promise<void> {

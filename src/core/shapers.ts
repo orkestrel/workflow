@@ -30,14 +30,14 @@ import { MAX_TIMER_MS } from './constants.js'
 
 /**
  * The shape of a {@link import('./types.js').TaskDefinition} — identity plus an optional
- * `run` behavior reference (a plain registry-key string, min length 1). `description` is
+ * `behavior` behavior reference (a plain registry-key string, min length 1). `description` is
  * optional prose.
  */
 export const taskShape = objectShape({
 	id: stringShape({ min: 1, description: 'Unique task id within its phase.' }),
 	name: stringShape({ min: 1, description: 'Human-readable task name.' }),
 	description: optionalShape(stringShape({ description: 'Optional task description.' })),
-	run: optionalShape(
+	behavior: optionalShape(
 		stringShape({
 			min: 1,
 			description:
@@ -120,7 +120,7 @@ export const workflowShape = objectShape({
  *
  * @remarks
  * Mirrors {@link taskShape}'s `name` / `description` constraints exactly (a provided
- * `name` still has `minLength: 1`); never `id` / `run` / `retries` / `timeout` (those
+ * `name` still has `minLength: 1`); never `id` / `behavior` / `retries` / `timeout` (those
  * are not patchable fields, AGENTS §12).
  */
 export const taskUpdateShape = objectShape({

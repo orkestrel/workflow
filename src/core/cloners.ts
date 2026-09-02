@@ -1,7 +1,7 @@
 import type { TaskActivity, WorkflowSnapshot } from './types.js'
 import { cloneJSONValue, isArray, isContractError, isRecord } from '@orkestrel/contract'
 import { WorkflowError, isWorkflowError } from './errors.js'
-import { workflowSnapshotContext } from './helpers.js'
+import { locateSnapshotContext } from './helpers.js'
 import { isOwnedWorkflowSnapshot, isTaskActivity } from './validators.js'
 
 /**
@@ -30,7 +30,7 @@ export function cloneWorkflowSnapshot(input: unknown, id?: string): WorkflowSnap
 		throw new WorkflowError(
 			'RESTORE',
 			'workflow snapshot is inconsistent',
-			workflowSnapshotContext(cloned),
+			locateSnapshotContext(cloned),
 		)
 	}
 	if (id !== undefined && cloned.id !== id) {

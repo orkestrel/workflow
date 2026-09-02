@@ -220,7 +220,7 @@ export function isOwnedWorkflowSnapshot(value: unknown): value is WorkflowSnapsh
 							key === 'result' ||
 							key === 'metadata' ||
 							key === 'attempts' ||
-							key === 'run' ||
+							key === 'behavior' ||
 							key === 'retries' ||
 							key === 'timeout' ||
 							key === 'activity',
@@ -234,7 +234,7 @@ export function isOwnedWorkflowSnapshot(value: unknown): value is WorkflowSnapsh
 					!isJSONValue(task.metadata) ||
 					!isInteger(task.attempts) ||
 					task.attempts < 0 ||
-					(task.run !== undefined && !isNonEmptyString(task.run)) ||
+					(task.behavior !== undefined && !isNonEmptyString(task.behavior)) ||
 					(task.retries !== undefined && (!isInteger(task.retries) || task.retries < 0)) ||
 					(task.timeout !== undefined &&
 						(!isInteger(task.timeout) || task.timeout < 0 || task.timeout > MAX_TIMER_MS))

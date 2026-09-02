@@ -2,7 +2,7 @@ import type { ControllerInterface } from '@src/core'
 import { describe, expect, it } from 'vitest'
 import { createAbort } from '@orkestrel/abort'
 import { createRecorder, waitForDelay } from '@orkestrel/test'
-import { Controller } from '@src/core'
+import { Controller } from '../../../src/core/Controller.js'
 import { createGate } from '../../setup.js'
 
 // Build a Controller the way the Runner does — over a real `Abort` whose signal is

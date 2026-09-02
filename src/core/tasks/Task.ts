@@ -3,7 +3,6 @@ import type { JSONRecord, JSONValue, Result } from '@orkestrel/contract'
 import type { EmitterInterface } from '@orkestrel/emitter'
 import type { TimeoutInterface } from '@orkestrel/timeout'
 import type {
-	DeferredInterface,
 	PhaseInterface,
 	TaskActivity,
 	TaskActivityInput,
@@ -28,7 +27,6 @@ import { WorkflowError } from '../errors.js'
 import {
 	buildTaskContext,
 	canTransitionTask,
-	createDeferred,
 	failure,
 	resolveTaskSilence,
 	success,
@@ -58,16 +56,15 @@ import {
  *   matching event strictly AFTER the state change, BEFORE the cascade; the emitter isolates
  *   a listener throw and routes it to its `error` handler (the `error` option), so a buggy
  *   observer can never corrupt a transition.
- * - **Declarative config (AGENTS §12).** `run` / `retries` / `timeout` PERSIST in a
+ * - **Declarative config (AGENTS §12).** `behavior` / `retries` / `timeout` PERSIST in a
  *   {@link TaskSnapshot} (like a phase's `bail` / `concurrency`), carried verbatim from the
  *   matching {@link import('../types.js').TaskDefinition} / {@link TaskSnapshot} field. `handler`
- *   is the RUNTIME-ONLY counterpart — `run` resolved ONCE at construction against the
+ *   is the RUNTIME-ONLY counterpart — `behavior` resolved ONCE at construction against the
  *   workflow-level {@link import('../types.js').WorkflowOptions.functions} registry — and is
- *   NEVER persisted; `undefined` when `run` is omitted or unregistered. Only omission is a
+ *   NEVER persisted; `undefined` when `behavior` is omitted or unregistered. Only omission is a
  *   deliberate no-op; unresolved named work is rejected before dispatch.
  */
 export class Task implements TaskInterface {
-	declare readonly description?: string
 	readonly #context: TaskContext
 	readonly #phase: PhaseInterface
 	readonly #workflow: WorkflowInterface
@@ -86,13 +83,14 @@ export class Task implements TaskInterface {
 	// `patch` can rename SELF without mutating the immutable lineage `#context` a `TaskResult`
 	// stamps.
 	#name: string
+	#description: string | undefined
 	// PERSISTED declarative config, carried verbatim from the TaskDefinition / TaskSnapshot.
-	readonly #run: string | undefined
+	readonly #behavior: string | undefined
 	readonly #retries: number | undefined
 	readonly #timeout: number | undefined
 	#attempts: number
-	// RUNTIME-ONLY (never persisted): `run` resolved ONCE at construction against the
-	// workflow-level functions registry; `undefined` when `run` is omitted or unregistered.
+	// RUNTIME-ONLY (never persisted): `behavior` resolved ONCE at construction against the
+	// workflow-level functions registry; `undefined` when `behavior` is omitted or unregistered.
 	readonly #handler: WorkflowFunction | undefined
 	readonly #abort: AbortInterface
 	readonly #silence: number | undefined
@@ -100,7 +98,7 @@ export class Task implements TaskInterface {
 	readonly #liveness: TimeoutInterface | undefined
 	#activity: TaskActivity | undefined
 	#paused: boolean
-	#gate: DeferredInterface<void> | undefined
+	#gate: PromiseWithResolvers<void> | undefined
 	#timerSignal: AbortSignal | undefined
 
 	constructor(
@@ -111,7 +109,7 @@ export class Task implements TaskInterface {
 		options?: TaskOptions,
 		status: TaskStatus = 'pending',
 		result?: TaskResult,
-		run?: string,
+		behavior?: string,
 		retries?: number,
 		timeout?: number,
 		metadata: JSONRecord = {},
@@ -153,14 +151,9 @@ export class Task implements TaskInterface {
 		// override field — the override round-trip lives on the DERIVED Phase / Workflow nodes.
 		this.#result = result
 		this.#name = context.name
-		if (context.description !== undefined) {
-			Object.defineProperty(this, 'description', {
-				configurable: true,
-				value: context.description,
-			})
-		}
+		this.#description = context.description
 		// Carried verbatim from the TaskDefinition / TaskSnapshot (declarative, persisted).
-		this.#run = run
+		this.#behavior = behavior
 		this.#retries = retries
 		this.#timeout = timeout
 		this.#attempts = attempts
@@ -191,6 +184,10 @@ export class Task implements TaskInterface {
 		return this.#name
 	}
 
+	get description(): string | undefined {
+		return this.#description
+	}
+
 	get context(): TaskContext {
 		return this.#context
 	}
@@ -215,8 +212,8 @@ export class Task implements TaskInterface {
 		return this.#attempts
 	}
 
-	get run(): string | undefined {
-		return this.#run
+	get behavior(): string | undefined {
+		return this.#behavior
 	}
 
 	get handler(): WorkflowFunction | undefined {
@@ -382,7 +379,7 @@ export class Task implements TaskInterface {
 	pause(): void {
 		if (this.#paused || (this.#status !== 'pending' && this.#status !== 'running')) return
 		this.#paused = true
-		this.#gate = createDeferred<void>()
+		this.#gate = Promise.withResolvers<void>()
 		this.#emitter.emit('pause')
 	}
 
@@ -421,28 +418,23 @@ export class Task implements TaskInterface {
 			)
 		}
 		if (value.name !== undefined) this.#name = value.name
-		if (value.description !== undefined) {
-			Object.defineProperty(this, 'description', {
-				configurable: true,
-				value: value.description,
-			})
-		}
+		if (value.description !== undefined) this.#description = value.description
 	}
 
 	snapshot(): TaskSnapshot {
 		// Pure JSON: identity + status + the recorded result + the open metadata bag + the
-		// declarative run/retries/timeout config (like a phase's bail/concurrency). The leaf's
+		// declarative behavior/retries/timeout config (like a phase's bail/concurrency). The leaf's
 		// status IS its forced-terminal marker (`skipped` / `stopped`), so restore reinstates the
 		// leaf from `status` directly — no separate override field is needed at the leaf.
 		return {
 			id: this.id,
 			name: this.name,
-			...(this.description === undefined ? {} : { description: this.description }),
+			...(this.#description === undefined ? {} : { description: this.#description }),
 			status: this.#status,
 			...(this.#result === undefined ? {} : { result: this.#result }),
 			metadata: this.#metadata,
 			attempts: this.#attempts,
-			...(this.#run === undefined ? {} : { run: this.#run }),
+			...(this.#behavior === undefined ? {} : { behavior: this.#behavior }),
 			...(this.#retries === undefined ? {} : { retries: this.#retries }),
 			...(this.#timeout === undefined ? {} : { timeout: this.#timeout }),
 			...(this.#activity === undefined ? {} : { activity: this.#activity }),

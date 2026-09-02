@@ -101,7 +101,7 @@ describe('TaskController — surface', () => {
 							{
 								id: 'task-compile',
 								name: 'Compile',
-								run: 'compile',
+								behavior: 'compile',
 								retries: 1,
 							},
 						],

@@ -5,15 +5,10 @@ import type {
 	WorkflowDefinition,
 	WorkflowInterface,
 } from '@src/core'
-import {
-	MAX_TIMER_MS,
-	createWorkflow,
-	isWorkflowError,
-	createRestoredWorkflow,
-	Task,
-} from '@src/core'
+import { MAX_TIMER_MS, createWorkflow, isWorkflowError, createRestoredWorkflow } from '@src/core'
 import { describe, expect, it } from 'vitest'
 import { captureError, createRecorder, createRecorders, waitForDelay } from '@orkestrel/test'
+import { Task } from '../../../../src/core/tasks/Task.js'
 import type { TaskEvent } from '../../../setup.js'
 import { createErrorRecorder, TASK_EVENTS } from '../../../setup.js'
 
@@ -26,7 +21,7 @@ function buildSingleTaskWorkflow(): WorkflowDefinition {
 	return {
 		id: 'wf',
 		name: 'WF',
-		phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', run: 'f' }] }],
+		phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', behavior: 'f' }] }],
 	}
 }
 
@@ -143,7 +138,7 @@ describe('Task — identity + lineage', () => {
 				{
 					id: 'phase-1',
 					name: 'Phase One',
-					tasks: [{ id: 'task-1', name: 'Task One', run: 'x' }],
+					tasks: [{ id: 'task-1', name: 'Task One', behavior: 'x' }],
 				},
 			],
 		})
@@ -271,7 +266,7 @@ describe('Task — activity, liveness, and cooperative control', () => {
 					{
 						id: 'p',
 						name: 'P',
-						tasks: [{ id: 't', name: 'T', run: 'f', retries: 1 }],
+						tasks: [{ id: 't', name: 'T', behavior: 'f', retries: 1 }],
 					},
 				],
 			},
@@ -668,7 +663,7 @@ describe('Task — own event precedes the cascade (cause before effect)', () => 
 				{
 					id: 'p',
 					name: 'P',
-					tasks: [{ id: 't', name: 'T', run: 'f' }],
+					tasks: [{ id: 't', name: 'T', behavior: 'f' }],
 				},
 			],
 		})
@@ -803,8 +798,8 @@ describe('Task — the leaf snapshot: status IS the forced-terminal marker (no o
 	})
 })
 
-describe('Task — declarative run/retries/timeout PERSIST (AGENTS §12), handler is runtime-only', () => {
-	it('seeds run/retries/timeout from the definition when built through createWorkflow', () => {
+describe('Task — declarative behavior/retries/timeout PERSIST (AGENTS §12), handler is runtime-only', () => {
+	it('seeds behavior/retries/timeout from the definition when built through createWorkflow', () => {
 		const workflow = createWorkflow({
 			id: 'wf',
 			name: 'WF',
@@ -816,7 +811,7 @@ describe('Task — declarative run/retries/timeout PERSIST (AGENTS §12), handle
 						{
 							id: 't',
 							name: 'T',
-							run: 'x',
+							behavior: 'x',
 							retries: 3,
 							timeout: 500,
 						},
@@ -825,20 +820,20 @@ describe('Task — declarative run/retries/timeout PERSIST (AGENTS §12), handle
 			],
 		})
 		const task = loneTask(workflow)
-		expect(task.run).toBe('x')
+		expect(task.behavior).toBe('x')
 		expect(task.retries).toBe(3)
 		expect(task.timeout).toBe(500)
 	})
 
 	it('leaves retries/timeout undefined when the definition omits them', () => {
 		const task = loneTask(createWorkflow(buildSingleTaskWorkflow()))
-		expect(task.run).toBe('f')
+		expect(task.behavior).toBe('f')
 		expect(task.retries).toBeUndefined()
 		expect(task.timeout).toBeUndefined()
 	})
 
-	it('run/retries/timeout SURVIVE the restore path — they are declarative config, persisted like bail/concurrency', () => {
-		// Unlike the old execution-only fields, run/retries/timeout are now PERSISTED on the
+	it('behavior/retries/timeout SURVIVE the restore path — they are declarative config, persisted like bail/concurrency', () => {
+		// Unlike the old execution-only fields, behavior/retries/timeout are now PERSISTED on the
 		// TaskSnapshot (like a phase's bail/concurrency), so a restore reinstates them verbatim.
 		const original = createWorkflow({
 			id: 'wf',
@@ -847,18 +842,18 @@ describe('Task — declarative run/retries/timeout PERSIST (AGENTS §12), handle
 				{
 					id: 'p',
 					name: 'P',
-					tasks: [{ id: 't', name: 'T', run: 'x', retries: 2, timeout: 100 }],
+					tasks: [{ id: 't', name: 'T', behavior: 'x', retries: 2, timeout: 100 }],
 				},
 			],
 		})
 		const restored = createRestoredWorkflow(original.snapshot(), { functions: { x: () => null } })
 		const task = loneTask(restored)
-		expect(task.run).toBe('x')
+		expect(task.behavior).toBe('x')
 		expect(task.retries).toBe(2)
 		expect(task.timeout).toBe(100)
 	})
 
-	it('run/retries/timeout DO appear in the leaf snapshot when the definition declares them', () => {
+	it('behavior/retries/timeout DO appear in the leaf snapshot when the definition declares them', () => {
 		const task = loneTask(
 			createWorkflow({
 				id: 'wf',
@@ -867,18 +862,18 @@ describe('Task — declarative run/retries/timeout PERSIST (AGENTS §12), handle
 					{
 						id: 'p',
 						name: 'P',
-						tasks: [{ id: 't', name: 'T', run: 'x', retries: 1, timeout: 10 }],
+						tasks: [{ id: 't', name: 'T', behavior: 'x', retries: 1, timeout: 10 }],
 					},
 				],
 			}),
 		)
 		const snapshot = task.snapshot()
-		expect(snapshot.run).toBe('x')
+		expect(snapshot.behavior).toBe('x')
 		expect(snapshot.retries).toBe(1)
 		expect(snapshot.timeout).toBe(10)
 	})
 
-	it('run/retries/timeout are OMITTED from the snapshot when the definition declares none', () => {
+	it('behavior/retries/timeout are OMITTED from the snapshot when the definition declares none', () => {
 		const task = loneTask(createWorkflow(buildSingleTaskWorkflow()))
 		const snapshot = task.snapshot()
 		expect('retries' in snapshot).toBe(false)
@@ -906,10 +901,34 @@ describe('Task — declarative run/retries/timeout PERSIST (AGENTS §12), handle
 		const handler = () => 'value'
 		const original = createWorkflow(buildSingleTaskWorkflow(), { functions: { f: handler } })
 		const inspected = createRestoredWorkflow(original.snapshot())
-		expect(loneTask(inspected).run).toBe('f')
+		expect(loneTask(inspected).behavior).toBe('f')
 		expect(loneTask(inspected).handler).toBeUndefined()
 		const reResolved = createRestoredWorkflow(original.snapshot(), { functions: { f: handler } })
 		expect(loneTask(reResolved).handler).toBe(handler)
+	})
+})
+
+describe('Task — description membership', () => {
+	it('reports the member present whether or not the definition declared prose', () => {
+		const described = loneTask(
+			createWorkflow({
+				id: 'wf',
+				name: 'WF',
+				phases: [
+					{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', description: 'leaf prose' }] },
+				],
+			}),
+		)
+		const bare = loneTask(createWorkflow(buildSingleTaskWorkflow()))
+
+		// The getter lives on the prototype, so a reader probing membership gets the same answer
+		// either way and reads absence off the value alone.
+		expect('description' in described).toBe(true)
+		expect('description' in bare).toBe(true)
+		expect(described.description).toBe('leaf prose')
+		expect(bare.description).toBeUndefined()
+		// An omitted description stays omitted in the pure-JSON payload rather than serializing null.
+		expect('description' in bare.snapshot()).toBe(false)
 	})
 })
 

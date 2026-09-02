@@ -1,6 +1,5 @@
 import type {
 	ControllerInterface,
-	DeferredInterface,
 	LifecycleStatus,
 	PhaseContext,
 	PhaseDerivation,
@@ -544,7 +543,7 @@ export function buildTaskContext(phase: PhaseContext, node: WorkflowContext): Ta
  * @remarks
  * The structural fields (`id` / `name` / `description` + the ordered phases / tasks)
  * carry over verbatim, as does each phase's `concurrency` (persisted on the
- * {@link PhaseSnapshot} so a restore reinstates the same throttle) and each task's `run` /
+ * {@link PhaseSnapshot} so a restore reinstates the same throttle) and each task's `behavior` /
  * `retries` / `timeout` (persisted on the {@link TaskSnapshot}, like `bail` / `concurrency`,
  * so a restore + a {@link import('./types.js').WorkflowOptions.functions} registry resumes
  * real work). The `bail` policy carries over — at the
@@ -620,7 +619,7 @@ export function phaseDefinitionToSnapshot(
  * result yet, empty metadata).
  *
  * @remarks
- * `run` / `retries` / `timeout` carry over verbatim (persisted declarative config, like a
+ * `behavior` / `retries` / `timeout` carry over verbatim (persisted declarative config, like a
  * phase's `bail` / `concurrency`) — a restore reinstates the same behavior reference and
  * reliability overrides once paired with a {@link import('./types.js').WorkflowOptions.functions}
  * registry.
@@ -638,7 +637,7 @@ export function taskDefinitionToSnapshot(
 		status: 'pending',
 		metadata: {},
 		attempts: 0,
-		...(task.run === undefined ? {} : { run: task.run }),
+		...(task.behavior === undefined ? {} : { behavior: task.behavior }),
 		...(task.retries === undefined ? {} : { retries: task.retries }),
 		...(task.timeout === undefined ? {} : { timeout: task.timeout }),
 	}
@@ -871,7 +870,7 @@ export function isTaskResult(
  * Test that every named task has a callable runtime handler before dispatch.
  *
  * @remarks
- * A snapshot lookup reads each unique `run` binding at most once from `functions`. A live workflow
+ * A snapshot lookup reads each unique `behavior` binding at most once from `functions`. A live workflow
  * validates its tasks' already-resolved handlers without consulting the retained registry again.
  *
  * @param workflow - The persisted snapshot or constructed live workflow to validate
@@ -889,24 +888,24 @@ export function hasWorkflowHandlers(
 	if ('destroyed' in workflow) {
 		for (const phase of workflow.phases.phases()) {
 			for (const task of phase.tasks.tasks()) {
-				if (task.run !== undefined && !isFunction(task.handler)) return false
+				if (task.behavior !== undefined && !isFunction(task.handler)) return false
 			}
 		}
 		return true
 	}
-	const runs = new Set<string>()
+	const behaviors = new Set<string>()
 	for (const phase of workflow.phases) {
 		for (const task of phase.tasks) {
-			if (task.run === undefined || runs.has(task.run)) continue
-			runs.add(task.run)
-			if (!isFunction(functions?.[task.run])) return false
+			if (task.behavior === undefined || behaviors.has(task.behavior)) continue
+			behaviors.add(task.behavior)
+			if (!isFunction(functions?.[task.behavior])) return false
 		}
 	}
 	return true
 }
 
-/** Locate the nearest identifiable node for an inconsistent owned snapshot. */
-export function workflowSnapshotContext(
+/** Locates the nearest identifiable node for an inconsistent owned snapshot. */
+export function locateSnapshotContext(
 	value: unknown,
 ): Readonly<Record<string, unknown>> | undefined {
 	if (!isRecord(value) || !isArray(value.phases)) return undefined
@@ -924,7 +923,7 @@ export function workflowSnapshotContext(
 		for (const task of phase.tasks) {
 			if (!isRecord(task)) continue
 			if (
-				(task.run !== undefined && !isNonEmptyString(task.run)) ||
+				(task.behavior !== undefined && !isNonEmptyString(task.behavior)) ||
 				(task.retries !== undefined && (!isInteger(task.retries) || task.retries < 0)) ||
 				(task.timeout !== undefined &&
 					(!isInteger(task.timeout) || task.timeout < 0 || task.timeout > MAX_TIMER_MS)) ||
@@ -1030,17 +1029,6 @@ export function moveEntry<T>(
 	const [entry] = next.splice(at, 1)
 	if (entry !== undefined) next.splice(index, 0, entry)
 	return next
-}
-
-/**
- * Create a {@link DeferredInterface} — a promise whose settlement is driven
- * externally, so a caller can resolve/reject it from outside the executor.
- *
- * @typeParam T - The value the deferred promise resolves
- * @returns A deferred `promise` plus its `resolve` / `reject`
- */
-export function createDeferred<T>(): DeferredInterface<T> {
-	return Promise.withResolvers<T>()
 }
 
 /**

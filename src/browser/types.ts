@@ -1,5 +1,5 @@
 /**
- * The narrowed `requestIdleCallback` / `cancelIdleCallback` pair feature-detected off
+ * Declares the narrowed `requestIdleCallback` / `cancelIdleCallback` pair feature-detected off
  * `globalThis`.
  *
  * @remarks
@@ -8,7 +8,7 @@
  * never an `as` — AGENTS §14) and resolves to `undefined` when the API is absent (Safari
  * today), so `yield` falls back to a macrotask.
  */
-export interface IdleAPI {
+export interface IdleInterface {
 	readonly request: (callback: () => void) => number
 	readonly cancel: (handle: number) => void
 }

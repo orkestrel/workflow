@@ -16,7 +16,6 @@ import type {
 } from './types.js'
 import { createContract, rawShape, stringShape } from '@orkestrel/contract'
 import { createDatabase, createMemoryDriver } from '@orkestrel/database'
-import { DEFAULT_BAIL } from './constants.js'
 import { cloneWorkflowSnapshot } from './cloners.js'
 import { WorkflowError } from './errors.js'
 import {
@@ -103,7 +102,7 @@ export function createWorkflowContract(): ContractInterface<WorkflowDefinition> 
  * state machine ONLY — it does not execute tasks (W-c drives the transitions).
  *
  * `options.functions` is the {@link import('./types.js').WorkflowFunctions} registry each live
- * task's `run` name resolves against ONCE at construction into its runtime
+ * task's `behavior` name resolves against ONCE at construction into its runtime
  * {@link import('./types.js').TaskInterface.handler}. An omitted name is the deliberate no-op;
  * an unresolved present name remains inspectable but is rejected if execution is attempted.
  *
@@ -125,17 +124,48 @@ export function createWorkflow(
 	options?: WorkflowOptions,
 ): WorkflowInterface {
 	const captured = captureWorkflowOptions(options)
-	const bail = captured.bail ?? definition.bail ?? DEFAULT_BAIL
-	// Seed BOTH tiers of the snapshot with the effective bail (`definitionToSnapshot`'s second arg),
-	// so an `options.bail` override reaches each INHERITING phase's snapshot while a phase with its own
-	// `bail` still wins (`phase.bail ?? bail`) — the per-phase-bail-aware derivation reads each
-	// PhaseSnapshot's bail. `options.bail` itself is forwarded UNCHANGED (NOT overwritten with the
-	// resolved `bail`): the snapshot already carries the resolved bail at both tiers, so `Workflow`
-	// reads `#bail` from it; injecting a resolved `bail` here would make `Workflow` treat it as an
-	// EXPLICIT uniform override and clobber per-phase overrides. A caller's genuine `options.bail`
-	// stays as given and cascades (uniform re-run). Each task's `run` / `retries` / `timeout` carry
-	// over onto the snapshot (definitionToSnapshot's per-task step), so `options.functions` (forwarded
-	// unchanged) resolves every task's handler identically whether built fresh or restored.
+	return createWorkflowTree(definition, captured.bail, captured)
+}
+
+/**
+ * Builds the live entity tree one definition and one owned options bag describe — the shared
+ * construction path behind every definition-driven mint.
+ *
+ * @remarks
+ * Seeds an initial all-`pending` {@link WorkflowSnapshot} from the definition and constructs the
+ * live {@link WorkflowInterface} over it. `bail` is the caller's own override, forwarded to
+ * {@link definitionToSnapshot} so it reaches BOTH tiers: the workflow snapshot AND the inheritance
+ * default of every phase that declares no `bail` of its own, while a phase declaring one still
+ * wins. Omitted, the definition's own `bail` governs, defaulting to the graceful
+ * {@link import('./constants.js').DEFAULT_BAIL}.
+ *
+ * `captured` is forwarded to the entity UNCHANGED — its own `bail` is deliberately not replaced
+ * with the resolved policy, because the snapshot already carries the resolved value at both tiers
+ * and an injected one would make `Workflow` read it as an EXPLICIT uniform override and clobber
+ * the per-phase overrides. Each task's `behavior` / `retries` / `timeout` travel onto the snapshot
+ * too, so `captured.functions` resolves every handler identically whether the tree is built fresh
+ * or restored. Pass a bag {@link captureWorkflowOptions} already owns: this constructs over it
+ * without re-capturing.
+ *
+ * @param definition - The workflow definition to bring to life
+ * @param bail - The caller's failure-policy override, or `undefined` to take the definition's
+ * @param captured - The already-owned {@link WorkflowOptions} bag the entity is constructed with
+ * @returns The live {@link WorkflowInterface} root
+ *
+ * @example
+ * ```ts
+ * import { captureWorkflowOptions, createWorkflowTree } from '@orkestrel/workflow'
+ *
+ * const captured = captureWorkflowOptions({ bail: true })
+ * const workflow = createWorkflowTree(definition, captured.bail, captured)
+ * workflow.bail // true — the override reached the workflow and every inheriting phase
+ * ```
+ */
+export function createWorkflowTree(
+	definition: WorkflowDefinition,
+	bail: boolean | undefined,
+	captured: WorkflowOptions,
+): WorkflowInterface {
 	return new Workflow(definitionToSnapshot(definition, bail), captured)
 }
 
@@ -155,7 +185,7 @@ export function createWorkflow(
  * still wins when supplied (to deliberately re-run under a different policy). A structurally
  * invalid snapshot (a status — or override — outside the lifecycle vocabulary, or a
  * non-boolean `bail`) throws a `RESTORE` {@link WorkflowError}.
- * Runtime handlers are optional: without a matching `functions` entry, a persisted `run`
+ * Runtime handlers are optional: without a matching `functions` entry, a persisted `behavior`
  * remains visible with an undefined `handler` so the exact state is inspectable. The runner
  * rejects that unresolved tree if execution is attempted.
  *
@@ -184,7 +214,7 @@ export function createRestoredWorkflow(
  * Build an interrupted workflow back to life at its remaining retry budget.
  *
  * @remarks
- * Each phase captures every unique initial `run` binding once before constructing tasks. Recovery
+ * Each phase captures every unique initial `behavior` binding once before constructing tasks. Recovery
  * validates those live tasks' captured callable handlers without rereading the registry, while the
  * retained registry identity remains available to resolve future live additions at their mint time.
  *
@@ -214,7 +244,7 @@ export function createRecoveredWorkflow(
 	const recovered = cloneWorkflowSnapshot(recoverWorkflowSnapshot(owned))
 	const workflow = new Workflow(recovered, captured)
 	if (!hasWorkflowHandlers(workflow)) {
-		throw new WorkflowError('RESTORE', `workflow '${owned.id}' has an unresolved run`, {
+		throw new WorkflowError('RESTORE', `workflow '${owned.id}' has an unresolved behavior`, {
 			workflow: owned.id,
 		})
 	}
@@ -323,7 +353,7 @@ export function createDatabaseWorkflowStore(
  *
  * External integrations remain application-owned: a caller wires an ordinary
  * {@link import('./types.js').WorkflowFunction} into its own {@link WorkflowOptions.functions}
- * registry. Only a task that omits `run` auto-completes; unresolved named work is rejected
+ * registry. Only a task that omits `behavior` auto-completes; unresolved named work is rejected
  * before dispatch.
  *
  * @param options - An optional pacing `scheduler` (default the shipped cross-environment one).
@@ -336,7 +366,7 @@ export function createDatabaseWorkflowStore(
  *
  * const runner = createWorkflowRunner()
  * const definition = { id: 'w', name: 'W', phases: [{ id: 'p', name: 'P', tasks: [
- * 	{ id: 't', name: 'T', run: 'compile' },
+ * 	{ id: 't', name: 'T', behavior: 'compile' },
  * ] }] }
  * const result = await runner.execute(definition, {
  * 	functions: { compile: async (controller) => `built ${controller.task.id}` },

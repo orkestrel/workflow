@@ -2,7 +2,6 @@ import type { Result } from '@orkestrel/contract'
 import type { AbortInterface } from '@orkestrel/abort'
 import type { EmitterInterface } from '@orkestrel/emitter'
 import type {
-	DeferredInterface,
 	PhaseDefinition,
 	PhaseDerivation,
 	PhaseInterface,
@@ -27,7 +26,6 @@ import {
 	buildWorkflowContext,
 	captureWorkflowOptions,
 	collectResults,
-	createDeferred,
 	deriveBoundary,
 	deriveWorkflowStatus,
 	failure,
@@ -84,7 +82,6 @@ import { PhaseManager } from './phases/PhaseManager.js'
  *   {@link destroyed} — all idempotent.
  */
 export class Workflow implements WorkflowInterface {
-	declare readonly description?: string
 	readonly #context: WorkflowContext
 	readonly #bail: boolean
 	// The EXPLICIT workflow `bail` override (`options.bail`), when one was supplied — a deliberate
@@ -93,7 +90,7 @@ export class Workflow implements WorkflowInterface {
 	// own persisted policy, so an option-less restore is identical). Distinct from `#bail` (the
 	// resolved default), which is ALWAYS defined.
 	readonly #bailOverride: boolean | undefined
-	// The `function`-task behavior registry each live task's `run` name resolves against ONCE at
+	// The `function`-task behavior registry each live task's `behavior` name resolves against ONCE at
 	// construction — threaded to every Phase (and, transitively, every Task). Read at RESOLVE
 	// time (construction / a later live `add`'s mint), so mutating the object passed in AFTER
 	// construction changes only later mints, never tasks already resolved — do not mutate it.
@@ -116,7 +113,7 @@ export class Workflow implements WorkflowInterface {
 	#paused: boolean
 	// The parked `wait()` gate while paused; `undefined` when not paused — released (resolved) by
 	// `resume` / `stop` / `destroy`.
-	#gate: DeferredInterface<void> | undefined
+	#gate: PromiseWithResolvers<void> | undefined
 	// RUNTIME-ONLY (never persisted): whether `destroy` has torn this workflow down.
 	#destroyed: boolean
 
@@ -129,9 +126,6 @@ export class Workflow implements WorkflowInterface {
 		const functions = captured.functions
 		const silence = captured.silence
 		this.#context = buildWorkflowContext(snapshot)
-		if (snapshot.description !== undefined) {
-			Object.defineProperty(this, 'description', { value: snapshot.description })
-		}
 		// The snapshot carries the policy it ran under (the self-contained durable payload), so the
 		// snapshot's `bail` is the source of truth; an explicit `options.bail` still wins when given.
 		this.#bail = bail ?? snapshot.bail
@@ -152,7 +146,7 @@ export class Workflow implements WorkflowInterface {
 		this.#destroyed = false
 		// Build the live phases positionally from the snapshot — each wired to recompute THIS
 		// workflow on a derived-status change, carrying its own per-phase options + restore state,
-		// and the workflow-level `#functions` registry, so each of its tasks resolves its `run`
+		// and the workflow-level `#functions` registry, so each of its tasks resolves its `behavior`
 		// name into a runtime handler ONCE at construction.
 		for (const phase of snapshot.phases) {
 			const phaseOptions = phases?.[phase.id]
@@ -175,6 +169,12 @@ export class Workflow implements WorkflowInterface {
 
 	get name(): string {
 		return this.#context.name
+	}
+
+	// The root's identity is immutable, so the description reads straight off `#context` rather
+	// than a second field that could drift from the context every `TaskResult` stamps.
+	get description(): string | undefined {
+		return this.#context.description
 	}
 
 	get context(): WorkflowContext {
@@ -260,7 +260,7 @@ export class Workflow implements WorkflowInterface {
 		// torn-down workflow has nothing to suspend.
 		if (this.#paused || isTerminalStatus(this.status) || this.#destroyed) return
 		this.#paused = true
-		this.#gate = createDeferred<void>()
+		this.#gate = Promise.withResolvers<void>()
 		this.#emitter.emit('pause')
 	}
 
@@ -400,7 +400,9 @@ export class Workflow implements WorkflowInterface {
 		return cloneWorkflowSnapshot({
 			id: this.id,
 			name: this.name,
-			...(this.description === undefined ? {} : { description: this.description }),
+			...(this.#context.description === undefined
+				? {}
+				: { description: this.#context.description }),
 			status: this.status,
 			...(this.#override === undefined ? {} : { override: this.#override }),
 			bail: this.#bail,
@@ -489,7 +491,7 @@ export class Workflow implements WorkflowInterface {
 	// Build one live phase from its snapshot, threading its per-phase options (keyed by id under
 	// the workflow options) + the explicit workflow bail override (when one was supplied — it
 	// overrides the phase's persisted per-phase bail) + THIS workflow's `#functions` registry
-	// (so the phase's own tasks resolve their `run` name into a runtime handler) and wiring it
+	// (so the phase's own tasks resolve their `behavior` name into a runtime handler) and wiring it
 	// to recompute THIS workflow on a derived-status change.
 	#append(phase: PhaseSnapshot, options: PhaseOptions | undefined): void {
 		const created = new Phase(
@@ -506,7 +508,7 @@ export class Workflow implements WorkflowInterface {
 
 	// MINT a live phase (and its tasks) from a PhaseDefinition for a live `add` — converts it to
 	// an initial PhaseSnapshot (`phaseDefinitionToSnapshot`'s per-phase step, resolving effective
-	// bail as `definition.bail ?? this.#bail`, carrying each task's `run` / `retries` / `timeout`)
+	// bail as `definition.bail ?? this.#bail`, carrying each task's `behavior` / `retries` / `timeout`)
 	// then builds it through the Phase constructor's OWN `#functions` resolution, so a live mint and a
 	// built/restored phase are wired IDENTICALLY — same recompute cascade, same emitter hooks,
 	// same handler resolution.

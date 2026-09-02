@@ -350,13 +350,13 @@ describe('buildReleaseDefinition and RELEASE_FUNCTIONS', () => {
 	it('names a registered handler on every release task', () => {
 		const definition = buildReleaseDefinition()
 
-		const runs = definition.phases.flatMap((phase) => phase.tasks.map((task) => task.run))
+		const behaviors = definition.phases.flatMap((phase) => phase.tasks.map((task) => task.behavior))
 
 		// An unregistered name leaves its task with no behaviour, and every store twin driving this
 		// definition would settle a task that never ran.
-		expect(runs.filter((run) => run === undefined || RELEASE_FUNCTIONS[run] === undefined)).toEqual(
-			[],
-		)
+		expect(
+			behaviors.filter((name) => name === undefined || RELEASE_FUNCTIONS[name] === undefined),
+		).toEqual([])
 	})
 
 	it('takes its id from the argument and defaults it otherwise', () => {

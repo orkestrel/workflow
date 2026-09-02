@@ -39,7 +39,7 @@ import {
 // stubs — scripted WorkflowFunction handlers, NO mocks (AGENTS §16). Determinism comes from gates
 // (createGate), not wall-clock races.
 //
-// PROGRAMMATIC CORE, DECLARATIVE SHELL (this wave's redesign): `TaskDefinition.run` is a PLAIN
+// PROGRAMMATIC CORE, DECLARATIVE SHELL (this wave's redesign): `TaskDefinition.behavior` is a PLAIN
 // STRING resolved ONCE at construction against a `WorkflowOptions.functions` registry into the
 // live task's `handler`. The runner itself is a PURE engine — it carries no behavior or provider
 // registry; every `execute(...)` call below threads `functions` through the RUN options
@@ -87,7 +87,7 @@ describe('recording scheduler — production delegation', () => {
 
 /** A function task on task `id`, dispatched by NAME to the registered function `fn`. */
 function functionTask(id: string, fn: string): TaskDefinition {
-	return { id, name: id, run: fn }
+	return { id, name: id, behavior: fn }
 }
 
 /** Build a definition from a compact phase spec — each phase its tasks + optional concurrency / bail. */
@@ -131,7 +131,7 @@ function reliableTask(
 	return {
 		id,
 		name: id,
-		run: fn,
+		behavior: fn,
 		...(reliability.retries === undefined ? {} : { retries: reliability.retries }),
 		...(reliability.timeout === undefined ? {} : { timeout: reliability.timeout }),
 	}
@@ -254,7 +254,7 @@ describe('WorkflowRunner — dispatch by function-registry name', () => {
 		const definition: WorkflowDefinition = {
 			id: 'wf',
 			name: 'WF',
-			phases: [{ id: 'a', name: 'A', tasks: [{ id: 't', name: 'T', run: 'scan' }] }],
+			phases: [{ id: 'a', name: 'A', tasks: [{ id: 't', name: 'T', behavior: 'scan' }] }],
 		}
 		const result = await pacedRunner().execute(definition, {
 			functions: {
@@ -277,7 +277,7 @@ describe('WorkflowRunner — dispatch by function-registry name', () => {
 			id: 'wf',
 			name: 'WF',
 			bail: false,
-			phases: [{ id: 'a', name: 'A', tasks: [{ id: 't', name: 'T', run: 'boom' }] }],
+			phases: [{ id: 'a', name: 'A', tasks: [{ id: 't', name: 'T', behavior: 'boom' }] }],
 		}
 		const result = await pacedRunner().execute(definition, {
 			functions: {
@@ -304,7 +304,7 @@ describe('WorkflowRunner — dispatch by function-registry name', () => {
 		expect(() => pacedRunner().execute(workflow)).toThrow(/not drivable/)
 	})
 
-	it('a task whose `run` is omitted entirely auto-completes', async () => {
+	it('a task whose `behavior` is omitted entirely auto-completes', async () => {
 		const definition: WorkflowDefinition = {
 			id: 'wf',
 			name: 'WF',
@@ -998,10 +998,10 @@ describe('WorkflowRunner — scheduler infrastructure faults', () => {
 		}
 		const workflow = createWorkflow(
 			buildDefinition([
-				{ id: 'a', tasks: [functionTask('t0', 'run')] },
-				{ id: 'b', tasks: [functionTask('t1', 'run')] },
+				{ id: 'a', tasks: [functionTask('t0', 'work')] },
+				{ id: 'b', tasks: [functionTask('t1', 'work')] },
 			]),
-			{ functions: { run: () => null } },
+			{ functions: { work: () => null } },
 		)
 		const listeners = instrumentSignal(workflow.signal)
 
@@ -1272,9 +1272,9 @@ describe('WorkflowRunner — controller reads earlier results', () => {
 			id: 'wf',
 			name: 'WF',
 			phases: [
-				{ id: 'a', name: 'A', tasks: [{ id: 'p1', name: 'P1', run: 'produce' }] },
-				{ id: 'b', name: 'B', tasks: [{ id: 'p2', name: 'P2', run: 'spacer' }] },
-				{ id: 'c', name: 'C', tasks: [{ id: 'p3', name: 'P3', run: 'reader' }] },
+				{ id: 'a', name: 'A', tasks: [{ id: 'p1', name: 'P1', behavior: 'produce' }] },
+				{ id: 'b', name: 'B', tasks: [{ id: 'p2', name: 'P2', behavior: 'spacer' }] },
+				{ id: 'c', name: 'C', tasks: [{ id: 'p3', name: 'P3', behavior: 'reader' }] },
 			],
 		}
 		const result = await pacedRunner().execute(definition, {
@@ -1336,13 +1336,13 @@ describe('WorkflowRunner — execute(workflow) parity with execute(definition)',
 describe('WorkflowRunner — execute(workflow) TRANSITION guard (synchronous)', () => {
 	it('claims a pending workflow synchronously across runner instances before dispatch', async () => {
 		const ran = createRecorder<readonly [string]>()
-		const run: WorkflowFunction = (controller) => {
+		const record: WorkflowFunction = (controller) => {
 			ran.handler(controller.task.id)
 			return controller.task.id
 		}
 		const workflow = createWorkflow(
-			buildDefinition([{ id: 'a', tasks: [functionTask('t0', 'run')] }]),
-			{ functions: { run } },
+			buildDefinition([{ id: 'a', tasks: [functionTask('t0', 'record')] }]),
+			{ functions: { record } },
 		)
 		workflow.pause()
 		const first = pacedRunner().execute(workflow)
@@ -1472,7 +1472,7 @@ describe('WorkflowRunner — live task append during a running phase (mid-run mu
 			success: false,
 			error: {
 				origin: 'handler',
-				message: "task 't1' has an unresolved run 'missing-handler'",
+				message: "task 't1' has an unresolved behavior 'missing-handler'",
 			},
 		})
 	})
@@ -1519,7 +1519,7 @@ describe('WorkflowRunner — live task append during a running phase (mid-run mu
 		const added = workflow.add({
 			id: 'c',
 			name: 'C',
-			tasks: [{ id: 'tc', name: 'TC', run: 'extra' }],
+			tasks: [{ id: 'tc', name: 'TC', behavior: 'extra' }],
 		})
 		if (!added.success) throw new Error('expected workflow.add to succeed')
 		gateA.resolve()
@@ -2051,11 +2051,11 @@ describe('WorkflowRunner — activity ownership across attempts', () => {
 	it('does not claim an attempt superseded by a reentrant start listener', async () => {
 		let calls = 0
 		const definition = buildDefinition([
-			{ id: 'a', tasks: [reliableTask('t0', 'run', { retries: 1 })] },
+			{ id: 'a', tasks: [reliableTask('t0', 'record', { retries: 1 })] },
 		])
 		const workflow = createWorkflow(definition, {
 			functions: {
-				run: () => {
+				record: () => {
 					calls += 1
 					return 'late'
 				},
@@ -2079,13 +2079,13 @@ describe('WorkflowRunner — activity ownership across attempts', () => {
 		let report: ReturnType<TaskControllerInterface['report']> | undefined
 		let pulse: boolean | undefined
 		const definition = buildDefinition([
-			{ id: 'a', tasks: [reliableTask('t0', 'run', { retries: 1 })] },
+			{ id: 'a', tasks: [reliableTask('t0', 'record', { retries: 1 })] },
 		])
 		let task = createWorkflow(definition).phase('a')?.task('t0')
 		if (task === undefined) throw new Error('expected seed task')
 		const workflow = createWorkflow(definition, {
 			functions: {
-				run: (controller) => {
+				record: (controller) => {
 					const current = task
 					if (current === undefined) throw new Error('expected task')
 					current.start()
@@ -2112,7 +2112,7 @@ describe('WorkflowRunner — activity ownership across attempts', () => {
 		let report: ReturnType<TaskControllerInterface['report']> | undefined
 		let pulse: boolean | undefined
 		const parked = createGate()
-		const run: WorkflowFunction = async (controller) => {
+		const record: WorkflowFunction = async (controller) => {
 			controller.signal.addEventListener(
 				'abort',
 				() => {
@@ -2125,9 +2125,9 @@ describe('WorkflowRunner — activity ownership across attempts', () => {
 			return null
 		}
 		const definition = buildDefinition([
-			{ id: 'a', tasks: [reliableTask('t0', 'run', { timeout: 15 })] },
+			{ id: 'a', tasks: [reliableTask('t0', 'record', { timeout: 15 })] },
 		])
-		const workflow = createWorkflow(definition, { functions: { run } })
+		const workflow = createWorkflow(definition, { functions: { record } })
 		const task = workflow.phase('a')?.task('t0')
 		if (task === undefined) throw new Error('expected task')
 		const events = createRecorders<TaskEventMap, TaskEvent>(task.emitter, TASK_EVENTS)
@@ -2146,7 +2146,7 @@ describe('WorkflowRunner — activity ownership across attempts', () => {
 	it('resets activity at retry entry and rejects a timed-out orphan controller after ownership moves', async () => {
 		const attempts = createRecorder<readonly [TaskControllerInterface]>()
 		const orphan = createGate()
-		const run: WorkflowFunction = async (controller) => {
+		const record: WorkflowFunction = async (controller) => {
 			attempts.handler(controller)
 			if (attempts.count === 1) {
 				controller.report({ note: 'old attempt' })
@@ -2157,9 +2157,9 @@ describe('WorkflowRunner — activity ownership across attempts', () => {
 			return 'recovered'
 		}
 		const definition = buildDefinition([
-			{ id: 'a', tasks: [reliableTask('t0', 'run', { timeout: 15, retries: 1 })] },
+			{ id: 'a', tasks: [reliableTask('t0', 'record', { timeout: 15, retries: 1 })] },
 		])
-		const workflow = createWorkflow(definition, { functions: { run } })
+		const workflow = createWorkflow(definition, { functions: { record } })
 		const task = workflow.phase('a')?.task('t0')
 		if (task === undefined) throw new Error('expected task')
 		const events = createRecorders<TaskEventMap, TaskEvent>(task.emitter, TASK_EVENTS)
@@ -2285,7 +2285,7 @@ describe('WorkflowRunner — task stop and cooperative task gates', () => {
 
 	it('a paused task occupies its acquired concurrency slot until resume', async () => {
 		const started = createRecorder<readonly [string]>()
-		const run: WorkflowFunction = (controller) => {
+		const record: WorkflowFunction = (controller) => {
 			started.handler(controller.task.id)
 			return controller.task.id
 		}
@@ -2293,10 +2293,10 @@ describe('WorkflowRunner — task stop and cooperative task gates', () => {
 			{
 				id: 'a',
 				concurrency: 1,
-				tasks: [functionTask('t0', 'run'), functionTask('t1', 'run')],
+				tasks: [functionTask('t0', 'record'), functionTask('t1', 'record')],
 			},
 		])
-		const workflow = createWorkflow(definition, { functions: { run } })
+		const workflow = createWorkflow(definition, { functions: { record } })
 		const paused = workflow.phase('a')?.task('t0')
 		if (paused === undefined) throw new Error('expected paused task')
 		paused.pause()
@@ -2312,7 +2312,7 @@ describe('WorkflowRunner — task stop and cooperative task gates', () => {
 
 	it('paused attempts exhaust retries without dispatch and an old gate cannot dispatch after resume', async () => {
 		const started = createRecorder<readonly [string]>()
-		const run: WorkflowFunction = (controller) => {
+		const record: WorkflowFunction = (controller) => {
 			started.handler(controller.task.id)
 			return controller.task.id
 		}
@@ -2320,10 +2320,10 @@ describe('WorkflowRunner — task stop and cooperative task gates', () => {
 			{
 				id: 'a',
 				concurrency: 1,
-				tasks: [reliableTask('t0', 'run', { timeout: 15, retries: 1 })],
+				tasks: [reliableTask('t0', 'record', { timeout: 15, retries: 1 })],
 			},
 		])
-		const workflow = createWorkflow(definition, { functions: { run } })
+		const workflow = createWorkflow(definition, { functions: { record } })
 		const paused = workflow.phase('a')?.task('t0')
 		if (paused === undefined) throw new Error('expected paused task')
 		const reports = createRecorders<TaskEventMap, TaskEvent>(paused.emitter, TASK_EVENTS)

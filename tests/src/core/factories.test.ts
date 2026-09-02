@@ -12,6 +12,8 @@ import {
 	createWorkflow,
 	createWorkflowContract,
 	createWorkflowRunner,
+	createWorkflowTree,
+	captureWorkflowOptions,
 	definitionToSnapshot,
 	isWorkflowError,
 	MAX_TIMER_MS,
@@ -33,7 +35,7 @@ function runner(): ReturnType<typeof createWorkflowRunner> {
 const ROUND_TRIP_TIMEOUT_MS = 30_000
 
 // A fuller definition (two phases, three tasks, a concurrency throttle, an explicit bail) used by
-// the createWorkflow / createRestoredWorkflow / snapshot-trio tests. Every `run` is a plain registry-name
+// the createWorkflow / createRestoredWorkflow / snapshot-trio tests. Every `behavior` is a plain registry-name
 // string resolved through the construction-time registry.
 function localDefinition(overrides: Partial<WorkflowDefinition> = {}): WorkflowDefinition {
 	return {
@@ -47,14 +49,14 @@ function localDefinition(overrides: Partial<WorkflowDefinition> = {}): WorkflowD
 				name: 'Build',
 				concurrency: 2,
 				tasks: [
-					{ id: 'task-compile', name: 'Compile', run: 'compile', retries: 2, timeout: 500 },
-					{ id: 'task-scan', name: 'Scan', description: 'Security scan', run: 'scan' },
+					{ id: 'task-compile', name: 'Compile', behavior: 'compile', retries: 2, timeout: 500 },
+					{ id: 'task-scan', name: 'Scan', description: 'Security scan', behavior: 'scan' },
 				],
 			},
 			{
 				id: 'phase-review',
 				name: 'Review',
-				tasks: [{ id: 'task-audit', name: 'Audit', run: 'audit' }],
+				tasks: [{ id: 'task-audit', name: 'Audit', behavior: 'audit' }],
 			},
 		],
 		...overrides,
@@ -98,7 +100,7 @@ describe('createWorkflowContract — accepts valid definitions', () => {
 		const minimal: WorkflowDefinition = {
 			id: 'wf-min',
 			name: 'Minimal',
-			phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', run: 'f' }] }],
+			phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', behavior: 'f' }] }],
 		}
 		expect(contract.is(minimal)).toBe(true)
 	})
@@ -108,7 +110,7 @@ describe('createWorkflowContract — accepts valid definitions', () => {
 		expect(contract.is(localDefinition({ phases: [{ id: 'p', name: 'P', tasks: [] }] }))).toBe(true)
 	})
 
-	it('is() accepts a task with an omitted `run` (no behavior reference)', () => {
+	it('is() accepts a task with an omitted `behavior` (no behavior reference)', () => {
 		const definition = localDefinition({
 			phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T' }] }],
 		})
@@ -133,19 +135,19 @@ describe('createWorkflowContract — rejects malformed input', () => {
 		['phases not an array', { id: 'w', name: 'X', phases: 'nope' }],
 		['bail is not a boolean', { id: 'w', name: 'X', phases: [], bail: 'true' }],
 		[
-			'task run is not a string (an object cannot coerce)',
+			'task behavior is not a string (an object cannot coerce)',
 			{
 				id: 'w',
 				name: 'X',
-				phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', run: {} }] }],
+				phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', behavior: {} }] }],
 			},
 		],
 		[
-			'task run is an empty string',
+			'task behavior is an empty string',
 			{
 				id: 'w',
 				name: 'X',
-				phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', run: '' }] }],
+				phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', behavior: '' }] }],
 			},
 		],
 		[
@@ -208,6 +210,70 @@ describe('createWorkflowContract — generate / round-trip parity', () => {
 })
 
 // ── createWorkflow — builds the live tree (the W-b factory) ──
+
+describe('createWorkflowTree — the shared construction path', () => {
+	it('builds the same tree createWorkflow builds from the same definition and bag', () => {
+		const definition = localDefinition()
+		const captured = captureWorkflowOptions({ functions: RESTORE_FUNCTIONS })
+
+		const direct = createWorkflowTree(definition, captured.bail, captured)
+		const through = createWorkflow(definition, { functions: RESTORE_FUNCTIONS })
+
+		// The `created` / `updated` stamps are wall-clock, so the structural payload is what the two
+		// paths must agree on.
+		expect(direct.snapshot().phases).toEqual(through.snapshot().phases)
+		expect([direct.id, direct.name, direct.description, direct.bail]).toEqual([
+			through.id,
+			through.name,
+			through.description,
+			through.bail,
+		])
+	})
+
+	it('takes the definition policy when the override is undefined', () => {
+		const captured = captureWorkflowOptions({})
+
+		const graceful = createWorkflowTree(localDefinition({ bail: false }), captured.bail, captured)
+		const halting = createWorkflowTree(localDefinition({ bail: true }), captured.bail, captured)
+
+		expect(graceful.bail).toBe(false)
+		expect(halting.bail).toBe(true)
+	})
+
+	it('seeds the override onto the workflow and every inheriting phase', () => {
+		const captured = captureWorkflowOptions({ bail: true })
+
+		const workflow = createWorkflowTree(localDefinition({ bail: false }), captured.bail, captured)
+
+		expect(workflow.bail).toBe(true)
+		expect(workflow.phases.phases().map((phase) => phase.bail)).toEqual([true, true])
+	})
+
+	it('leaves a phase declaring its own policy alone', () => {
+		const captured = captureWorkflowOptions({})
+		const definition = localDefinition({
+			bail: false,
+			phases: [
+				{ id: 'strict', name: 'Strict', bail: true, tasks: [] },
+				{ id: 'lenient', name: 'Lenient', tasks: [] },
+			],
+		})
+
+		const workflow = createWorkflowTree(definition, captured.bail, captured)
+
+		expect(workflow.phases.phases().map((phase) => phase.bail)).toEqual([true, false])
+	})
+
+	it('resolves each task handler from the bag it is handed', () => {
+		const captured = captureWorkflowOptions({ functions: RESTORE_FUNCTIONS })
+
+		const workflow = createWorkflowTree(localDefinition(), captured.bail, captured)
+
+		expect(workflow.phase('phase-build')?.task('task-compile')?.handler).toBe(
+			RESTORE_FUNCTIONS.compile,
+		)
+	})
+})
 
 describe('createWorkflow — builds the live tree (the W-b factory)', () => {
 	it('brings the definition to life with lineage + the definition bail', () => {
@@ -274,7 +340,7 @@ describe('createWorkflow — builds the live tree (the W-b factory)', () => {
 	})
 
 	it(
-		'PROGRAMMATIC-FIRST: a task whose `run` resolves against `options.functions` runs the real handler at construction time (via a live runner)',
+		'PROGRAMMATIC-FIRST: a task whose `behavior` resolves against `options.functions` runs the real handler at construction time (via a live runner)',
 		async () => {
 			const seen = createRecorder<readonly [string]>()
 			const compile: WorkflowFunction = (controller) => {
@@ -295,7 +361,7 @@ describe('createWorkflow — builds the live tree (the W-b factory)', () => {
 		ROUND_TRIP_TIMEOUT_MS,
 	)
 
-	it('an absent or unresolved `run` has no handler, with execution distinguishing the two', () => {
+	it('an absent or unresolved `behavior` has no handler, with execution distinguishing the two', () => {
 		const workflow = createWorkflow(localDefinition(), { functions: {} })
 		expect(workflow.phase('phase-build')?.task('task-compile')?.handler).toBeUndefined()
 	})
@@ -370,29 +436,29 @@ describe('createRestoredWorkflow / cloneWorkflowSnapshot — the round-trip inve
 	it('createRestoredWorkflow preserves an unresolved behavior reference for inspection', () => {
 		const snapshot = createWorkflow(localDefinition()).snapshot()
 		const restored = createRestoredWorkflow(snapshot)
-		expect(restored.phase('phase-build')?.task('task-compile')?.run).toBe('compile')
+		expect(restored.phase('phase-build')?.task('task-compile')?.behavior).toBe('compile')
 		expect(restored.phase('phase-build')?.task('task-compile')?.handler).toBeUndefined()
 		expect(() => runner().execute(restored)).toThrow(/not drivable/)
 	})
 
-	it("SNAPSHOT TRIO round-trip: a definition's run/retries/timeout survive definitionToSnapshot → live tree → snapshot() → restore", () => {
+	it("SNAPSHOT TRIO round-trip: a definition's behavior/retries/timeout survive definitionToSnapshot → live tree → snapshot() → restore", () => {
 		const definition = localDefinition()
 		const snapshot = definitionToSnapshot(definition, false)
 		const compileSnap = snapshot.phases[0]?.tasks[0]
-		expect(compileSnap?.run).toBe('compile')
+		expect(compileSnap?.behavior).toBe('compile')
 		expect(compileSnap?.retries).toBe(2)
 		expect(compileSnap?.timeout).toBe(500)
 
 		const workflow = createWorkflow(definition)
 		const liveSnapshot = workflow.snapshot()
 		const liveCompile = liveSnapshot.phases[0]?.tasks[0]
-		expect(liveCompile?.run).toBe('compile')
+		expect(liveCompile?.behavior).toBe('compile')
 		expect(liveCompile?.retries).toBe(2)
 		expect(liveCompile?.timeout).toBe(500)
 
 		const restored = createRestoredWorkflow(liveSnapshot, { functions: RESTORE_FUNCTIONS })
 		const restoredCompile = restored.phase('phase-build')?.task('task-compile')
-		expect(restoredCompile?.run).toBe('compile')
+		expect(restoredCompile?.behavior).toBe('compile')
 		expect(restoredCompile?.retries).toBe(2)
 		expect(restoredCompile?.timeout).toBe(500)
 	})
@@ -615,7 +681,7 @@ describe('createRestoredWorkflow / cloneWorkflowSnapshot — the round-trip inve
 		expect(isWorkflowError(error) ? error.context?.phase : undefined).toBe(firstPhase.id)
 	})
 
-	it('cloneWorkflowSnapshot rejects a TaskSnapshot with an empty `run`, a negative `retries`, or a fractional `timeout` (naming the task)', () => {
+	it('cloneWorkflowSnapshot rejects a TaskSnapshot with an empty `behavior`, a negative `retries`, or a fractional `timeout` (naming the task)', () => {
 		const snapshot = createWorkflow(localDefinition()).snapshot()
 		const firstPhase = snapshot.phases[0]
 		if (firstPhase === undefined) throw new Error('expected at least one phase')
@@ -627,7 +693,7 @@ describe('createRestoredWorkflow / cloneWorkflowSnapshot — the round-trip inve
 			phases: [
 				{
 					...firstPhase,
-					tasks: [{ ...firstTask, run: '' }, ...firstPhase.tasks.slice(1)],
+					tasks: [{ ...firstTask, behavior: '' }, ...firstPhase.tasks.slice(1)],
 				},
 				...snapshot.phases.slice(1),
 			],
@@ -729,8 +795,8 @@ describe('createWorkflowRunner', () => {
 			id: 'wf',
 			name: 'WF',
 			phases: [
-				{ id: 'a', name: 'A', tasks: [{ id: 't0', name: 'T0', run: 'f' }] },
-				{ id: 'b', name: 'B', tasks: [{ id: 't1', name: 'T1', run: 'f' }] },
+				{ id: 'a', name: 'A', tasks: [{ id: 't0', name: 'T0', behavior: 'f' }] },
+				{ id: 'b', name: 'B', tasks: [{ id: 't1', name: 'T1', behavior: 'f' }] },
 			],
 		}
 		const order: string[] = []
@@ -746,7 +812,7 @@ describe('createWorkflowRunner', () => {
 		const definition: WorkflowDefinition = {
 			id: 'wf',
 			name: 'WF',
-			phases: [{ id: 'a', name: 'A', tasks: [{ id: 't', name: 'T', run: 'unregistered' }] }],
+			phases: [{ id: 'a', name: 'A', tasks: [{ id: 't', name: 'T', behavior: 'unregistered' }] }],
 		}
 		expect(() => createWorkflowRunner().execute(definition)).toThrow(/not drivable/)
 	})

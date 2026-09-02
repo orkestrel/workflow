@@ -1,7 +1,6 @@
 import type { Result } from '@orkestrel/contract'
 import type { EmitterInterface } from '@orkestrel/emitter'
 import type {
-	DeferredInterface,
 	PhaseContext,
 	PhaseEventMap,
 	PhaseInterface,
@@ -25,7 +24,6 @@ import { WorkflowError } from '../errors.js'
 import {
 	buildPhaseContext,
 	buildTaskContext,
-	createDeferred,
 	derivePhaseStatus,
 	failure,
 	findFailure,
@@ -75,11 +73,11 @@ import { TaskManager } from '../tasks/TaskManager.js'
  *   construction path {@link #append} uses at build time, so a live mint and a restored/built
  *   task are wired IDENTICALLY. At construction, the workflow-level
  *   {@link import('../types.js').WorkflowFunctions} registry (threaded from
- *   {@link import('../types.js').WorkflowOptions.functions}) resolves every unique initial `run`
+ *   {@link import('../types.js').WorkflowOptions.functions}) resolves every unique initial `behavior`
  *   name ONCE before any task is built; siblings sharing a name receive the exact same captured
  *   runtime {@link import('../types.js').TaskInterface.handler}. A later live {@link add} reads
  *   that name once from the retained registry at its own mint moment. An omitted or unregistered
- *   `run` resolves to no handler; only omission is a no-op, while an unresolved present name makes
+ *   `behavior` resolves to no handler; only omission is a no-op, while an unresolved present name makes
  *   the containing tree non-drivable.
  * - **Runtime lifecycle (AGENTS §10).** `pause` / `resume` / `wait` mirror the workflow's own
  *   quartet, scoped to this phase — a driving
@@ -91,16 +89,16 @@ import { TaskManager } from '../tasks/TaskManager.js'
  *   has nothing left to pause for.
  */
 export class Phase implements PhaseInterface {
-	declare readonly description?: string
 	readonly #id: string
 	#name: string
+	#description: string | undefined
 	readonly #workflow: WorkflowInterface
 	// Escalate a derived-status change UP to the parent workflow (which re-derives under `bail`)
 	// — injected by the parent so the phase needs no back-reference plumbing of its own.
 	readonly #escalateUp: () => void
 	readonly #tasks: TaskManager = new TaskManager()
 	// The workflow-level function registry retained from Workflow. Initial tasks capture one
-	// binding per unique run name. A later live mint reads its own
+	// binding per unique behavior name. A later live mint reads its own
 	// binding from this retained registry; existing handlers never change when the registry does.
 	readonly #functions: WorkflowFunctions | undefined
 	readonly #silence: number | undefined
@@ -123,7 +121,7 @@ export class Phase implements PhaseInterface {
 	#paused: boolean
 	// The parked `wait()` gate while paused; `undefined` when not paused — released (resolved) by
 	// `resume` / `stop` / `skip`.
-	#gate: DeferredInterface<void> | undefined
+	#gate: PromiseWithResolvers<void> | undefined
 
 	constructor(
 		snapshot: PhaseSnapshot,
@@ -139,20 +137,15 @@ export class Phase implements PhaseInterface {
 		const tasks = options?.tasks
 		this.#id = snapshot.id
 		this.#name = snapshot.name
-		if (snapshot.description !== undefined) {
-			Object.defineProperty(this, 'description', {
-				configurable: true,
-				value: snapshot.description,
-			})
-		}
+		this.#description = snapshot.description
 		this.#workflow = workflow
 		this.#escalateUp = escalate
 		this.#functions = functions
 		this.#silence = silence
 		const handlers = new Map<string, WorkflowFunction | undefined>()
 		for (const task of snapshot.tasks) {
-			if (task.run !== undefined && !handlers.has(task.run)) {
-				handlers.set(task.run, functions?.[task.run])
+			if (task.behavior !== undefined && !handlers.has(task.behavior)) {
+				handlers.set(task.behavior, functions?.[task.behavior])
 			}
 		}
 		// The effective per-phase policy: the explicit workflow `bail` OVERRIDE when supplied (a
@@ -171,7 +164,7 @@ export class Phase implements PhaseInterface {
 		// on a transition, carrying its own restore state and the once-captured handler for its run.
 		for (const task of snapshot.tasks) {
 			const taskOptions = tasks?.[task.id]
-			const handler = task.run === undefined ? undefined : handlers.get(task.run)
+			const handler = task.behavior === undefined ? undefined : handlers.get(task.behavior)
 			this.#append(task, taskOptions, handler)
 		}
 		// Restore the override DIRECTLY from the snapshot's own field (present only when a whole-
@@ -195,13 +188,17 @@ export class Phase implements PhaseInterface {
 		return this.#name
 	}
 
+	get description(): string | undefined {
+		return this.#description
+	}
+
 	get context(): PhaseContext {
 		// Computed fresh so a renamed phase's context reflects its CURRENT identity — the phase's
 		// own id/name/description plus the live parent workflow context.
 		return buildPhaseContext(this.#workflow.context, {
 			id: this.#id,
 			name: this.#name,
-			...(this.description === undefined ? {} : { description: this.description }),
+			...(this.#description === undefined ? {} : { description: this.#description }),
 		})
 	}
 
@@ -271,7 +268,7 @@ export class Phase implements PhaseInterface {
 		// nothing to suspend.
 		if (this.#paused || isTerminalStatus(this.status)) return
 		this.#paused = true
-		this.#gate = createDeferred<void>()
+		this.#gate = Promise.withResolvers<void>()
 		this.#emitter.emit('pause')
 	}
 
@@ -370,12 +367,7 @@ export class Phase implements PhaseInterface {
 			})
 		}
 		if (value.name !== undefined) this.#name = value.name
-		if (value.description !== undefined) {
-			Object.defineProperty(this, 'description', {
-				configurable: true,
-				value: value.description,
-			})
-		}
+		if (value.description !== undefined) this.#description = value.description
 		if (value.concurrency !== undefined) this.#concurrency = value.concurrency
 		if (value.bail !== undefined) this.#bail = value.bail
 	}
@@ -389,7 +381,7 @@ export class Phase implements PhaseInterface {
 		return {
 			id: this.id,
 			name: this.name,
-			...(this.description === undefined ? {} : { description: this.description }),
+			...(this.#description === undefined ? {} : { description: this.#description }),
 			status: this.status,
 			...(this.#override === undefined ? {} : { override: this.#override }),
 			bail: this.#bail,
@@ -477,7 +469,7 @@ export class Phase implements PhaseInterface {
 
 	// Build one live task from its snapshot, threading its per-task options (its own `on` /
 	// `metadata`, keyed by id under the phase options) and its restore state (including its
-	// declarative `run` / `retries` / `timeout`), then append it.
+	// declarative `behavior` / `retries` / `timeout`), then append it.
 	#append(
 		task: TaskSnapshot,
 		options: TaskOptions | undefined,
@@ -506,7 +498,7 @@ export class Phase implements PhaseInterface {
 			options,
 			snapshot.status,
 			snapshot.result,
-			snapshot.run,
+			snapshot.behavior,
 			snapshot.retries,
 			snapshot.timeout,
 			snapshot.metadata,
@@ -518,11 +510,12 @@ export class Phase implements PhaseInterface {
 	}
 
 	// MINT a live task from a TaskDefinition for a live `add` — converts it to an initial
-	// TaskSnapshot (definitionToSnapshot's per-task step, carrying its `run` / `retries` /
+	// TaskSnapshot (definitionToSnapshot's per-task step, carrying its `behavior` / `retries` /
 	// `timeout`) then resolves its handler once against the retained registry for this live mint.
 	#mint(definition: TaskDefinition): Task {
 		const snapshot = taskDefinitionToSnapshot(definition)
-		const handler = snapshot.run === undefined ? undefined : this.#functions?.[snapshot.run]
+		const handler =
+			snapshot.behavior === undefined ? undefined : this.#functions?.[snapshot.behavior]
 		return this.#create(snapshot, undefined, handler)
 	}
 

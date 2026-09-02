@@ -13,7 +13,8 @@ import type {
 	WorkflowStoreInterface,
 } from '@src/core'
 import { createRecorder, requireValue } from '@orkestrel/test'
-import { createScheduler, createWorkflowRunner, TaskController } from '@src/core'
+import { createScheduler, createWorkflowRunner } from '@src/core'
+import { TaskController } from '../src/core/tasks/TaskController.js'
 
 /** Shared invalid task activity frames used by cloner and guard boundary tests. */
 export const INVALID_TASK_ACTIVITIES: ReadonlyArray<readonly [input: unknown]> = Object.freeze([
@@ -122,7 +123,7 @@ export function omitTaskActivity(snapshot: TaskSnapshot): TaskSnapshot {
 		...(snapshot.result === undefined ? {} : { result: snapshot.result }),
 		metadata: snapshot.metadata,
 		attempts: snapshot.attempts,
-		...(snapshot.run === undefined ? {} : { run: snapshot.run }),
+		...(snapshot.behavior === undefined ? {} : { behavior: snapshot.behavior }),
 		...(snapshot.retries === undefined ? {} : { retries: snapshot.retries }),
 		...(snapshot.timeout === undefined ? {} : { timeout: snapshot.timeout }),
 	}
@@ -424,19 +425,19 @@ export function buildWorkflowDefinition(
 				name: 'Build',
 				concurrency: 2,
 				tasks: [
-					{ id: 'task-compile', name: 'Compile', run: 'compile' },
+					{ id: 'task-compile', name: 'Compile', behavior: 'compile' },
 					{
 						id: 'task-scan',
 						name: 'Scan',
 						description: 'Security scan',
-						run: 'scanner',
+						behavior: 'scanner',
 					},
 				],
 			},
 			{
 				id: 'phase-review',
 				name: 'Review',
-				tasks: [{ id: 'task-audit', name: 'Audit', run: 'auditor' }],
+				tasks: [{ id: 'task-audit', name: 'Audit', behavior: 'auditor' }],
 			},
 		],
 		...overrides,
@@ -462,14 +463,14 @@ export function buildReleaseDefinition(id = 'release'): WorkflowDefinition {
 				id: 'build',
 				name: 'Build',
 				tasks: [
-					{ id: 'compile', name: 'Compile', run: 'compile' },
-					{ id: 'lint', name: 'Lint', run: 'lint' },
+					{ id: 'compile', name: 'Compile', behavior: 'compile' },
+					{ id: 'lint', name: 'Lint', behavior: 'lint' },
 				],
 			},
 			{
 				id: 'ship',
 				name: 'Ship',
-				tasks: [{ id: 'publish', name: 'Publish', run: 'publish' }],
+				tasks: [{ id: 'publish', name: 'Publish', behavior: 'publish' }],
 			},
 		],
 	}

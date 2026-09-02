@@ -69,7 +69,6 @@ export class WorkflowPersistence implements WorkflowPersistenceInterface {
 		if (this.#error === undefined) return true
 		if (this.#fault === undefined) {
 			this.#fault = Object.freeze({
-				origin: 'persistence',
 				checkpoint,
 				message: this.#error,
 				...(task === undefined ? {} : { task: task.id }),

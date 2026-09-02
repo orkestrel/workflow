@@ -162,7 +162,7 @@ describe('MemoryWorkflowStore — mid-manual-drive + paused round-trips (paused/
 					id: 'p',
 					name: 'P',
 					concurrency: 3,
-					tasks: [{ id: 't', name: 'T', run: 'f' }],
+					tasks: [{ id: 't', name: 'T', behavior: 'f' }],
 				},
 			],
 		})
@@ -193,21 +193,21 @@ describe('MemoryWorkflowStore — mid-manual-drive + paused round-trips (paused/
 	})
 })
 
-describe('MemoryWorkflowStore — the declarative task trio (run/retries/timeout) round-trips', () => {
-	it('persists + restores run/retries/timeout through the store', async () => {
+describe('MemoryWorkflowStore — the declarative task trio (behavior/retries/timeout) round-trips', () => {
+	it('persists + restores behavior/retries/timeout through the store', async () => {
 		const store = createMemoryWorkflowStore()
 		const definition = buildWorkflowDefinition({
 			phases: [
 				{
 					id: 'p',
 					name: 'P',
-					tasks: [{ id: 't', name: 'T', run: 'compile', retries: 2, timeout: 500 }],
+					tasks: [{ id: 't', name: 'T', behavior: 'compile', retries: 2, timeout: 500 }],
 				},
 			],
 		})
 		const workflow = createWorkflow(definition)
 		const snapshot = workflow.snapshot()
-		expect(snapshot.phases[0]?.tasks[0]?.run).toBe('compile')
+		expect(snapshot.phases[0]?.tasks[0]?.behavior).toBe('compile')
 		expect(snapshot.phases[0]?.tasks[0]?.retries).toBe(2)
 		expect(snapshot.phases[0]?.tasks[0]?.timeout).toBe(500)
 
@@ -215,9 +215,15 @@ describe('MemoryWorkflowStore — the declarative task trio (run/retries/timeout
 		const got = await store.get(snapshot.id)
 		expect(got).toBeDefined()
 		if (got === undefined) return
+		// The stored payload is what a consumer's disk, database, or prompt companion holds, so the
+		// registry key it serializes is a contract of its own: the persisted field is `behavior`,
+		// and a snapshot written by an earlier release under `run` no longer round-trips.
+		const stored = JSON.stringify(got)
+		expect(stored).toContain('"behavior":"compile"')
+		expect(stored).not.toContain('"run"')
 		const restored = createRestoredWorkflow(got, { functions: RESTORE_FUNCTIONS })
 		const task = restored.phase('p')?.task('t')
-		expect(task?.run).toBe('compile')
+		expect(task?.behavior).toBe('compile')
 		expect(task?.retries).toBe(2)
 		expect(task?.timeout).toBe(500)
 	})

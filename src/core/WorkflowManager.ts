@@ -10,8 +10,8 @@ import type {
 } from './types.js'
 import { isArray } from '@orkestrel/contract'
 import { cloneWorkflowSnapshot } from './cloners.js'
-import { DEFAULT_BAIL } from './constants.js'
-import { captureWorkflowOptions, definitionToSnapshot } from './helpers.js'
+import { createWorkflowTree } from './factories.js'
+import { captureWorkflowOptions } from './helpers.js'
 import { Workflow } from './Workflow.js'
 
 /**
@@ -56,7 +56,7 @@ export class WorkflowManager implements WorkflowManagerInterface {
 	readonly #hydrations = new Map<string, Set<symbol>>()
 	#generation = Symbol()
 	// The functions registry flowed into every workflow this manager mints or hydrates, so
-	// each live task's `run` resolves to a real `handler` (RUNNABLE) rather than the
+	// each live task's `behavior` resolves to a real `handler` (RUNNABLE) rather than the
 	// inspectable unresolved state; the runner rejects it until matching functions are supplied.
 	readonly #functions: WorkflowFunctions | undefined
 	// The optional durable store backing `open` / `save`; `undefined` ⇒ registry-only (both lenient).
@@ -196,14 +196,11 @@ export class WorkflowManager implements WorkflowManagerInterface {
 		}
 	}
 
-	// Build the live tree from a definition exactly as `createWorkflow` does — the shared
-	// `captureWorkflowOptions` / `definitionToSnapshot` steps, then the `Workflow` constructor.
-	// Constructing here rather than importing this module's own factory keeps the factories→classes
-	// import direction `WorkflowRunner` records, so no class↔factory cycle exists.
+	// Build the live tree through the one shared construction path `createWorkflow` and the
+	// runner also take, so a minted workflow can never drift from a directly built one.
 	#build(definition: WorkflowDefinition): WorkflowInterface {
 		const captured = this.#captured()
-		const bail = captured.bail ?? definition.bail ?? DEFAULT_BAIL
-		return new Workflow(definitionToSnapshot(definition, bail), captured)
+		return createWorkflowTree(definition, captured.bail, captured)
 	}
 
 	// Rebuild the live tree from an already-owned snapshot exactly as `createRestoredWorkflow`

@@ -142,7 +142,7 @@ describe('DatabaseWorkflowStore — mid-manual-drive + paused round-trips (pause
 						id: 'p',
 						name: 'P',
 						concurrency: 3,
-						tasks: [{ id: 't', name: 'T', run: 'f' }],
+						tasks: [{ id: 't', name: 'T', behavior: 'f' }],
 					},
 				],
 			})
@@ -171,9 +171,9 @@ describe('DatabaseWorkflowStore — mid-manual-drive + paused round-trips (pause
 	)
 })
 
-describe('DatabaseWorkflowStore — the declarative task trio (run/retries/timeout) round-trips', () => {
+describe('DatabaseWorkflowStore — the declarative task trio (behavior/retries/timeout) round-trips', () => {
 	it(
-		'persists + restores run/retries/timeout through the opaque JSON column',
+		'persists + restores behavior/retries/timeout through the opaque JSON column',
 		async () => {
 			const store = createDatabaseWorkflowStore(createMemoryDriver())
 			const definition = buildWorkflowDefinition({
@@ -181,7 +181,7 @@ describe('DatabaseWorkflowStore — the declarative task trio (run/retries/timeo
 					{
 						id: 'p',
 						name: 'P',
-						tasks: [{ id: 't', name: 'T', run: 'compile', retries: 2, timeout: 500 }],
+						tasks: [{ id: 't', name: 'T', behavior: 'compile', retries: 2, timeout: 500 }],
 					},
 				],
 			})
@@ -193,7 +193,7 @@ describe('DatabaseWorkflowStore — the declarative task trio (run/retries/timeo
 			if (got === undefined) return
 			const restored = createRestoredWorkflow(got, { functions: RESTORE_FUNCTIONS })
 			const task = restored.phase('p')?.task('t')
-			expect(task?.run).toBe('compile')
+			expect(task?.behavior).toBe('compile')
 			expect(task?.retries).toBe(2)
 			expect(task?.timeout).toBe(500)
 		},

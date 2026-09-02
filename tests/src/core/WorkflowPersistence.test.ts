@@ -11,7 +11,7 @@ const DEFINITION: WorkflowDefinition = {
 		{
 			id: 'phase',
 			name: 'Phase',
-			tasks: [{ id: 'task', name: 'Task', run: 'work', retries: 1 }],
+			tasks: [{ id: 'task', name: 'Task', behavior: 'work', retries: 1 }],
 		},
 	],
 }
@@ -185,7 +185,6 @@ describe('runner durability', () => {
 			expect(result.status).toBe(status)
 			expect(result.durable).toBe(durable)
 			expect(result.fault).toMatchObject({
-				origin: 'persistence',
 				checkpoint,
 				message: `${checkpoint} unavailable`,
 			})
@@ -377,7 +376,6 @@ describe('runner durability', () => {
 		expect(result.status).toBe('stopped')
 		expect(result.durable).toBe(false)
 		expect(result.fault).toEqual({
-			origin: 'persistence',
 			checkpoint: 'initial',
 			message: 'disk unavailable',
 		})

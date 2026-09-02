@@ -5,9 +5,10 @@ import type {
 	WorkflowDefinition,
 	WorkflowInterface,
 } from '@src/core'
-import { createWorkflow, Phase, createRestoredWorkflow } from '@src/core'
+import { createWorkflow, createRestoredWorkflow } from '@src/core'
 import { describe, expect, it } from 'vitest'
 import { createRecorder, createRecorders } from '@orkestrel/test'
+import { Phase } from '../../../../src/core/phases/Phase.js'
 import type { PhaseEvent } from '../../../setup.js'
 import { createErrorRecorder, PHASE_EVENTS } from '../../../setup.js'
 
@@ -27,7 +28,7 @@ function buildPhaseWorkflow(count: number): WorkflowDefinition {
 				tasks: Array.from({ length: count }, (_unused, index) => ({
 					id: `t${index}`,
 					name: `T${index}`,
-					run: 'f',
+					behavior: 'f',
 				})),
 			},
 		],
@@ -353,12 +354,12 @@ describe('Phase — the effective bail (per-phase override) round-trips', () => 
 					id: 'strict',
 					name: 'Strict',
 					bail: true,
-					tasks: [{ id: 't', name: 'T', run: 'f' }],
+					tasks: [{ id: 't', name: 'T', behavior: 'f' }],
 				},
 				{
 					id: 'inherit',
 					name: 'Inherit',
-					tasks: [{ id: 't', name: 'T', run: 'f' }],
+					tasks: [{ id: 't', name: 'T', behavior: 'f' }],
 				},
 			],
 		}
@@ -479,7 +480,7 @@ describe('Phase — wait()', () => {
 describe('Phase — structural API: add() mints a live task', () => {
 	it('add returns the created task in the Result and it is live + navigable in the tree', () => {
 		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(1)))
-		const result = phase.add({ id: 't1', name: 'T1', run: 'f' })
+		const result = phase.add({ id: 't1', name: 'T1', behavior: 'f' })
 		expect(result.success).toBe(true)
 		if (!result.success) throw new Error('expected add to succeed')
 		expect(result.value.id).toBe('t1')
@@ -491,7 +492,7 @@ describe('Phase — structural API: add() mints a live task', () => {
 	it('a minted task cascades status recomputes via start()/complete()', () => {
 		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(0)))
 		expect(phase.status).toBe('pending')
-		const result = phase.add({ id: 't0', name: 'T0', run: 'f' })
+		const result = phase.add({ id: 't0', name: 'T0', behavior: 'f' })
 		if (!result.success) throw new Error('expected add to succeed')
 		result.value.start()
 		expect(phase.status).toBe('running')
@@ -501,7 +502,7 @@ describe('Phase — structural API: add() mints a live task', () => {
 
 	it('duplicate task id fails with MUTATION', () => {
 		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(1)))
-		const result = phase.add({ id: 't0', name: 'Dup', run: 'f' })
+		const result = phase.add({ id: 't0', name: 'Dup', behavior: 'f' })
 		expect(result.success).toBe(false)
 		if (result.success) throw new Error('expected add to fail')
 		expect(result.error.code).toBe('MUTATION')
@@ -509,7 +510,7 @@ describe('Phase — structural API: add() mints a live task', () => {
 
 	it('an out-of-bounds index fails with MUTATION', () => {
 		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(1)))
-		const result = phase.add({ id: 't9', name: 'T9', run: 'f' }, 99)
+		const result = phase.add({ id: 't9', name: 'T9', behavior: 'f' }, 99)
 		expect(result.success).toBe(false)
 		if (result.success) throw new Error('expected add to fail')
 		expect(result.error.code).toBe('MUTATION')
@@ -518,7 +519,7 @@ describe('Phase — structural API: add() mints a live task', () => {
 	it('a terminal phase refuses add', () => {
 		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(1)))
 		phase.stop()
-		const result = phase.add({ id: 't9', name: 'T9', run: 'f' })
+		const result = phase.add({ id: 't9', name: 'T9', behavior: 'f' })
 		expect(result.success).toBe(false)
 		if (result.success) throw new Error('expected add to fail')
 		expect(result.error.code).toBe('MUTATION')
@@ -528,11 +529,11 @@ describe('Phase — structural API: add() mints a live task', () => {
 		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(2)))
 		phase.task('t0')?.start() // phase is now running
 		expect(phase.status).toBe('running')
-		const positioned = phase.add({ id: 't2', name: 'T2', run: 'f' }, 0)
+		const positioned = phase.add({ id: 't2', name: 'T2', behavior: 'f' }, 0)
 		if (positioned.success) throw new Error('expected positioned add to fail')
 		expect(positioned.error.code).toBe('MUTATION')
 		const events = createRecorders<PhaseEventMap, PhaseEvent>(phase.emitter, PHASE_EVENTS)
-		const appended = phase.add({ id: 't2', name: 'T2', run: 'f' })
+		const appended = phase.add({ id: 't2', name: 'T2', behavior: 'f' })
 		expect(appended.success).toBe(true)
 		expect(events.add.count).toBe(1)
 		// The phase stays non-terminal until the newly-added, still-pending task settles too — the
@@ -554,10 +555,10 @@ describe('Phase — add() resolves a minted task’s handler against the workflo
 		const handler = () => 'value'
 		const workflow = createWorkflow(buildPhaseWorkflow(0), { functions: { known: handler } })
 		const phase = lonePhase(workflow)
-		const known = phase.add({ id: 'k', name: 'K', run: 'known' })
+		const known = phase.add({ id: 'k', name: 'K', behavior: 'known' })
 		if (!known.success) throw new Error('expected add to succeed')
 		expect(known.value.handler).toBe(handler)
-		const unknown = phase.add({ id: 'u', name: 'U', run: 'missing' })
+		const unknown = phase.add({ id: 'u', name: 'U', behavior: 'missing' })
 		if (!unknown.success) throw new Error('expected add to succeed')
 		expect(unknown.value.handler).toBeUndefined()
 		const absent = phase.add({ id: 'a', name: 'A' })
@@ -595,11 +596,11 @@ describe('Phase — add/remove/move/update events fire on success only', () => {
 	it('emits add with the created task + index on success, nothing on refusal', () => {
 		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(1)))
 		const events = createRecorders<PhaseEventMap, PhaseEvent>(phase.emitter, PHASE_EVENTS)
-		const result = phase.add({ id: 't1', name: 'T1', run: 'f' })
+		const result = phase.add({ id: 't1', name: 'T1', behavior: 'f' })
 		if (!result.success) throw new Error('expected add to succeed')
 		expect(events.add.count).toBe(1)
 		expect(events.add.calls[0]).toEqual([result.value, 1])
-		phase.add({ id: 't0', name: 'Dup', run: 'f' })
+		phase.add({ id: 't0', name: 'Dup', behavior: 'f' })
 		expect(events.add.count).toBe(1)
 	})
 
@@ -634,6 +635,35 @@ describe('Phase — add/remove/move/update events fire on success only', () => {
 		expect(events.update.calls[0]).toEqual([result.value])
 		phase.update('missing', { name: 'x' })
 		expect(events.update.count).toBe(1)
+	})
+})
+
+describe('Phase — description membership', () => {
+	it('reports the member present whether or not the definition declared prose', () => {
+		const described = lonePhase(
+			createWorkflow({
+				id: 'wf',
+				name: 'WF',
+				phases: [
+					{
+						id: 'p',
+						name: 'P',
+						description: 'tier prose',
+						tasks: [{ id: 't0', name: 'T0', behavior: 'f' }],
+					},
+				],
+			}),
+		)
+		const bare = lonePhase(createWorkflow(buildPhaseWorkflow(1)))
+
+		// The getter lives on the prototype, so a reader probing membership gets the same answer
+		// either way and reads absence off the value alone.
+		expect('description' in described).toBe(true)
+		expect('description' in bare).toBe(true)
+		expect(described.description).toBe('tier prose')
+		expect(bare.description).toBeUndefined()
+		// An omitted description stays omitted in the pure-JSON payload rather than serializing null.
+		expect('description' in bare.snapshot()).toBe(false)
 	})
 })
 
