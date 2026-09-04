@@ -6,14 +6,22 @@ import type {
 	TaskInterface,
 	TaskResult,
 	TaskSnapshot,
+	TaskUpdate,
 	WorkflowDefinition,
 	WorkflowFunction,
 	WorkflowInterface,
 	WorkflowSnapshot,
 	WorkflowStoreInterface,
 } from '@src/core'
+import { compileGuard } from '@orkestrel/contract'
 import { createRecorder, requireValue } from '@orkestrel/test'
-import { createScheduler, createWorkflowRunner } from '@src/core'
+import {
+	Collection,
+	createScheduler,
+	createWorkflow,
+	createWorkflowRunner,
+	taskUpdateShape,
+} from '@src/core'
 import { TaskController } from '../src/core/tasks/TaskController.js'
 
 /** Shared invalid task activity frames used by cloner and guard boundary tests. */
@@ -129,7 +137,7 @@ export function omitTaskActivity(snapshot: TaskSnapshot): TaskSnapshot {
 	}
 }
 
-// ── Environment-agnostic base setup (AGENTS §16.1) ────────────────────────────
+// ── Environment-agnostic base setup ───────────────────────────────────────────
 //
 // Loaded first by every test project (`vite.config.ts` `setupFiles[0]`). Holds ONLY
 // helpers with no `node:*` / DOM dependency, so it is safe for `src:core`,
@@ -162,46 +170,20 @@ export function createTaskControllerFixture(
 	)
 }
 
-/** A manually-settled promise — the `resolve` / `reject` lifted out of its executor. */
-export interface TestGateInterface<T> {
-	readonly promise: Promise<T>
-	readonly resolve: (value: T) => void
-	readonly reject: (error: unknown) => void
-}
-
-/**
- * Create a {@link TestGateInterface} — a deferred whose `promise` settles only when
- * the test calls `resolve` / `reject`. Lets a test gate a real handler on a signal it
- * controls, to prove ordering / concurrency / pause behaviour without racing wall-clock
- * timers (AGENTS §16.1).
- *
- * @typeParam T - The value the gate's `promise` resolves with
- * @returns A gate exposing its `promise` and its `resolve` / `reject`
- */
-export function createGate<T = void>(): TestGateInterface<T> {
-	let resolve: (value: T) => void = () => {}
-	let reject: (error: unknown) => void = () => {}
-	const promise = new Promise<T>((res, rej) => {
-		resolve = res
-		reject = rej
-	})
-	return { promise, resolve, reject }
-}
-
 /**
  * A scripted real {@link WorkflowStoreInterface} boundary whose queued gates control store
  * settlement while its readonly histories expose the exact durable calls made by a test.
  */
 export class WorkflowStoreBoundary implements WorkflowStoreInterface {
-	readonly #reads: Array<TestGateInterface<WorkflowSnapshot | undefined>>
-	readonly #writes: Array<TestGateInterface<void>>
+	readonly #reads: Array<PromiseWithResolvers<WorkflowSnapshot | undefined>>
+	readonly #writes: Array<PromiseWithResolvers<void>>
 	readonly #gets: string[] = []
 	readonly #sets: WorkflowSnapshot[] = []
 	readonly #deletes: string[] = []
 
 	constructor(
-		reads: ReadonlyArray<TestGateInterface<WorkflowSnapshot | undefined>> = [],
-		writes: ReadonlyArray<TestGateInterface<void>> = [],
+		reads: ReadonlyArray<PromiseWithResolvers<WorkflowSnapshot | undefined>> = [],
+		writes: ReadonlyArray<PromiseWithResolvers<void>> = [],
 	) {
 		this.#reads = [...reads]
 		this.#writes = [...writes]
@@ -279,7 +261,7 @@ export class FaultBudget implements BudgetInterface<TokenUsage> {
 
 // ── Call recorder (a real callback, not a mock) ──────────────────────────────
 //
-// AGENTS §16.1: when a test only needs to count calls or inspect arguments, use a
+// When a test only needs to count calls or inspect arguments, use a
 // recorder — a real listener that records every invocation — rather than a test-
 // framework spy. `handler` is a genuine callback; `calls` is each invocation's
 // argument tuple, in order. The recorder itself is `@orkestrel/test`'s; what stays
@@ -287,7 +269,7 @@ export class FaultBudget implements BudgetInterface<TokenUsage> {
 
 /**
  * Create a recorder for an {@link import('@orkestrel/emitter').EmitterErrorHandler} — the
- * emitter's own listener-error channel (AGENTS §13): a `RecorderInterface<[error, event]>`
+ * emitter's own listener-error channel: a `RecorderInterface<[error, event]>`
  * whose `handler` is wired as the `error` option, so an emit-safety test asserts a buggy
  * listener's throw was routed here (with the offending event name) instead of corrupting the
  * entity. Argument order is `(error, event)`, matching `EmitterErrorHandler` — the invariant
@@ -314,7 +296,7 @@ export interface SignalListenerCountsInterface {
  * `addEventListener` / `removeEventListener` (delegating to the genuine implementation) and
  * counting `'abort'` adds and removes — so a test can prove a scheduler / primitive detaches
  * every abort listener it attaches (no leak), counting on the real signal rather than mocking
- * the unit under test (AGENTS §16). Environment-agnostic — `AbortSignal` exists in node and
+ * the unit under test. Environment-agnostic — `AbortSignal` exists in node and
  * the browser alike, so it lives in the shared setup.
  *
  * Local rather than `@orkestrel/test`'s `createSignal`, on two differences the swap would lose.
@@ -396,7 +378,7 @@ export function createRecordingScheduler(): RecordingSchedulerInterface {
 
 // ── Workflow fixtures (definitions + a deterministic settle, environment-agnostic) ──
 //
-// AGENTS §16.1: the recurring real {@link WorkflowDefinition} stubs the workflow tests
+// The recurring real {@link WorkflowDefinition} stubs the workflow tests
 // build, plus the deterministic settle helper that drives one through the real runner.
 // All plain `@src/core` data + the shipped `createWorkflowRunner` (no `node:*`, no DOM),
 // so they load in every project. A test keeps only its env-/scenario-specific bits local
@@ -406,7 +388,7 @@ export function createRecordingScheduler(): RecordingSchedulerInterface {
  * A real, valid {@link WorkflowDefinition} stub — a workflow with two phases, one task of
  * each `via` form, a `concurrency` throttle, and an explicit `bail`. Apply `overrides` to
  * produce a variant. The shared base the contract / factory / W-b entity tests build on (the
- * live tree is built from this), so the definition shape stays in one place (AGENTS §16.1).
+ * live tree is built from this), so the definition shape stays in one place.
  *
  * @param overrides - Fields to override on the default definition (`wf-1` / `Release`)
  * @returns The assembled workflow definition
@@ -445,11 +427,44 @@ export function buildWorkflowDefinition(
 }
 
 /**
+ * Returns the live tasks a fresh {@link buildWorkflowDefinition} tree holds, in the tuple order
+ * `phase-build/task-compile`, `phase-build/task-scan`, `phase-review/task-audit`. Each is a real
+ * `pending` task minted by the shipped {@link createWorkflow}, so a store test drives genuine
+ * entities with real ids and statuses rather than hand-rolled stand-ins. Every call mints a fresh
+ * tree, so one test's transitions cannot reach another test's tasks.
+ *
+ * @returns The live compile, scan, and audit tasks, in that positional order
+ */
+export function buildTasks(): readonly [TaskInterface, TaskInterface, TaskInterface] {
+	const workflow = createWorkflow(buildWorkflowDefinition())
+	return [
+		requireTask(workflow, 'phase-build', 'task-compile'),
+		requireTask(workflow, 'phase-build', 'task-scan'),
+		requireTask(workflow, 'phase-review', 'task-audit'),
+	]
+}
+
+/**
+ * Returns an empty {@link Collection} over live tasks, gated by the shipped `taskUpdateShape`
+ * compiled through the real {@link compileGuard} — the gated store the
+ * {@link import('@src/core').PhaseManager} and {@link import('@src/core').TaskManager} hold, built
+ * the way production builds it, so a refusal a test reads is the store's own rather than a
+ * fixture's. `noun` reaches the real constructor unchanged, so a test can read the vocabulary a
+ * refusal message names.
+ *
+ * @param noun - The entity noun every refusal message names. Default: `'task'`
+ * @returns A fresh collection holding no entries
+ */
+export function buildCollection(noun = 'task'): Collection<TaskInterface, TaskUpdate> {
+	return new Collection<TaskInterface, TaskUpdate>(noun, compileGuard(taskUpdateShape))
+}
+
+/**
  * A real two-phase `release` {@link WorkflowDefinition} (≥1 task each) — phase `build` runs
  * two `function` tasks concurrently, phase `ship` a third in a later phase. The handlers are
  * registered on the runner BY NAME (see {@link RELEASE_FUNCTIONS}), so a settled run records
  * real `completed` statuses + results. The shared store-test fixture both the Memory and the
- * Database `WorkflowStore` twins drive (AGENTS §16.1 — one stub, not a per-file copy).
+ * Database `WorkflowStore` twins drive (one stub, not a per-file copy).
  *
  * @param id - The workflow id (and snapshot key); defaults to `'release'`
  * @returns The assembled `release` workflow definition
@@ -479,7 +494,7 @@ export function buildReleaseDefinition(id = 'release'): WorkflowDefinition {
 /**
  * The registered behaviors a {@link buildReleaseDefinition}'s tasks dispatch to BY NAME — each
  * a real {@link WorkflowFunction} returning a distinct value, so a settled snapshot carries real
- * boxed results (AGENTS §16.1 — a real handler map shared by the store twins, never a mock).
+ * boxed results (a real handler map shared by the store twins, never a mock).
  */
 export const RELEASE_FUNCTIONS: Readonly<Record<string, WorkflowFunction>> = {
 	compile: (controller) => `built ${controller.task.id}`,
@@ -489,7 +504,7 @@ export const RELEASE_FUNCTIONS: Readonly<Record<string, WorkflowFunction>> = {
 
 /**
  * Drive a `definition` to a SETTLED {@link WorkflowSnapshot} through the real runner — the live
- * tree is built, executed (phases sequential, tasks concurrent via {@link RELEASE_FUNCTIONS}),
+ * tree is built, executed (phases sequential, tasks concurrent through {@link RELEASE_FUNCTIONS}),
  * and serialized. The genuine durable payload after a run (real `completed` statuses + recorded
  * TaskResults), not a hand-rolled stub. The runner is paced by an injected
  * {@link createRecordingScheduler}, which delegates to the shipped scheduler while counting

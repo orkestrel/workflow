@@ -1,10 +1,10 @@
 import type {
 	WorkflowDefinition,
-	WorkflowFunctions,
 	WorkflowInterface,
 	WorkflowManagerInterface,
 	WorkflowManagerOptions,
 	WorkflowOptions,
+	WorkflowRegistry,
 	WorkflowSnapshot,
 	WorkflowStoreInterface,
 } from './types.js'
@@ -32,8 +32,8 @@ import { Workflow } from './Workflow.js'
  *   earlier reads; wrong-key payloads reject with `RESTORE`. `save(id)` captures a registered
  *   workflow's snapshot at invocation and serializes same-id writes without coupling other ids.
  *   Both remain lenient without a store or registered id.
- * - **Removal.** `remove` drops one by id, or a batch (§9.2, array overload FIRST) — `true` when
- *   any was removed. `clear` empties the registry.
+ * - **Removal.** `remove` drops one by id, or a batch (array overload FIRST) — `true` only when
+ *   every id was removed. `clear` empties the registry.
  * - **No active pointer.** Unlike its `ConversationManager` / `WorkspaceManager` twins, there is
  *   no `active` / `switch` — nothing in the workflow domain renders "the current workflow".
  *
@@ -58,7 +58,7 @@ export class WorkflowManager implements WorkflowManagerInterface {
 	// The functions registry flowed into every workflow this manager mints or hydrates, so
 	// each live task's `behavior` resolves to a real `handler` (RUNNABLE) rather than the
 	// inspectable unresolved state; the runner rejects it until matching functions are supplied.
-	readonly #functions: WorkflowFunctions | undefined
+	readonly #functions: WorkflowRegistry | undefined
 	// The optional durable store backing `open` / `save`; `undefined` ⇒ registry-only (both lenient).
 	readonly #store: WorkflowStoreInterface | undefined
 
@@ -137,16 +137,20 @@ export class WorkflowManager implements WorkflowManagerInterface {
 		return saving.then(() => true)
 	}
 
-	// §9.2: the array overload FIRST, so a list resolves to the batch form.
+	// The array overload FIRST, so a list resolves to the batch form.
 	remove(ids: readonly string[]): boolean
 	remove(id: string): boolean
 	remove(ids: string | readonly string[]): boolean {
 		if (isArray(ids)) {
-			let removed = false
+			// The batch reports true only when EVERY id was removed, so a caller can tell a full
+			// removal from a partial one. Invalidation stays unconditional for every id whatever
+			// the delete reported, so the semantics of an absent id are unchanged. An empty list
+			// reports true vacuously — no id failed.
+			let removed = true
 			for (const id of ids) {
 				this.#invalidate(id)
 				this.#additions.delete(id)
-				if (this.#workflows.delete(id)) removed = true
+				if (!this.#workflows.delete(id)) removed = false
 			}
 			return removed
 		}

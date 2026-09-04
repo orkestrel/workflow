@@ -35,7 +35,7 @@ import { Runner } from './Runner.js'
 
 // Workflow contract factory — compiles the workflow shape (shapers.ts) into the
 // four lockstep outputs (JSON Schema + guard + parser + generator) and types the
-// result as the hand-written `WorkflowDefinition` (the source of truth, AGENTS §14).
+// result as the hand-written `WorkflowDefinition` (the source of truth).
 //
 // The compiled `ContractInterface<Infer<typeof workflowShape>>` is structurally
 // identical to `ContractInterface<WorkflowDefinition>` — verified bidirectionally,
@@ -46,11 +46,11 @@ import { Runner } from './Runner.js'
 // to it natively — no `as`. The round-trip parity test (generate → is → parse)
 // guards against any future drift between the two.
 //
-// `parse` is the contract's own parser, used directly: the shared compiler now
+// `parse` is the contract's own parser, used directly: the shared compiler
 // re-applies each leaf's `min` / `max` / `pattern` refinement after coercion
 // (compilers.ts `compileParser`, through the shared `stringOf` / `boundsOf`
 // combinators), so a parsed
-// `WorkflowDefinition` already satisfies `is` — refinements included (AGENTS §14
+// `WorkflowDefinition` already satisfies `is` — refinements included (the
 // parse↔guard soundness). An empty `id` or `concurrency: 0` parses to `undefined`
 // at the contract level, so no guard-gate wrapper is needed here.
 
@@ -98,10 +98,10 @@ export function createWorkflowContract(): ContractInterface<WorkflowDefinition> 
  * definition's `bail`, else the graceful {@link import('./constants.js').DEFAULT_BAIL}; it
  * feeds {@link import('./helpers.js').deriveWorkflowStatus}. Per-phase / per-task initial
  * listeners + metadata travel through `options.phases[id].on` /
- * `options.phases[id].tasks[id]` (the AGENTS §8 nested-by-id bag). The W-b tree is the
+ * `options.phases[id].tasks[id]` (the nested-by-id bag). The W-b tree is the
  * state machine ONLY — it does not execute tasks (W-c drives the transitions).
  *
- * `options.functions` is the {@link import('./types.js').WorkflowFunctions} registry each live
+ * `options.functions` is the {@link import('./types.js').WorkflowRegistry} registry each live
  * task's `behavior` name resolves against ONCE at construction into its runtime
  * {@link import('./types.js').TaskInterface.handler}. An omitted name is the deliberate no-op;
  * an unresolved present name remains inspectable but is rejected if execution is attempted.
@@ -258,7 +258,8 @@ export function createRecoveredWorkflow(
  * @remarks
  * The snapshot analogue of the server package's `createMemorySessionStore`
  * (and the `createMemoryQueueStore` family), but LEANER — there is no idle-TTL, so no
- * options bag (AGENTS §21 minimal): a persisted run-state lives until an explicit `delete`. This is
+ * options bag (the smallest interface the capability requires): a persisted run-state lives until
+ * an explicit `delete`. This is
  * the zero-plumbing DEFAULT (a plain `Map`); its driver-pluggable twin is
  * {@link createDatabaseWorkflowStore} (the snapshot as one opaque JSON column over a `databases`
  * table) — for a DURABLE store (run-state surviving a restart) pass it a JSON / SQLite / IndexedDB
@@ -473,7 +474,7 @@ export function createScheduler(): SchedulerInterface {
  * `id` / `input`, a `signal` that fires on the unit's `abort`, a runner-level `abort`,
  * or the attempt's timeout, a promise-parked `wait()`, and `spawn(input)` to fan out
  * sibling units. The run is **fail-fast**: the first unit failure (after retries)
- * aborts every other unit and rejects `execute` with that error. **Observable (§13):** a
+ * aborts every other unit and rejects `execute` with that error. **Observable:** a
  * typed `emitter` surfaces `start` / `unit` / `spawn` / `settle` / `fail` / `finish` / `abort`.
  *
  * Because `spawn` is fire-and-track (the runner awaits the whole spawn closure through an

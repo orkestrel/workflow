@@ -1,9 +1,9 @@
 import { createWorkflow } from '@src/core'
 import { describe, expect, it } from 'vitest'
 
-// The lean task child manager (AGENTS §9): a positional accessor + count, order preserved
+// The lean task child manager: a positional accessor + count, order preserved
 // across an interior skip. Exercised through a live tree (the manager is populated by the
-// factory build) — real data, no mocks (AGENTS §16).
+// factory build) — real data, no mocks.
 
 /** A live phase whose `tasks` manager holds `t0, t1, t2`. */
 function phaseWithTasks() {
@@ -27,7 +27,7 @@ function phaseWithTasks() {
 	return phase
 }
 
-describe('TaskManager — accessors (§9)', () => {
+describe('TaskManager — accessors', () => {
 	it('count reflects the appended tasks', () => {
 		expect(phaseWithTasks().tasks.count).toBe(3)
 	})
@@ -58,7 +58,7 @@ describe('TaskManager — positional order survives an interior skip', () => {
 	})
 })
 
-describe('TaskManager — add/remove/move/update Result matrix (via Phase, AGENTS §12)', () => {
+describe('TaskManager — add/remove/move/update Result matrix, through Phase', () => {
 	it('add succeeds with the minted task as the success value, appended at the end by default', () => {
 		const phase = phaseWithTasks()
 		const result = phase.add({ id: 't3', name: 'T3', behavior: 'f' })
@@ -68,7 +68,7 @@ describe('TaskManager — add/remove/move/update Result matrix (via Phase, AGENT
 		expect(phase.tasks.tasks().map((task) => task.id)).toEqual(['t0', 't1', 't2', 't3'])
 	})
 
-	it('add at an explicit index inserts there, shifting the suffix (order asserted via tasks())', () => {
+	it('add at an explicit index inserts there, shifting the suffix (order asserted through tasks())', () => {
 		const phase = phaseWithTasks()
 		const result = phase.add({ id: 't-mid', name: 'Mid', behavior: 'f' }, 1)
 		expect(result.success).toBe(true)
@@ -123,7 +123,7 @@ describe('TaskManager — add/remove/move/update Result matrix (via Phase, AGENT
 		expect(phase.tasks.count).toBe(3)
 	})
 
-	it('move repositions a pending task, order asserted via tasks()', () => {
+	it('move repositions a pending task, order asserted through tasks()', () => {
 		const phase = phaseWithTasks()
 		const result = phase.move('t0', 2)
 		expect(result.success).toBe(true)
@@ -170,7 +170,7 @@ describe('TaskManager — add/remove/move/update Result matrix (via Phase, AGENT
 		expect(result.error.code).toBe('MUTATION')
 	})
 
-	it('append throws MUTATION on a duplicate id (via a duplicate task id in the same phase definition)', () => {
+	it('append throws MUTATION on a duplicate id (through a duplicate task id in the same phase definition)', () => {
 		expect(() =>
 			createWorkflow({
 				id: 'wf',

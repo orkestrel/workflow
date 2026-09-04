@@ -6,7 +6,7 @@ import { Collection } from '../Collection.js'
 import { taskUpdateShape } from '../shapers.js'
 
 /**
- * Implements the lean child manager (AGENTS §9) of a {@link import('../phases/Phase.js').Phase}'s live
+ * Implements the lean child manager of a {@link import('../phases/Phase.js').Phase}'s live
  * tasks — the task vocabulary over one insertion-ordered {@link Collection}, so positional order
  * is preserved across an interior `skip` / `remove`.
  *
@@ -20,13 +20,14 @@ import { taskUpdateShape } from '../shapers.js'
  *   wiring path), `task(id)` looks one up, `tasks()` lists them in positional order, `count` is
  *   the tally. A `skip` is a STATUS change on a stored task (never a removal), so order survives
  *   it; a snapshot RESTORE re-`append`s in the snapshot's order, reproducing it exactly.
- * - **Gated mutation API (AGENTS §12).** `add` / `remove` / `move` / `update` are the graceful
+ * - **Gated mutation API.** `add` / `remove` / `move` / `update` are the graceful
  *   `Result` counterparts to `append`, gating ONLY on the target's OWN existence/status/id/bounds
  *   — a duplicate id, an absent/non-`pending` target, an out-of-bounds `index`, or a patch that
  *   fails {@link taskUpdateShape} validation all fail gracefully with a `MUTATION`
  *   {@link WorkflowError} instead of throwing.
- * - **No batch matrix.** A phase's tasks are a fixed positional set, so AGENTS §9.2 (the bulk verb
- *   overloads) is deliberately omitted — there is no `remove` family here.
+ * - **No batch matrix.** A phase's tasks are a fixed positional set, so
+ *   `.claude/rules/patterns.md` § Batch operations (the bulk verb
+ *   overloads) is deliberately omitted — no `remove` family lives here.
  * - **Event-free.** A purely structural container — the live {@link TaskInterface}s own their own
  *   emitters; the manager observes nothing.
  *

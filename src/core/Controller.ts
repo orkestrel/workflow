@@ -15,7 +15,7 @@ import { parkSignal } from './helpers.js'
  *   unit's own abort, the runner-level abort (the runner aborts every unit), and
  *   the per-attempt timeout — so it fires on any of the three. `aborted` and
  *   `abort(reason)` delegate to the unit's `Abort` (the cancellation source of
- *   truth); since the attempt signal ANY-includes that abort, `abort()` fires
+ *   truth); because the attempt signal ANY-includes that abort, `abort()` fires
  *   `signal` too.
  * - **`wait` promise-parks (never a timer).** It resolves the instant the unit's
  *   `signal` fires (immediately if already aborted) through a one-shot listener — no
@@ -29,9 +29,10 @@ import { parkSignal } from './helpers.js'
  *   {@link RunnerInterface.emitter} instead (`unit` / `spawn` / `settle` / `fail` carry the id).
  */
 export class Controller<TInput, TResult> implements ControllerInterface<TInput, TResult> {
-	readonly id: string
-	readonly input: TInput
-	readonly signal: AbortSignal
+	readonly #id: string
+	readonly #input: TInput
+	// The queue attempt's signal — ANY-combines the unit abort, the runner abort, and the timeout.
+	readonly #signal: AbortSignal
 	// The unit's cancellation handle — the source of truth for `aborted` / `abort`.
 	readonly #abort: AbortInterface
 	// The runner's launch-a-sibling callback — routes a spawn through the queue.
@@ -44,11 +45,23 @@ export class Controller<TInput, TResult> implements ControllerInterface<TInput, 
 		signal: AbortSignal,
 		spawn: (input: TInput) => Promise<TResult>,
 	) {
-		this.id = id
-		this.input = input
+		this.#id = id
+		this.#input = input
 		this.#abort = abort
-		this.signal = signal
+		this.#signal = signal
 		this.#spawn = spawn
+	}
+
+	get id(): string {
+		return this.#id
+	}
+
+	get input(): TInput {
+		return this.#input
+	}
+
+	get signal(): AbortSignal {
+		return this.#signal
 	}
 
 	get aborted(): boolean {
@@ -58,7 +71,7 @@ export class Controller<TInput, TResult> implements ControllerInterface<TInput, 
 	wait(): Promise<void> {
 		// Promise-park on the unit's signal — the shared `parkSignal` leaf (resolves immediately
 		// if already aborted, else on the one-shot 'abort' event). No timer, no poll (the B1 fix).
-		return parkSignal(this.signal)
+		return parkSignal(this.#signal)
 	}
 
 	spawn(input: TInput): Promise<TResult> {

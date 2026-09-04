@@ -20,15 +20,15 @@ import {
 	isObject,
 	isRecord,
 } from '@orkestrel/contract'
-import { MAX_TIMER_MS, TASK_STATUSES } from './constants.js'
+import { LIFECYCLE_STATUSES, MAX_TIMER_MS } from './constants.js'
 import { derivePhaseStatus, deriveWorkflowStatus, isTaskResult } from './helpers.js'
 
 /**
  * Checks whether an unknown value belongs to the workflow lifecycle vocabulary.
  *
  * @remarks
- * Reads {@link import('./constants.js').TASK_STATUSES}, the runtime array the three status tiers
- * alias, so the vocabulary has one definition rather than a hard-coded copy per guard.
+ * Reads {@link import('./constants.js').LIFECYCLE_STATUSES}, the runtime array every tier draws
+ * from, so the vocabulary has one definition rather than a hard-coded copy per guard.
  *
  * @param value - The value to test
  * @returns True if `value` is a {@link LifecycleStatus}; false otherwise
@@ -40,7 +40,7 @@ import { derivePhaseStatus, deriveWorkflowStatus, isTaskResult } from './helpers
  * ```
  */
 export function isLifecycleStatus(value: unknown): value is LifecycleStatus {
-	return TASK_STATUSES.some((status) => status === value)
+	return LIFECYCLE_STATUSES.some((status) => status === value)
 }
 
 /**
@@ -307,7 +307,7 @@ export function isWorkflowSnapshot(value: unknown): value is WorkflowSnapshot {
  *
  * @remarks
  * The one guard behind both claim lists of a {@link TaskActivityInput} — its `operations` and its
- * `constraints` — since {@link import('./types.js').TaskOperation} and
+ * `constraints` — because {@link import('./types.js').TaskOperation} and
  * {@link import('./types.js').TaskConstraint} are the same {@link TaskClaim} shape. Every member must be a plain record carrying exactly `id`, `name`, and
  * `started`, with non-empty string `id` and `name`, a finite non-negative `started`, and an `id`
  * unique within the list. Total: a hostile prototype, an accessor, or a cycle returns `false`
@@ -426,7 +426,7 @@ export function isTaskActivityInput(value: unknown): value is TaskActivityInput 
  *
  * @remarks
  * The persisted counterpart of {@link isTaskActivityInput}: the same frame plus the REQUIRED
- * `operations`, `constraints`, and a finite non-negative `updated` stamp, since a stored frame
+ * `operations`, `constraints`, and a finite non-negative `updated` stamp, because a stored frame
  * has already been accepted and normalized. Total — a hostile prototype or accessor answers
  * `false` rather than throwing.
  *

@@ -14,7 +14,7 @@ import { POST_TASK_PRIORITY } from './constants.js'
  *   priority (`user` → `'user-blocking'`, `normal` → `'user-visible'`, `background` →
  *   `'background'`), so the host genuinely regains control and the urgency hint is
  *   honoured. The capability is feature-detected through guards (`isRecord` / `isFunction`),
- *   never an `as` (AGENTS §14). Where the API is absent (Firefox today, older engines),
+ *   never an `as`. Where the API is absent (Firefox today, older engines),
  *   it **falls back** to a `setTimeout(0)` macrotask — still a real host-turn, without
  *   priority. `delay(ms)` is always a real `setTimeout`.
  * - **Abort fidelity is verbatim.** The shared `scheduleHost` lifecycle links an owned

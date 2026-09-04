@@ -22,12 +22,12 @@ import {
 // microtask turns), the per-task abort fold, the emitter cascade, a full snapshot serialize, AND a
 // real `databases` driver round-trip on every `set` / `get`. Pacing is already made deterministic
 // by an injected `createRecordingScheduler` (no wall-clock `setTimeout`), but the chain itself
-// cannot be made instantaneous without MOCKING the unit under test (forbidden, §16.2). Under
+// cannot be made instantaneous without MOCKING the unit under test (forbidden). Under
 // full-`src:core`-project parallel load (~105 test files across the fork pool saturating every CPU),
 // that real-async chain — which finishes in well under a millisecond in isolation — can be
 // event-loop-starved past vitest's 5s default and flake. A generous ceiling (6× the default)
 // absorbs worst-case starvation while still failing fast on a genuine hang (a real deadlock never
-// settles, so 30s still catches it). Scoped to the real-async tests only (§16.3 — a measured
+// settles, so 30s still catches it). Scoped to the real-async tests only (a measured
 // setting with a current reason); the synchronous store tests keep the fast default.
 const ROUND_TRIP_TIMEOUT_MS = 30_000
 
@@ -42,15 +42,15 @@ const RESTORE_FUNCTIONS = {
 // plain-Map MemoryWorkflowStore behind the WorkflowStoreInterface seam (get / set / delete, async,
 // keyed by a snapshot's own id). It persists the W-a WorkflowSnapshot as ONE OPAQUE JSON column
 // over a `databases` table (driver default = createMemoryDriver), narrowing the column back to a
-// WorkflowSnapshot on `get` (the §14 boundary narrow). Exercised over a REAL memory driver, with
-// REAL WorkflowSnapshot values (§16 NO mocks) — a real WorkflowDefinition, a real all-pending
+// WorkflowSnapshot on `get` (the boundary narrow). Exercised over a REAL memory driver, with
+// REAL WorkflowSnapshot values (NO mocks) — a real WorkflowDefinition, a real all-pending
 // snapshot AND a real SETTLED snapshot driven through createWorkflowRunner().execute (so recorded
 // statuses / results / bail are exercised); restore is the shipped createRestoredWorkflow, never re-rolled.
 
 // The real two-phase `release` WorkflowDefinition (`buildReleaseDefinition`), its by-name handler
 // map, and the deterministic `settleSnapshot` driver (paced by an injected recording scheduler so
-// the run is wall-clock-free, AGENTS §16) all live in `tests/setup.ts` — the SAME shared store-test
-// fixture the Memory twin drives (AGENTS §16.1), so the definition + run stay in one place.
+// the run is wall-clock-free) all live in `tests/setup.ts` — the SAME shared store-test
+// fixture the Memory twin drives, so the definition + run stay in one place.
 
 describe('DatabaseWorkflowStore — set → get round-trip (one opaque JSON column)', () => {
 	// Exercise BOTH the all-pending snapshot and the SETTLED one, proving the store persists each
@@ -77,7 +77,7 @@ describe('DatabaseWorkflowStore — set → get round-trip (one opaque JSON colu
 				// The retrieved snapshot deep-equals what was stored — the opaque column round-trips it
 				// losslessly (it is pure JSON DATA by construction).
 				expect(got).toEqual(snapshot)
-				// Narrow `got` via an early-return guard (no `!`); the `toEqual` above already proved it.
+				// Narrow `got` through an early-return guard (no `!`); the `toEqual` above already proved it.
 				expect(got).toBeDefined()
 				if (got === undefined) return
 				// Restoring from the RETRIEVED snapshot yields an IDENTICAL live tree — its own
@@ -206,7 +206,7 @@ describe('DatabaseWorkflowStore — upsert (set replaces under the same id)', ()
 		'set replaces an existing snapshot under the same id',
 		async () => {
 			// `set` keys off the snapshot's OWN id (no separate id param), so re-setting the same id
-			// REPLACES the row — proving insert-or-replace semantics, not an append (one row, latest wins).
+			// REPLACES the row — proving insert-or-replace semantics, not an append (one row, most recent wins).
 			const store = createDatabaseWorkflowStore(createMemoryDriver())
 			const pending = createWorkflow(buildReleaseDefinition()).snapshot()
 			const settled = await settleSnapshot(buildReleaseDefinition())
@@ -277,7 +277,7 @@ describe('DatabaseWorkflowStore — delete & absent', () => {
 
 describe('DatabaseWorkflowStore — driver-swap smoke (the memory driver default)', () => {
 	// The store works the same over the default in-memory driver — the WorkflowStoreInterface seam
-	// is driver-agnostic, so a JSON / SQLite / IndexedDB driver swaps in via the SAME interface (the
+	// is driver-agnostic, so a JSON / SQLite / IndexedDB driver swaps in through the SAME interface (the
 	// SessionStore / QueueStore driver-swap pattern). The default-driver factory overload (no arg)
 	// builds an equivalent memory-backed store, so the same set → get round-trip holds.
 	it(

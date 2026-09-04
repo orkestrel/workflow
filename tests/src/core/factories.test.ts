@@ -5,9 +5,11 @@ import type {
 	WorkflowOptions,
 	WorkflowSnapshot,
 } from '@src/core'
+import type { TaskEvent } from '../../setup.js'
 import {
 	cloneWorkflowSnapshot,
 	createMemoryWorkflowStore,
+	createRunner,
 	createScheduler,
 	createWorkflow,
 	createWorkflowContract,
@@ -21,11 +23,9 @@ import {
 } from '@src/core'
 import { describe, expect, it } from 'vitest'
 import { captureError, createRecorder, createRecorders, waitForDelay } from '@orkestrel/test'
-import type { TaskEvent } from '../../setup.js'
 import { createRecordingScheduler, omitTaskActivity, TASK_EVENTS } from '../../setup.js'
-import { createRunner } from '@src/core'
 
-// A workflow runner paced by an INJECTED `createRecordingScheduler` (AGENTS §16 deterministic,
+// A workflow runner paced by an INJECTED `createRecordingScheduler` (deterministic,
 // not a mock of the runner — the unit under test runs in full). Per the redesign, the runner
 // itself carries NO `functions` registry — behavior resolution rides `execute`'s options.
 function runner(): ReturnType<typeof createWorkflowRunner> {
@@ -340,7 +340,7 @@ describe('createWorkflow — builds the live tree (the W-b factory)', () => {
 	})
 
 	it(
-		'PROGRAMMATIC-FIRST: a task whose `behavior` resolves against `options.functions` runs the real handler at construction time (via a live runner)',
+		'PROGRAMMATIC-FIRST: a task whose `behavior` resolves against `options.functions` runs the real handler at construction time (through a live runner)',
 		async () => {
 			const seen = createRecorder<readonly [string]>()
 			const compile: WorkflowFunction = (controller) => {
@@ -757,9 +757,9 @@ describe('createScheduler', () => {
 	it('returns a scheduler whose yield and delay round-trip', async () => {
 		const scheduler = createScheduler()
 		await expect(scheduler.yield()).resolves.toBeUndefined()
-		const start = Date.now()
+		const start = performance.now()
 		await scheduler.delay(20)
-		expect(Date.now() - start).toBeGreaterThanOrEqual(15)
+		expect(performance.now() - start).toBeGreaterThanOrEqual(15)
 	})
 
 	it('its delay is abort-aware — a pre-aborted signal rejects with the reason', async () => {
@@ -819,7 +819,7 @@ describe('createWorkflowRunner', () => {
 })
 
 describe('createRunner', () => {
-	it('returns a working runner — fan-out via spawn with ordered results', async () => {
+	it('returns a working runner — fan-out through spawn with ordered results', async () => {
 		const created = createRunner<number, number>({
 			concurrency: 4,
 			handler: (controller) => {

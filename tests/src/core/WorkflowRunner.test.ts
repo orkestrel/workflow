@@ -5,14 +5,15 @@ import type {
 	TaskEventMap,
 	WorkflowDefinition,
 	WorkflowFunction,
-	WorkflowFunctions,
 	WorkflowOptions,
+	WorkflowRegistry,
 	WorkflowRunOptions,
 	WorkflowRunnerInterface,
 	WorkflowRunnerOptions,
 	WorkflowSnapshot,
 	WorkflowStoreInterface,
 } from '@src/core'
+import type { TaskEvent } from '../../setup.js'
 import { createTokenBudget } from '@orkestrel/budget'
 import {
 	createMemoryWorkflowStore,
@@ -24,10 +25,8 @@ import {
 } from '@src/core'
 import { describe, expect, it, vi } from 'vitest'
 import { createRecorder, createRecorders, waitForDelay } from '@orkestrel/test'
-import type { TaskEvent, TestGateInterface } from '../../setup.js'
 import {
 	FaultBudget,
-	createGate,
 	createRecordingScheduler,
 	instrumentSignal,
 	TASK_EVENTS,
@@ -35,9 +34,9 @@ import {
 
 // The W-c1 WorkflowRunner — the thin orchestrator that EXECUTES a live W-b tree by COMPOSING the
 // shipped substrate (one Runner/Queue per phase, the bail policy mapped onto fail-fast vs
-// settle-all, the abort/timeout/budget fold via AbortSignal.any, the scheduler pacing). Real data
-// stubs — scripted WorkflowFunction handlers, NO mocks (AGENTS §16). Determinism comes from gates
-// (createGate), not wall-clock races.
+// settle-all, the abort/timeout/budget fold through AbortSignal.any, the scheduler pacing). Real data
+// stubs — scripted WorkflowFunction handlers, NO mocks. Determinism comes from deferred gates
+// (`Promise.withResolvers`), not wall-clock races.
 //
 // PROGRAMMATIC CORE, DECLARATIVE SHELL (this wave's redesign): `TaskDefinition.behavior` is a PLAIN
 // STRING resolved ONCE at construction against a `WorkflowOptions.functions` registry into the
@@ -50,8 +49,8 @@ import {
 const ROUND_TRIP_TIMEOUT_MS = 30_000
 vi.setConfig({ testTimeout: ROUND_TRIP_TIMEOUT_MS })
 
-// A workflow runner whose inter-phase pacing is DETERMINISTIC (AGENTS §16: clock seams, not
-// wall-clock) — the shipped `createScheduler` default paces via a real `setTimeout(0)` macrotask,
+// A workflow runner whose inter-phase pacing is DETERMINISTIC (clock seams, not
+// wall-clock) — the shipped `createScheduler` default paces through a real `setTimeout(0)` macrotask,
 // which under full-`src:core`-project parallel load can be event-loop-starved past vitest's
 // default timeout; injecting `createRecordingScheduler` retains the shipped scheduler's real
 // asynchronous turn while making the number of cooperative yields observable.
@@ -141,7 +140,7 @@ function reliableTask(
 // thing that releases it is its per-attempt deadline aborting the signal (the real gate the timeout
 // path needs). On abort it resolves a sentinel so the attempt SETTLES (so the leaf decision runs);
 // the resolved value is discarded by the runner as a timed-out attempt. Not a mock — a real handler
-// parking on a real AbortSignal it controls nothing of (AGENTS §16).
+// parking on a real AbortSignal it controls nothing of.
 const parkUntilDeadline: WorkflowFunction = (controller: TaskControllerInterface) =>
 	new Promise<string>((resolve) => {
 		if (controller.signal.aborted) {
@@ -203,7 +202,7 @@ describe('WorkflowRunner — phases sequential, tasks concurrent', () => {
 
 	it('starts every task of a phase before any settles, and phase 2 only after phase 1 settles', async () => {
 		const starts = createRecorder<readonly [string]>()
-		const gate = createGate()
+		const gate = Promise.withResolvers<void>()
 		const a: WorkflowFunction = async (controller) => {
 			starts.handler(controller.task.id)
 			await gate.promise
@@ -249,7 +248,7 @@ describe('WorkflowRunner — phases sequential, tasks concurrent', () => {
 })
 
 describe('WorkflowRunner — dispatch by function-registry name', () => {
-	it('a task registered via a plain WorkflowFunction runs it and completes', async () => {
+	it('a task registered through a plain WorkflowFunction runs it and completes', async () => {
 		const seen = createRecorder<readonly [Readonly<Record<string, unknown>>]>()
 		const definition: WorkflowDefinition = {
 			id: 'wf',
@@ -298,7 +297,7 @@ describe('WorkflowRunner — dispatch by function-registry name', () => {
 		const definition = buildDefinition([{ id: 'a', tasks: [functionTask('t', 'missing')] }])
 		expect(() => pacedRunner().execute(definition)).toThrow(/not drivable/)
 
-		const functions: WorkflowFunctions = {}
+		const functions: WorkflowRegistry = {}
 		Object.defineProperty(functions, 'missing', { value: 'not callable' })
 		const workflow = createWorkflow(definition, { functions })
 		expect(() => pacedRunner().execute(workflow)).toThrow(/not drivable/)
@@ -349,7 +348,12 @@ describe('WorkflowRunner — per-phase throttle', () => {
 	it('runs at most `concurrency` tasks in flight at once', async () => {
 		let inFlight = 0
 		let maxInFlight = 0
-		const gates = [createGate(), createGate(), createGate(), createGate()]
+		const gates = [
+			Promise.withResolvers<void>(),
+			Promise.withResolvers<void>(),
+			Promise.withResolvers<void>(),
+			Promise.withResolvers<void>(),
+		]
 		const index = new Map<string, number>([
 			['t0', 0],
 			['t1', 1],
@@ -634,7 +638,7 @@ describe('WorkflowRunner — forced future phases', () => {
 	})
 })
 
-describe('WorkflowRunner — per-task retries / timeout (Seam A, threaded via the Runner)', () => {
+describe('WorkflowRunner — per-task retries / timeout (Seam A, threaded through the Runner)', () => {
 	it('normalizes a non-JSON handler outcome as a retryable handler failure', async () => {
 		let attempts = 0
 		const valid: WorkflowFunction = () => null
@@ -1241,7 +1245,7 @@ describe('WorkflowRunner — construction options', () => {
 })
 
 describe('WorkflowRunner — controller reads earlier results', () => {
-	it('a phase-2 function can read phase-1 task results via controller.results()', async () => {
+	it('a phase-2 function can read phase-1 task results through controller.results()', async () => {
 		const seen = createRecorder<readonly [number]>()
 		const produce: WorkflowFunction = (controller) => controller.task.id
 		const consume: WorkflowFunction = (controller) => {
@@ -1256,7 +1260,7 @@ describe('WorkflowRunner — controller reads earlier results', () => {
 		expect(seen.calls[0]?.[0]).toBe(2)
 	})
 
-	it('a phase-3 task reads an EARLIER phase-1 task’s recorded OUTCOME via controller.results() (P3.2)', async () => {
+	it('a phase-3 task reads an EARLIER phase-1 task’s recorded OUTCOME through controller.results() (P3.2)', async () => {
 		const sawPhase1Value = createRecorder<readonly [unknown]>()
 		const sawPhase1Status = createRecorder<readonly [string]>()
 		const produce: WorkflowFunction = () => 'phase-1-output'
@@ -1302,12 +1306,12 @@ describe('WorkflowRunner — pacing', () => {
 })
 
 // This engine-level suite covers WorkflowRunner orchestration (sequencing, concurrency, retries,
-// destruction, and live mid-run mutation) against plain WorkflowFunctions. Provider/protocol
+// destruction, and live mid-run mutation) against a plain WorkflowRegistry. Provider/protocol
 // composition is outside this package's runtime and test surface.
 
 describe('WorkflowRunner — execute(workflow) parity with execute(definition)', () => {
 	it('drives the caller-owned entity with the same WorkflowResult semantics; status transitions are observable live and snapshot() mid-run shows running states', async () => {
-		const gate = createGate()
+		const gate = Promise.withResolvers<void>()
 		const started = createRecorder<readonly [string]>()
 		const parked: WorkflowFunction = async (controller) => {
 			started.handler(controller.task.id)
@@ -1360,7 +1364,7 @@ describe('WorkflowRunner — execute(workflow) TRANSITION guard (synchronous)', 
 	})
 
 	it('throws TRANSITION synchronously on a second concurrent call to an already-running workflow', async () => {
-		const gate = createGate()
+		const gate = Promise.withResolvers<void>()
 		const parked: WorkflowFunction = async (controller) => {
 			await gate.promise
 			return controller.task.id
@@ -1419,7 +1423,7 @@ describe('WorkflowRunner — execute(workflow) TRANSITION guard (synchronous)', 
 
 describe('WorkflowRunner — live task append during a running phase (mid-run mutation, resolves real handlers)', () => {
 	it('LIVE TASK APPEND executes real work: the appended task runs, completes, and the phase/result reflect it', async () => {
-		const gate = createGate()
+		const gate = Promise.withResolvers<void>()
 		const started = createRecorder<readonly [string]>()
 		const t0: WorkflowFunction = async (controller) => {
 			started.handler(controller.task.id)
@@ -1451,7 +1455,7 @@ describe('WorkflowRunner — live task append during a running phase (mid-run mu
 	})
 
 	it('an appended task naming an unregistered function records a normalized failure', async () => {
-		const gate = createGate()
+		const gate = Promise.withResolvers<void>()
 		const t0: WorkflowFunction = async (controller) => {
 			await gate.promise
 			return controller.task.id
@@ -1479,7 +1483,7 @@ describe('WorkflowRunner — live task append during a running phase (mid-run mu
 
 	it('GRACEFUL REJECTION: appending to an already-COMPLETED phase fails MUTATION; the run continues to completion unaffected', async () => {
 		const f: WorkflowFunction = (controller) => controller.task.id
-		const gateB = createGate()
+		const gateB = Promise.withResolvers<void>()
 		const b: WorkflowFunction = async (controller) => {
 			await gateB.promise
 			return controller.task.id
@@ -1502,7 +1506,7 @@ describe('WorkflowRunner — live task append during a running phase (mid-run mu
 	})
 
 	it('LIVE PHASE APPEND: mid-run workflow.add mints a phase that runs in the same run; add after the workflow settles fails MUTATION', async () => {
-		const gateA = createGate()
+		const gateA = Promise.withResolvers<void>()
 		const a: WorkflowFunction = async (controller) => {
 			await gateA.promise
 			return controller.task.id
@@ -1528,7 +1532,7 @@ describe('WorkflowRunner — live task append during a running phase (mid-run mu
 		expect(extraRan.count).toBe(1)
 		expect(workflow.phase('c')?.task('tc')?.status).toBe('completed')
 		const rejected = workflow.add({ id: 'd', name: 'D', tasks: [] })
-		if (rejected.success) throw new Error('expected workflow.add to fail once settled')
+		if (rejected.success) throw new Error('expected workflow.add to fail after settlement')
 		expect(rejected.error.code).toBe('MUTATION')
 	})
 })
@@ -1543,7 +1547,7 @@ describe('WorkflowRunner — pending-suffix mid-run mutation (add/remove/move/up
 	}
 
 	it('insertion at index 0 fails MUTATION while phase a runs (before the pending-suffix boundary)', async () => {
-		const gate = createGate()
+		const gate = Promise.withResolvers<void>()
 		const a: WorkflowFunction = async (controller) => {
 			await gate.promise
 			return controller.task.id
@@ -1562,7 +1566,7 @@ describe('WorkflowRunner — pending-suffix mid-run mutation (add/remove/move/up
 	})
 
 	it('move of a pending phase mid-run is honored (its new order is observed by execution)', async () => {
-		const gate = createGate()
+		const gate = Promise.withResolvers<void>()
 		const a: WorkflowFunction = async (controller) => {
 			await gate.promise
 			return controller.task.id
@@ -1582,7 +1586,7 @@ describe('WorkflowRunner — pending-suffix mid-run mutation (add/remove/move/up
 	})
 
 	it('remove of a pending phase mid-run is honored (the removed phase never runs)', async () => {
-		const gate = createGate()
+		const gate = Promise.withResolvers<void>()
 		const a: WorkflowFunction = async (controller) => {
 			await gate.promise
 			return controller.task.id
@@ -1603,7 +1607,7 @@ describe('WorkflowRunner — pending-suffix mid-run mutation (add/remove/move/up
 	})
 
 	it('update of a pending phase mid-run is honored (its patched fields apply)', async () => {
-		const gate = createGate()
+		const gate = Promise.withResolvers<void>()
 		const a: WorkflowFunction = async (controller) => {
 			await gate.promise
 			return controller.task.id
@@ -1714,7 +1718,7 @@ describe('WorkflowRunner — phase-scoped pause/resume gates only that phase', (
 describe('WorkflowRunner — append while paused', () => {
 	it('phase.add succeeds on a running, paused phase; the appended task parks until resume, then runs', async () => {
 		const started = createRecorder<readonly [string]>()
-		const gate = createGate()
+		const gate = Promise.withResolvers<void>()
 		const t0: WorkflowFunction = async (controller) => {
 			started.handler(controller.task.id)
 			await gate.promise
@@ -1748,7 +1752,7 @@ describe('WorkflowRunner — append while paused', () => {
 
 describe('WorkflowRunner — graceful stop mid-run', () => {
 	it('workflow.stop(): in-flight task1 finishes, queued task2 is skipped, status stopped, execute resolves', async () => {
-		const gate = createGate()
+		const gate = Promise.withResolvers<void>()
 		const t0: WorkflowFunction = async (controller) => {
 			await gate.promise
 			return controller.task.id
@@ -1829,7 +1833,7 @@ describe('WorkflowRunner — graceful stop mid-run', () => {
 	})
 
 	it('lets an already-dispatched handler leave controller wait after graceful workflow stop', async () => {
-		const entered = createGate()
+		const entered = Promise.withResolvers<void>()
 		const fn: WorkflowFunction = async (controller) => {
 			workflow.phase('a')?.task('t0')?.pause()
 			entered.resolve()
@@ -1883,7 +1887,7 @@ describe('WorkflowRunner — hard destroy mid-run', () => {
 })
 
 describe('WorkflowRunner — a run-level timeout still settles a paused run', () => {
-	it('TIMEOUT WHILE PAUSED: a paused, un-resumed run settles via the timeout raced against the paused gate', async () => {
+	it('TIMEOUT WHILE PAUSED: a paused, un-resumed run settles through the timeout raced against the paused gate', async () => {
 		const started = createRecorder<readonly [string]>()
 		const fn: WorkflowFunction = (controller) => {
 			started.handler(controller.task.id)
@@ -1939,15 +1943,15 @@ describe('WorkflowRunner — stop / destroy settle a paused run promptly without
 
 describe('WorkflowRunner — live config: a pending phase patched mid-run governs its own execution', () => {
 	it("patching a pending phase's concurrency (1 → 2) mid-run lets both its tasks start before either resolves", async () => {
-		const gateA = createGate()
+		const gateA = Promise.withResolvers<void>()
 		const a: WorkflowFunction = async (controller) => {
 			await gateA.promise
 			return controller.task.id
 		}
 		const started = createRecorder<readonly [string]>()
-		const gateMap = new Map<string, TestGateInterface<void>>([
-			['t1', createGate()],
-			['t2', createGate()],
+		const gateMap = new Map<string, PromiseWithResolvers<void>>([
+			['t1', Promise.withResolvers<void>()],
+			['t2', Promise.withResolvers<void>()],
 		])
 		const b: WorkflowFunction = async (controller) => {
 			started.handler(controller.task.id)
@@ -1974,7 +1978,7 @@ describe('WorkflowRunner — live config: a pending phase patched mid-run govern
 	})
 
 	it("patching a pending phase's bail mid-run flips its failure semantics (fail-fast → graceful)", async () => {
-		const gateA = createGate()
+		const gateA = Promise.withResolvers<void>()
 		const a: WorkflowFunction = async (controller) => {
 			await gateA.promise
 			return controller.task.id
@@ -1982,7 +1986,7 @@ describe('WorkflowRunner — live config: a pending phase patched mid-run govern
 		const fail: WorkflowFunction = () => {
 			throw new Error('boom')
 		}
-		const gateB = createGate()
+		const gateB = Promise.withResolvers<void>()
 		const parkedOk: WorkflowFunction = async (controller) => {
 			await gateB.promise
 			return controller.task.id
@@ -2010,7 +2014,7 @@ describe('WorkflowRunner — live config: a pending phase patched mid-run govern
 describe('WorkflowRunner — event-order sample: cause-before-effect cascades and add-before-start', () => {
 	it("task events precede their phase cascade, which precedes the workflow cascade; a live add fires before the appended task's own start", async () => {
 		const order: string[] = []
-		const gate = createGate()
+		const gate = Promise.withResolvers<void>()
 		const t0: WorkflowFunction = async (controller) => {
 			await gate.promise
 			return controller.task.id
@@ -2111,7 +2115,7 @@ describe('WorkflowRunner — activity ownership across attempts', () => {
 	it('refuses report and pulse synchronously from the attempt abort callback', async () => {
 		let report: ReturnType<TaskControllerInterface['report']> | undefined
 		let pulse: boolean | undefined
-		const parked = createGate()
+		const parked = Promise.withResolvers<void>()
 		const record: WorkflowFunction = async (controller) => {
 			controller.signal.addEventListener(
 				'abort',
@@ -2145,7 +2149,7 @@ describe('WorkflowRunner — activity ownership across attempts', () => {
 
 	it('resets activity at retry entry and rejects a timed-out orphan controller after ownership moves', async () => {
 		const attempts = createRecorder<readonly [TaskControllerInterface]>()
-		const orphan = createGate()
+		const orphan = Promise.withResolvers<void>()
 		const record: WorkflowFunction = async (controller) => {
 			attempts.handler(controller)
 			if (attempts.count === 1) {
@@ -2184,8 +2188,8 @@ describe('WorkflowRunner — activity ownership across attempts', () => {
 
 describe('WorkflowRunner — task stop and cooperative task gates', () => {
 	it('settles a stopped uncooperative handler without failing or cancelling a running sibling', async () => {
-		const ignored = createGate()
-		const sibling = createGate()
+		const ignored = Promise.withResolvers<void>()
+		const sibling = Promise.withResolvers<void>()
 		const t0: WorkflowFunction = async () => {
 			await ignored.promise
 			return 'ignored'
@@ -2245,7 +2249,7 @@ describe('WorkflowRunner — task stop and cooperative task gates', () => {
 		expect(failureCounts.added.count).toBeGreaterThan(0)
 		expect(failureCounts.added.count).toBe(failureCounts.removed.count)
 
-		const stoppedGate = createGate()
+		const stoppedGate = Promise.withResolvers<void>()
 		let stoppedCounts: ReturnType<typeof instrumentSignal> | undefined
 		const stopped: WorkflowFunction = async (controller) => {
 			stoppedCounts = instrumentSignal(controller.signal)
@@ -2265,7 +2269,7 @@ describe('WorkflowRunner — task stop and cooperative task gates', () => {
 		expect(stoppedCounts.added.count).toBe(stoppedCounts.removed.count)
 		stoppedGate.resolve()
 
-		const timeoutGate = createGate()
+		const timeoutGate = Promise.withResolvers<void>()
 		let timeoutCounts: ReturnType<typeof instrumentSignal> | undefined
 		const timeout: WorkflowFunction = async (controller) => {
 			timeoutCounts = instrumentSignal(controller.signal)

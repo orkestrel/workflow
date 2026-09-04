@@ -14,10 +14,10 @@ describe('createNodeScheduler', () => {
 
 		await expect(scheduler.yield()).resolves.toBeUndefined()
 
-		const start = Date.now()
+		const start = performance.now()
 		await scheduler.delay(20)
 		// Real timing with tolerance — delay waited at least roughly its interval.
-		expect(Date.now() - start).toBeGreaterThanOrEqual(15)
+		expect(performance.now() - start).toBeGreaterThanOrEqual(15)
 	})
 
 	it('its delay is abort-aware — a pre-aborted signal rejects with the reason', async () => {

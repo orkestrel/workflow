@@ -30,7 +30,7 @@ import { cloneWorkflowSnapshot } from '../cloners.js'
  * - **`get(id)` resolves the stored snapshot for an id**, owning and narrowing the opaque JSON
  *   column back to a {@link WorkflowSnapshot} through
  *   {@link import('../cloners.js').cloneWorkflowSnapshot}, whose semantic pass is
- *   {@link import('../validators.js').isOwnedWorkflowSnapshot} — the AGENTS §14 boundary narrow for
+ *   {@link import('../validators.js').isOwnedWorkflowSnapshot} — the boundary narrow for
  *   an untrusted storage read — or `undefined` if none is stored. A present snapshot whose own id
  *   differs from the requested key rejects with normalized `RESTORE` evidence.
  * - **`delete(id)` drops a snapshot by id**; an absent id is a no-op (no throw).
@@ -38,7 +38,7 @@ import { cloneWorkflowSnapshot } from '../cloners.js'
  * UNLIKE the server package's `SessionStoreInterface` there is NO
  * idle-TTL / eviction — a persisted run-state is durable orchestration state that lives until an
  * explicit `delete`. The public surface is EXACTLY `get` / `set` / `delete` — no extra members (the
- * §22 method bijection with {@link WorkflowStoreInterface}). Restore stays a caller concern: read a
+ * guide's method bijection with {@link WorkflowStoreInterface}). Restore stays a caller concern: read a
  * snapshot back and rebuild the live tree with {@link import('../factories.js').createRestoredWorkflow}.
  *
  * @example

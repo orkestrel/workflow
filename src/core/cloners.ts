@@ -48,7 +48,7 @@ export function cloneWorkflowSnapshot(input: unknown, id?: string): WorkflowSnap
  *
  * @remarks
  * The one cloner behind both claim lists of a task activity frame — its `operations` and its
- * `constraints` — since {@link import('./types.js').TaskOperation} and
+ * `constraints` — because {@link import('./types.js').TaskOperation} and
  * {@link import('./types.js').TaskConstraint} are the same {@link import('./types.js').TaskClaim}
  * shape. An omitted
  * list is an empty one. Each member is read exactly once inside the caller's protected boundary

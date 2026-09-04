@@ -34,10 +34,11 @@ import { isTerminalStatus } from '../helpers.js'
  *   observe the W-b entities' own emitters (`task.emitter` / `phase.emitter`) instead.
  */
 export class TaskController implements TaskControllerInterface {
-	readonly signal: AbortSignal
-	readonly input: JSONRecord
-	readonly task: TaskContext
-	readonly attempt: number
+	// The folded attempt signal — the workflow abort, the run timeout, and the budget.
+	readonly #signal: AbortSignal
+	readonly #input: JSONRecord
+	readonly #task: TaskContext
+	readonly #attempt: number
 	readonly #entity: TaskInterface
 	readonly #report: (input: TaskActivityInput) => Result<TaskActivity, WorkflowError>
 	readonly #pulse: () => boolean
@@ -54,18 +55,34 @@ export class TaskController implements TaskControllerInterface {
 		report: (input: TaskActivityInput) => Result<TaskActivity, WorkflowError>,
 		pulse: () => boolean,
 	) {
-		this.signal = signal
-		this.input = input
-		this.task = task.context
-		this.attempt = attempt
+		this.#signal = signal
+		this.#input = input
+		this.#task = task.context
+		this.#attempt = attempt
 		this.#entity = task
 		this.#results = results
 		this.#report = report
 		this.#pulse = pulse
 	}
 
+	get signal(): AbortSignal {
+		return this.#signal
+	}
+
+	get input(): JSONRecord {
+		return this.#input
+	}
+
+	get task(): TaskContext {
+		return this.#task
+	}
+
+	get attempt(): number {
+		return this.#attempt
+	}
+
 	get aborted(): boolean {
-		return this.signal.aborted
+		return this.#signal.aborted
 	}
 
 	get paused(): boolean {
@@ -86,7 +103,7 @@ export class TaskController implements TaskControllerInterface {
 	}
 
 	async wait(): Promise<void> {
-		while (this.paused && !this.signal.aborted) {
+		while (this.paused && !this.#signal.aborted) {
 			await this.#race(this.#gates())
 		}
 	}
@@ -107,11 +124,11 @@ export class TaskController implements TaskControllerInterface {
 	}
 
 	async #race(gates: ReadonlyArray<Promise<void>>): Promise<void> {
-		if (this.signal.aborted || gates.length === 0) return
+		if (this.#signal.aborted || gates.length === 0) return
 		const deferred = Promise.withResolvers<void>()
 		const onAbort = this.#resolve.bind(this, deferred)
 		const onTerminal = this.#resolve.bind(this, deferred)
-		this.signal.addEventListener('abort', onAbort, { once: true })
+		this.#signal.addEventListener('abort', onAbort, { once: true })
 		this.#entity.workflow.emitter.on('skip', onTerminal)
 		this.#entity.workflow.emitter.on('stop', onTerminal)
 		this.#entity.phase.emitter.on('skip', onTerminal)
@@ -120,7 +137,7 @@ export class TaskController implements TaskControllerInterface {
 			if (this.#ancestorTerminal()) deferred.resolve()
 			await Promise.race([Promise.all(gates), deferred.promise])
 		} finally {
-			this.signal.removeEventListener('abort', onAbort)
+			this.#signal.removeEventListener('abort', onAbort)
 			this.#entity.workflow.emitter.off('skip', onTerminal)
 			this.#entity.workflow.emitter.off('stop', onTerminal)
 			this.#entity.phase.emitter.off('skip', onTerminal)

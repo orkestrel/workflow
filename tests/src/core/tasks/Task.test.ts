@@ -5,16 +5,16 @@ import type {
 	WorkflowDefinition,
 	WorkflowInterface,
 } from '@src/core'
+import type { TaskEvent } from '../../../setup.js'
 import { MAX_TIMER_MS, createWorkflow, isWorkflowError, createRestoredWorkflow } from '@src/core'
 import { describe, expect, it } from 'vitest'
 import { captureError, createRecorder, createRecorders, waitForDelay } from '@orkestrel/test'
 import { Task } from '../../../../src/core/tasks/Task.js'
-import type { TaskEvent } from '../../../setup.js'
 import { createErrorRecorder, TASK_EVENTS } from '../../../setup.js'
 
-// The leaf state machine (W-b): the legal AGENTS §10 transition graph + each illegal
+// The leaf state machine (W-b): the legal transition graph + each illegal
 // transition rejected, the recorded TaskResult (Success on complete, Failure on fail),
-// and lineage. Real definition stubs drive a live tree — no mocks (AGENTS §16).
+// and lineage. Real definition stubs drive a live tree — no mocks.
 
 /** A single-task workflow definition stub — the minimal tree to exercise one leaf in isolation. */
 function buildSingleTaskWorkflow(): WorkflowDefinition {
@@ -446,7 +446,7 @@ describe('Task — legal transitions', () => {
 	it('boxes every falsy JSON completion value as a present Success', () => {
 		// The boxed `result` is PRESENT for every `completed` leaf — even when the produced value is
 		// falsy or `undefined`. A success with no payload must still read as a Success whose `value`
-		// is that falsy value, never get mistaken for "no result" (the §10 completed ⇒ boxed rule).
+		// is that falsy value, never get mistaken for "no result" (the completed ⇒ boxed rule).
 		for (const value of [null, 0, '', false]) {
 			const task = loneTask(createWorkflow(buildSingleTaskWorkflow()))
 			task.start()
@@ -493,7 +493,7 @@ function workflowCode(error: unknown): string | undefined {
 	return isWorkflowError(error) ? error.code : undefined
 }
 
-describe('Task — illegal transitions are rejected (guarded §10)', () => {
+describe('Task — illegal transitions are rejected (guarded)', () => {
 	it('completing a non-running (pending) task throws TRANSITION', () => {
 		const task = loneTask(createWorkflow(buildSingleTaskWorkflow()))
 		const error = captureError(() => task.complete('x'))
@@ -537,7 +537,7 @@ describe('Task — illegal transitions are rejected (guarded §10)', () => {
 	})
 })
 
-describe('Task — emits (§13) after each transition', () => {
+describe('Task — emits after each transition', () => {
 	it('emits pause and resume once after each real runtime-gate change', () => {
 		const task = loneTask(createWorkflow(buildSingleTaskWorkflow()))
 		const states: boolean[] = []
@@ -615,7 +615,7 @@ describe('Task — own event precedes the cascade (cause before effect)', () => 
 	it('fires the task’s own complete BEFORE its phase + workflow cascade events', () => {
 		// A single-task / single-phase tree: completing the lone task derives the phase AND the
 		// workflow to `completed`, so all three emitters fire on the one transition. The order must
-		// be cause (the task) then effect (the phase, then the workflow) — the AGENTS §13 precedent.
+		// be cause (the task) then effect (the phase, then the workflow) — the emitter precedent.
 		const workflow = createWorkflow(buildSingleTaskWorkflow())
 		const task = loneTask(workflow)
 		const order: string[] = []
@@ -702,7 +702,7 @@ describe('Task — own event precedes the cascade (cause before effect)', () => 
 	})
 })
 
-describe('Task — emit-safety (§13)', () => {
+describe('Task — emit-safety', () => {
 	it('isolates a throwing listener, routes it to the error handler, and still transitions', () => {
 		const errors = createErrorRecorder()
 		const task = loneTask(
@@ -798,7 +798,7 @@ describe('Task — the leaf snapshot: status IS the forced-terminal marker (no o
 	})
 })
 
-describe('Task — declarative behavior/retries/timeout PERSIST (AGENTS §12), handler is runtime-only', () => {
+describe('Task — declarative behavior/retries/timeout PERSIST, handler is runtime-only', () => {
 	it('seeds behavior/retries/timeout from the definition when built through createWorkflow', () => {
 		const workflow = createWorkflow({
 			id: 'wf',
@@ -833,7 +833,7 @@ describe('Task — declarative behavior/retries/timeout PERSIST (AGENTS §12), h
 	})
 
 	it('behavior/retries/timeout SURVIVE the restore path — they are declarative config, persisted like bail/concurrency', () => {
-		// Unlike the old execution-only fields, behavior/retries/timeout are now PERSISTED on the
+		// Unlike the old execution-only fields, behavior/retries/timeout are PERSISTED on the
 		// TaskSnapshot (like a phase's bail/concurrency), so a restore reinstates them verbatim.
 		const original = createWorkflow({
 			id: 'wf',
@@ -932,7 +932,7 @@ describe('Task — description membership', () => {
 	})
 })
 
-describe('Task — patch (pending-only, AGENTS §12)', () => {
+describe('Task — patch (pending-only)', () => {
 	it('applies name/description while pending', () => {
 		const task = loneTask(createWorkflow(buildSingleTaskWorkflow()))
 		task.patch({ name: 'Renamed', description: 'new desc' })

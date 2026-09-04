@@ -2,19 +2,14 @@ import type { TaskResult, TaskSnapshot, WorkflowEventMap, WorkflowSnapshot } fro
 import type { WorkflowEvent } from './setup.js'
 import { describe, expect, it } from 'vitest'
 import { createEmitter } from '@orkestrel/emitter'
-import {
-	captureError,
-	createRecorder,
-	createRecorders,
-	requireValue,
-	waitForDelay,
-} from '@orkestrel/test'
+import { captureError, createRecorder, createRecorders, requireValue } from '@orkestrel/test'
 import { createWorkflow } from '@src/core'
 import {
+	buildCollection,
 	buildReleaseDefinition,
+	buildTasks,
 	buildWorkflowDefinition,
 	createErrorRecorder,
-	createGate,
 	createRecordingScheduler,
 	createTaskControllerFixture,
 	FaultBudget,
@@ -155,27 +150,6 @@ describe('createTaskControllerFixture', () => {
 	})
 })
 
-describe('createGate', () => {
-	it('holds its promise pending until resolve delivers the value', async () => {
-		const gate = createGate<string>()
-
-		const raced = await Promise.race([gate.promise, waitForDelay(0).then(() => 'pending')])
-
-		expect(raced).toBe('pending')
-		gate.resolve('settled')
-		expect(await gate.promise).toBe('settled')
-	})
-
-	it('rejects with the exact error reject was given', async () => {
-		const gate = createGate<string>()
-		const failure = new Error('gate refused')
-
-		gate.reject(failure)
-
-		await expect(gate.promise).rejects.toBe(failure)
-	})
-})
-
 describe('WorkflowStoreBoundary', () => {
 	it('records every durable call and answers an ungated read as a miss', async () => {
 		const store = new WorkflowStoreBoundary()
@@ -191,9 +165,9 @@ describe('WorkflowStoreBoundary', () => {
 	})
 
 	it('hands each queued gate to calls in the order they were made', async () => {
-		const first = createGate<WorkflowSnapshot | undefined>()
-		const second = createGate<WorkflowSnapshot | undefined>()
-		const write = createGate<void>()
+		const first = Promise.withResolvers<WorkflowSnapshot | undefined>()
+		const second = Promise.withResolvers<WorkflowSnapshot | undefined>()
+		const write = Promise.withResolvers<void>()
 		const store = new WorkflowStoreBoundary([first, second], [write])
 		const stored = createWorkflow(buildReleaseDefinition('queued')).snapshot()
 
@@ -343,6 +317,64 @@ describe('buildWorkflowDefinition', () => {
 		expect(overridden.id).toBe('wf-override')
 		expect(overridden.bail).toBe(true)
 		expect(overridden.phases).toEqual(buildWorkflowDefinition().phases)
+	})
+})
+
+describe('buildTasks', () => {
+	it('returns every live task the definition declares, in declaration order', () => {
+		const definition = buildWorkflowDefinition()
+
+		const tasks = buildTasks()
+
+		// The expectation is derived from the definition the fixture builds from, not from a copy of
+		// the addresses `buildTasks` names.
+		expect(tasks.map((task) => task.id)).toEqual(
+			definition.phases.flatMap((phase) => phase.tasks.map((task) => task.id)),
+		)
+		expect(tasks.map((task) => task.status)).toEqual(tasks.map(() => 'pending'))
+	})
+
+	it('mints a fresh tree per call, so a transition on one call cannot reach a later one', () => {
+		const [started] = buildTasks()
+		started.start()
+
+		const [later] = buildTasks()
+
+		expect(started.status).toBe('running')
+		expect(later.status).toBe('pending')
+		expect(later).not.toBe(started)
+	})
+})
+
+describe('buildCollection', () => {
+	it('returns an empty store naming the entity noun it was given', () => {
+		const [first] = buildTasks()
+		const store = buildCollection('phase')
+		expect(store.count).toBe(0)
+		expect(store.entries()).toEqual([])
+		store.append(first)
+
+		const error = captureError(() => {
+			store.append(first)
+		})
+
+		// The noun reached the real constructor, so a caller reads its own vocabulary back.
+		expect(error instanceof Error && error.message).toBe(`duplicate phase id '${first.id}'`)
+	})
+
+	it('defaults the noun to the task vocabulary and wires the real compiled guard', () => {
+		const [first] = buildTasks()
+		const store = buildCollection()
+		store.append(first)
+
+		const duplicate = captureError(() => {
+			store.append(first)
+		})
+
+		expect(duplicate instanceof Error && duplicate.message).toBe(`duplicate task id '${first.id}'`)
+		// A permissive stand-in guard would accept the empty `name` the real `taskUpdateShape`
+		// refuses, so this reads the wiring rather than the store's gate.
+		expect(store.update(first.id, { name: '' }).success).toBe(false)
 	})
 })
 

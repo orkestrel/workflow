@@ -1,12 +1,10 @@
 import type {
 	LifecycleStatus,
 	PhaseDerivation,
-	PhaseStatus,
 	TaskResult,
-	TaskStatus,
 	WorkflowDefinition,
-	WorkflowFunctions,
 	WorkflowOptions,
+	WorkflowRegistry,
 } from '@src/core'
 import {
 	WorkflowError,
@@ -42,9 +40,9 @@ import { describe, expect, it } from 'vitest'
 import { captureError, waitForDelay } from '@orkestrel/test'
 import { createErrorRecorder, createRecordingScheduler } from '../../setup.js'
 
-// The §10/§14 logic core: the derivation truth tables under BOTH bail modes, the ONE
+// The lifecycle logic core: the derivation truth tables under BOTH bail modes, the ONE
 // terminal predicate, and the task-form `via` guards. Pure functions — real inputs, no
-// mocks (AGENTS §16). The derivation tables are EXHAUSTIVE by equivalence class: every
+// mocks. The derivation tables are EXHAUSTIVE by equivalence class: every
 // branch of `derivePhaseStatus` / `deriveWorkflowStatus` is pinned by a discriminating
 // row, so the truth table is provably complete rather than sampled.
 
@@ -202,15 +200,15 @@ describe('isTerminalStatus — the ONE terminal check across all three tiers', (
 		}
 	})
 
-	it('accepts a value typed at each tier (task / phase / workflow) through one predicate', () => {
-		// The three tiers alias one LifecycleStatus, so a value typed at any tier flows into the one
+	it('rules on a status read from a task, a phase, and a workflow through one predicate', () => {
+		// Task, phase, and workflow all carry one LifecycleStatus, so every position feeds the same
 		// predicate — this is the consolidation's whole point (no per-tier terminal duplication).
-		const taskStatus: TaskStatus = 'completed'
-		const phaseStatus: PhaseStatus = 'running'
-		const workflowStatus: LifecycleStatus = 'failed'
-		expect(isTerminalStatus(taskStatus)).toBe(true)
-		expect(isTerminalStatus(phaseStatus)).toBe(false)
-		expect(isTerminalStatus(workflowStatus)).toBe(true)
+		const fromTask: LifecycleStatus = 'completed'
+		const fromPhase: LifecycleStatus = 'running'
+		const fromWorkflow: LifecycleStatus = 'failed'
+		expect(isTerminalStatus(fromTask)).toBe(true)
+		expect(isTerminalStatus(fromPhase)).toBe(false)
+		expect(isTerminalStatus(fromWorkflow)).toBe(true)
 	})
 })
 
@@ -218,7 +216,7 @@ describe('derivePhaseStatus — exhaustive truth table (tasks concurrent)', () =
 	// Every equivalence class of the phase derivation, by branch:
 	//   empty → pending · all-pending → pending · not-all-terminal → running ·
 	//   then most-severe terminal wins: failed > stopped > completed > skipped.
-	const cases: ReadonlyArray<readonly [readonly TaskStatus[], PhaseStatus, string]> = [
+	const cases: ReadonlyArray<readonly [readonly LifecycleStatus[], LifecycleStatus, string]> = [
 		// — empty + all-pending (→ pending)
 		[[], 'pending', 'no tasks'],
 		[['pending'], 'pending', 'single pending'],
@@ -267,12 +265,12 @@ describe('derivePhaseStatus — exhaustive truth table (tasks concurrent)', () =
 	it('is order-insensitive — every permutation of a mixed input derives the same status', () => {
 		// Tasks are concurrent, so the reduction must not depend on order. Assert it over EVERY
 		// permutation of a four-terminal mix (the strongest order-independence claim, not one shuffle).
-		const base: readonly TaskStatus[] = ['failed', 'completed', 'skipped', 'stopped']
+		const base: readonly LifecycleStatus[] = ['failed', 'completed', 'skipped', 'stopped']
 		for (const permutation of permutations(base)) {
 			expect(derivePhaseStatus(permutation)).toBe('failed')
 		}
 		// And a non-terminal mix whose answer is `running` regardless of order.
-		const mixed: readonly TaskStatus[] = ['completed', 'running', 'pending']
+		const mixed: readonly LifecycleStatus[] = ['completed', 'running', 'pending']
 		for (const permutation of permutations(mixed)) {
 			expect(derivePhaseStatus(permutation)).toBe('running')
 		}
@@ -280,10 +278,13 @@ describe('derivePhaseStatus — exhaustive truth table (tasks concurrent)', () =
 })
 
 // Build the PhaseDerivation[] input from a list of statuses, tagging EVERY phase with the SAME
-// effective `bail` — the legacy "one scalar bail" the old signature took, now carried per phase.
+// effective `bail` — the legacy "one scalar bail" the old signature took, carried per phase.
 // A uniform bail reproduces the old behavior exactly; the per-phase divergence is exercised by the
 // `mixed-bail` rows below (and end-to-end in WorkflowRunner.test.ts).
-function derivations(statuses: readonly PhaseStatus[], bail: boolean): readonly PhaseDerivation[] {
+function derivations(
+	statuses: readonly LifecycleStatus[],
+	bail: boolean,
+): readonly PhaseDerivation[] {
 	return statuses.map((status) => ({ status, bail }))
 }
 
@@ -291,11 +292,11 @@ describe('deriveWorkflowStatus — exhaustive truth table under BOTH bail modes'
 	// The workflow derivation differs from the phase only in the FAILED handling, which `bail`
 	// gates PER PHASE. Each row pins one equivalence class under a specific (uniform) `bail`; the
 	// bail-agnostic classes are asserted under BOTH modes (below) to prove `bail` touches ONLY
-	// failure. A trailing MIXED-bail block proves the policy is now resolved per phase, not globally.
+	// failure. A trailing MIXED-bail block proves the policy is resolved per phase, not globally.
 	const cases: ReadonlyArray<{
-		readonly input: readonly PhaseStatus[]
+		readonly input: readonly LifecycleStatus[]
 		readonly bail: boolean
-		readonly expected: PhaseStatus
+		readonly expected: LifecycleStatus
 		readonly label: string
 	}> = [
 		// ── bail: true (halt) — a failed phase short-circuits to `failed`, even mid-flight ──
@@ -384,7 +385,7 @@ describe('deriveWorkflowStatus — exhaustive truth table under BOTH bail modes'
 
 	// The bail-AGNOSTIC classes — every branch that does NOT involve a failed phase. Asserted
 	// under BOTH modes with the SAME expected value, proving `bail` changes only the failed path.
-	const agnostic: ReadonlyArray<readonly [readonly PhaseStatus[], PhaseStatus, string]> = [
+	const agnostic: ReadonlyArray<readonly [readonly LifecycleStatus[], LifecycleStatus, string]> = [
 		[[], 'pending', 'no phases'],
 		[['pending'], 'pending', 'single pending'],
 		[['pending', 'pending'], 'pending', 'all pending'],
@@ -414,13 +415,13 @@ describe('deriveWorkflowStatus — exhaustive truth table under BOTH bail modes'
 	it('bail is the ONLY axis that changes an outcome — same graph, failed differs', () => {
 		// A phase graph with exactly one failed phase among terminals: graceful folds it into
 		// `completed`, halt propagates `failed`. The two modes diverge ONLY because of the failure.
-		const phases: readonly PhaseStatus[] = ['completed', 'failed', 'completed']
+		const phases: readonly LifecycleStatus[] = ['completed', 'failed', 'completed']
 		expect(deriveWorkflowStatus(derivations(phases, false))).toBe('completed')
 		expect(deriveWorkflowStatus(derivations(phases, true))).toBe('failed')
 	})
 
 	it('a failed-free graph is identical under both modes (no divergence without a failure)', () => {
-		const graphs: ReadonlyArray<readonly PhaseStatus[]> = [
+		const graphs: ReadonlyArray<readonly LifecycleStatus[]> = [
 			[],
 			['running', 'pending'],
 			['completed', 'skipped'],
@@ -435,19 +436,21 @@ describe('deriveWorkflowStatus — exhaustive truth table under BOTH bail modes'
 	})
 
 	it('is order-insensitive under both modes (phases are a settled set here)', () => {
-		const base: readonly PhaseStatus[] = ['failed', 'completed', 'stopped']
+		const base: readonly LifecycleStatus[] = ['failed', 'completed', 'stopped']
 		for (const permutation of permutations(base)) {
 			expect(deriveWorkflowStatus(derivations(permutation, true))).toBe('failed') // failed dominates under halt
 			expect(deriveWorkflowStatus(derivations(permutation, false))).toBe('stopped') // stop beats a folded fail
 		}
 	})
 
-	// ── PER-PHASE bail (the new override) — the failure outcome is resolved per phase, not globally ──
+	// ── PER-PHASE bail (the per-phase override) — the failure outcome is resolved per phase, not globally ──
 	describe('per-phase bail — each phase carries its OWN effective policy', () => {
 		// Explicit PhaseDerivation rows where the `bail` flags DIVERGE between phases. These can ONLY
 		// be expressed with the per-phase signature — they prove the workflow `failed` derivation is
 		// per-phase-bail-aware (a strict-bail failed phase halts even beside a graceful one).
-		const mixedCases: ReadonlyArray<readonly [readonly PhaseDerivation[], PhaseStatus, string]> = [
+		const mixedCases: ReadonlyArray<
+			readonly [readonly PhaseDerivation[], LifecycleStatus, string]
+		> = [
 			[
 				[
 					{ status: 'failed', bail: true },
@@ -506,10 +509,10 @@ function permutations<T>(items: readonly T[]): ReadonlyArray<readonly T[]> {
 	return out
 }
 
-describe('canTransitionTask — the legal §10 transition graph', () => {
+describe('canTransitionTask — the legal transition graph', () => {
 	it('allows the legal moves off pending and running', () => {
-		const pending: readonly TaskStatus[] = ['running', 'skipped', 'stopped']
-		const running: readonly TaskStatus[] = ['completed', 'failed', 'skipped', 'stopped']
+		const pending: readonly LifecycleStatus[] = ['running', 'skipped', 'stopped']
+		const running: readonly LifecycleStatus[] = ['completed', 'failed', 'skipped', 'stopped']
 		for (const to of pending) {
 			expect(canTransitionTask('pending', to)).toBe(true)
 		}
@@ -527,7 +530,7 @@ describe('canTransitionTask — the legal §10 transition graph', () => {
 	})
 
 	it('every terminal status is a dead end', () => {
-		const terminal: readonly TaskStatus[] = ['completed', 'failed', 'skipped', 'stopped']
+		const terminal: readonly LifecycleStatus[] = ['completed', 'failed', 'skipped', 'stopped']
 		for (const from of terminal) {
 			for (const to of EVERY_STATUS) expect(canTransitionTask(from, to)).toBe(false)
 		}
@@ -627,7 +630,7 @@ describe('definitionToSnapshot — the initial, all-pending construction input',
 	})
 
 	it('the per-node converters mirror the whole-tree one', () => {
-		// phaseDefinitionToSnapshot now takes the inherited workflow bail — it persists the effective
+		// phaseDefinitionToSnapshot takes the inherited workflow bail — it persists the effective
 		// per-phase bail (`phase.bail ?? workflowBail`), so the phase declaring none inherits `true` here.
 		const phase = phaseDefinitionToSnapshot(
 			definition.phases[0] ?? { id: 'x', name: 'X', tasks: [] },
@@ -735,12 +738,12 @@ describe('scheduleHost — centralized host settlement lifecycle', () => {
 	it('rejects rather than throwing when a proxied signal traps during linking', async () => {
 		// A Proxy over a NATIVE signal passes `isAbortSignal`, so the pre-guard cannot catch it, and
 		// the trap then fires inside linking. Without containment that escape is SYNCHRONOUS — the
-		// one shape no scheduler backend expects, since each returns the call directly to a caller
+		// one shape no scheduler backend expects, because each returns the call directly to a caller
 		// that only awaits. Setup must present one failure shape regardless of how hostile the input.
 		//
 		// The trap is on `aborted` because that is a member linking actually reads. A
 		// `getPrototypeOf` trap also passes `isAbortSignal`, but nothing in linking asks for
-		// the prototype, so it never fires and this test measured a schedule that simply
+		// the prototype, so it never fires and this test measured a schedule that
 		// never settled rather than the containment it names.
 		let starts = 0
 		let sprung = 0
@@ -1056,7 +1059,7 @@ describe('parkSignal — a one-shot promise-park on an AbortSignal, never reject
 		await expect(parkSignal(controller.signal)).resolves.toBeUndefined()
 	})
 
-	it('resolves once the signal aborts (parks across real macrotasks first)', async () => {
+	it('resolves after the signal aborts (parks across real macrotasks first)', async () => {
 		const controller = new AbortController()
 		let settled = false
 		const parked = parkSignal(controller.signal).then(() => {
@@ -1077,7 +1080,7 @@ describe('parkSignal — a one-shot promise-park on an AbortSignal, never reject
 	})
 })
 
-describe('success / failure — the Result constructors (AGENTS §12)', () => {
+describe('success / failure — the Result constructors', () => {
 	it('success boxes a value as { success: true, value }', () => {
 		expect(success(42)).toEqual({ success: true, value: 42 })
 		expect(success('x')).toEqual({ success: true, value: 'x' })
@@ -1164,7 +1167,7 @@ describe('insertEntry — pure splice-in of one positional entry', () => {
 			['c', 3],
 			['b', 2],
 		])
-		// The input array is untouched (immutability, AGENTS §11).
+		// The input array is untouched — a caller-owned input is never mutated.
 		expect(entries).toEqual([
 			['a', 1],
 			['b', 2],
@@ -1373,7 +1376,7 @@ describe('workflow recovery', () => {
 		}
 		const snapshot = createWorkflow(definition, { functions: VALIDATED_FUNCTIONS }).snapshot()
 		let reads = 0
-		const functions: WorkflowFunctions = {}
+		const functions: WorkflowRegistry = {}
 		Object.defineProperty(functions, 'work', {
 			get: () => {
 				reads += 1
@@ -1397,7 +1400,7 @@ describe('workflow recovery', () => {
 			functions: VALIDATED_FUNCTIONS,
 		}).snapshot()
 		let reads = 0
-		const functions: WorkflowFunctions = {}
+		const functions: WorkflowRegistry = {}
 		Object.defineProperty(functions, 'work', {
 			get: () => {
 				reads += 1

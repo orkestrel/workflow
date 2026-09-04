@@ -4,7 +4,7 @@ import { WorkflowError } from './errors.js'
 import { failure, insertEntry, moveEntry, success } from './helpers.js'
 
 /**
- * Implements the insertion-ordered gated store both lean managers (AGENTS §9) hold — entities keyed by `id`,
+ * Implements the insertion-ordered gated store both lean managers hold — entities keyed by `id`,
  * positional order preserved across an interior `skip` or `remove`.
  *
  * @remarks
@@ -14,7 +14,7 @@ import { failure, insertEntry, moveEntry, success } from './helpers.js'
  *   (`task` / `tasks`, `phase` / `phases`). The `Map`'s insertion order is the single source of
  *   positional truth; `add` and `move` rebuild it through the pure
  *   {@link import('./helpers.js').insertEntry} / {@link import('./helpers.js').moveEntry} leaves.
- * - **Gated mutation API (AGENTS §12).** `append` is the build-time wiring path and THROWS on a
+ * - **Gated mutation API.** `append` is the build-time wiring path and THROWS on a
  *   duplicate id; `add` / `remove` / `move` / `update` return a graceful `MUTATION`
  *   {@link WorkflowError} failure instead. Gating reads ONLY the target's own existence, `pending`
  *   status, id, and bounds — a container's own status is the owning entity's gate, applied before
@@ -49,7 +49,7 @@ export class Collection<
 	// The entity noun every refusal message names, so a task store and a phase store report the
 	// same gate in their own vocabulary.
 	readonly #noun: string
-	// The compiled guard validating a patch (AGENTS §14) before it reaches the entity's own `patch`.
+	// The compiled guard validating a patch before it reaches the entity's own `patch`.
 	readonly #isPatch: Guard<TPatch>
 
 	constructor(noun: string, patch: Guard<TPatch>) {

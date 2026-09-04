@@ -75,9 +75,9 @@ import { WorkflowPersistence } from './WorkflowPersistence.js'
  * - **Two `execute` forms, one engine.** `execute(definition, options)` BUILDS the live tree
  *   from a {@link WorkflowDefinition} (single source of truth for the `behavior` / `concurrency`
  *   metadata); `execute(workflow, options)` DRIVES a caller-owned, ALREADY-BUILT
- *   {@link WorkflowInterface} instead — the entity-native control surface (AGENTS §10:
- *   `pause` / `resume` / `add` / `stop` / `destroy` live on the entity itself). Both forms
- *   converge on the SAME `#execute` engine: neither reads a `WorkflowDefinition` once the tree
+ *   {@link WorkflowInterface} instead — the entity-native control surface
+ *   (`pause` / `resume` / `add` / `stop` / `destroy` live on the entity itself). Both forms
+ *   converge on the SAME `#execute` engine: neither reads a `WorkflowDefinition` after the tree
  *   exists — `#runTask` reads each task's OWN {@link import('./types.js').TaskInterface.handler}
  *   / `retries` / `timeout`, and `#runPhase` reads each phase's OWN
  *   {@link PhaseInterface.concurrency} / `bail`, so a live `add`-minted phase or task (V5)
@@ -173,15 +173,15 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 	 *
 	 * @remarks
 	 * `createWorkflow` mints the live tree, this overload drives it, and the caller controls
-	 * the SAME entity mid-run through its own `pause` / `resume` / `add` / `stop` / `destroy`
-	 * (AGENTS §10). Requires `workflow.status === 'pending'`, `!workflow.destroyed`, and no
+	 * the SAME entity mid-run through its own `pause` / `resume` / `add` / `stop` / `destroy`.
+	 * Requires `workflow.status === 'pending'`, `!workflow.destroyed`, and no
 	 * prior execution claim. A process-local object-identity claim shared by all runner instances
 	 * is acquired synchronously and never released, so a same-object second call throws a `TRANSITION`
-	 * {@link WorkflowError} before any asynchronous status change. Once accepted, observable
+	 * {@link WorkflowError} before any asynchronous status change. After acceptance, observable
 	 * semantics are byte-identical to the `definition` form —
 	 * except the phase loop RE-READS the live tree every iteration, so a caller's live `add`
 	 * mid-run is picked up and actually dispatched. `options` carries only the per-run run
-	 * controls — the bounds (`signal` / `timeout` / `budget`) and the durable `store` — since the
+	 * controls — the bounds (`signal` / `timeout` / `budget`) and the durable `store` — because the
 	 * construction half of {@link WorkflowRunOptions} does not apply to a tree that already exists.
 	 *
 	 * @param workflow - The live {@link WorkflowInterface} to drive
@@ -307,7 +307,7 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 					this.#haltFrom(phases, index, workflow, runSignal)
 					break
 				}
-				// The phase-boundary pause gate (AGENTS §10, workflow-only): park until resumed /
+				// The phase-boundary pause gate (workflow-only): park until resumed /
 				// stopped / destroyed, RACED against a run-level cancel (an abort/timeout/budget/
 				// destroy firing while parked unparks promptly rather than hanging until resume),
 				// then re-check the halt state fresh (a `stop` / `destroy` may have landed while
@@ -456,14 +456,15 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 			phase.emitter.off('add', onAdd)
 			// F1-CRITICAL: on a GENUINE run-level cancel, force the workflow `stop` BEFORE this
 			// sweep — the sweep below can itself skip every non-terminal task and drive the derived
-			// workflow status to `skipped` first, and `stop()` (F1) is a NO-OP once `status` is
+			// workflow status to `skipped` first, and `stop()` (F1) is a NO-OP after `status` is
 			// already terminal. Forcing here (this `finally` runs BEFORE `#execute` regains control)
 			// is required — `#execute`'s own halt guard would otherwise find the workflow already
-			// terminal by the time it runs. Not a signal cancel (e.g. a normal phase settle, or a
-			// bail-true fail-fast the caller already `fail`ed): no forcing, only the coherent sweep.
+			// terminal by the time it runs. Not a signal cancel (for example, a normal phase settle,
+			// or a bail-true fail-fast the caller already `fail`ed): no forcing, only the coherent
+			// sweep.
 			if (runSignal.aborted && isStoppable(workflow)) workflow.stop()
 			// Coherent terminal state (V7): a task minted too late for `spawn` to accept (the
-			// drain-race window) is left `pending` with nothing driving it — sweep it `skip`ped now.
+			// drain-race window) is left `pending` with nothing driving it — sweep it `skip`ped.
 			// A no-op for every task the substrate already settled (terminal statuses ignore `skip`).
 			for (const task of phase.tasks.tasks()) this.#skip(task)
 		}
@@ -573,7 +574,7 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 				: undefined
 		const signal = this.#taskSignal(task, controller.signal, runSignal, deadline)
 		try {
-			// Once the attempt owns its slot, start/reset activity before racing every pause gate
+			// After the attempt owns its slot, start/reset activity before racing every pause gate
 			// against the folded attempt/task/run signal. A deadline can therefore retry/fail a paused
 			// attempt without dispatching its external handler.
 			task.start()
@@ -962,7 +963,7 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 	}
 
 	// HALT from `index`: when the halt is a GENUINE run-level CANCEL (F1-CRITICAL), force the
-	// workflow `stop` BEFORE sweeping — `stop()` is a NO-OP once `status` is already terminal
+	// workflow `stop` BEFORE sweeping — `stop()` is a NO-OP after `status` is already terminal
 	// (F1), so forcing it FIRST (while the derived status is still non-terminal) is the only
 	// ordering that survives the sweep driving every remaining task to `skipped`; sweeping first
 	// would silently turn the intended `stopped` into a derived `skipped`. When the halt is NOT a

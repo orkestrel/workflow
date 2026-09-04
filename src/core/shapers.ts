@@ -11,7 +11,7 @@ import { MAX_TIMER_MS } from './constants.js'
 // Workflow contract shapes — the shape VALUES the contract (factories.ts) compiles
 // into the four lockstep outputs (JSON Schema + guard + parser + generator). These
 // shapes MUST agree with the hand-written definition interfaces (types.ts), which
-// are the source of truth (AGENTS §14): a valid `WorkflowDefinition` is accepted by
+// are the source of truth: a valid `WorkflowDefinition` is accepted by
 // the compiled `is` / `parse`, and the seeded `generate` produces a valid one.
 //
 // The definition interfaces stay hand-written rather than `Infer`-derived from
@@ -109,7 +109,7 @@ export const workflowShape = objectShape({
 //
 // These shapes validate a {@link import('./types.js').TaskUpdate} /
 // {@link import('./types.js').PhaseUpdate} — a declarative PARTIAL edit to an
-// existing `pending` entity (AGENTS §12), never a full replacement. Every field is
+// existing `pending` entity, never a full replacement. Every field is
 // therefore optional; a PROVIDED field still carries the same constraint as its
 // creation-time counterpart (`taskShape` / `phaseShape`) so a patch cannot smuggle in
 // an invalid value.
@@ -121,7 +121,7 @@ export const workflowShape = objectShape({
  * @remarks
  * Mirrors {@link taskShape}'s `name` / `description` constraints exactly (a provided
  * `name` still has `minLength: 1`); never `id` / `behavior` / `retries` / `timeout` (those
- * are not patchable fields, AGENTS §12).
+ * are not patchable fields).
  */
 export const taskUpdateShape = objectShape({
 	name: optionalShape(stringShape({ min: 1, description: 'New task name.' })),
@@ -135,7 +135,7 @@ export const taskUpdateShape = objectShape({
  * @remarks
  * Mirrors {@link phaseShape}'s corresponding field constraints exactly; never `id` /
  * `tasks` (structural children change through the phase's own `add` / `remove` /
- * `move`, not a patch, AGENTS §12).
+ * `move`, not a patch).
  */
 export const phaseUpdateShape = objectShape({
 	name: optionalShape(stringShape({ min: 1, description: 'New phase name.' })),

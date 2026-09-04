@@ -1,12 +1,12 @@
-import { createMemoryDriver } from '@orkestrel/database'
 import type {
-	WorkflowFunctions,
 	WorkflowFunction,
 	WorkflowInterface,
 	WorkflowManagerInterface,
+	WorkflowRegistry,
 	WorkflowSnapshot,
 	WorkflowStoreInterface,
 } from '@src/core'
+import { createMemoryDriver } from '@orkestrel/database'
 import {
 	Workflow,
 	createDatabaseWorkflowStore,
@@ -15,18 +15,13 @@ import {
 	createWorkflowRunner,
 } from '@src/core'
 import { describe, expect, it } from 'vitest'
-import {
-	RELEASE_FUNCTIONS,
-	WorkflowStoreBoundary,
-	buildReleaseDefinition,
-	createGate,
-} from '../../setup.js'
+import { RELEASE_FUNCTIONS, WorkflowStoreBoundary, buildReleaseDefinition } from '../../setup.js'
 
-// WorkflowManager (`createWorkflowManager`) is the additive §9 registry over the workflow
+// WorkflowManager (`createWorkflowManager`) is the additive registry over the workflow
 // layer mirroring the `@orkestrel/agent` line's ConversationManager / WorkspaceManager: an
 // insertion-ordered store keyed by id (add / workflow / workflows / count / remove(id|ids[]) /
 // clear) PLUS the optional store seam (open / save). UNLIKE the twins there is NO active /
-// switch pointer (AGENTS §21 — nothing renders "the current workflow"). The workflow-specific
+// switch pointer (nothing renders "the current workflow"). The workflow-specific
 // nuance: `functions` flows into every mint AND every hydrate, so a restored tree stays
 // RUNNABLE rather than a dead snapshot mirror. Event-free (each Workflow owns its own emitter).
 
@@ -84,7 +79,7 @@ describe('WorkflowManager — add / accessors / count', () => {
 	})
 })
 
-describe('WorkflowManager — remove (§9.2) / clear', () => {
+describe('WorkflowManager — remove / clear', () => {
 	it('remove(id) drops one and reports whether any was removed', () => {
 		const manager = createWorkflowManager()
 		manager.add(buildReleaseDefinition('a'))
@@ -96,15 +91,27 @@ describe('WorkflowManager — remove (§9.2) / clear', () => {
 		expect(manager.workflow('a')).toBeUndefined()
 	})
 
-	it('remove(ids[]) drops a batch — true if ANY was removed (array overload first)', () => {
+	it('remove(ids[]) drops a batch and reports true only when every id was removed', () => {
 		const manager = createWorkflowManager()
 		manager.add(buildReleaseDefinition('a'))
 		manager.add(buildReleaseDefinition('b'))
 		manager.add(buildReleaseDefinition('c'))
 
-		expect(manager.remove(['a', 'missing'])).toBe(true)
+		// A partial batch removes what it can and still reports the shortfall.
+		expect(manager.remove(['a', 'missing'])).toBe(false)
 		expect(manager.count).toBe(2)
+		expect(manager.workflow('a')).toBeUndefined()
+		expect(manager.remove(['b', 'c'])).toBe(true)
+		expect(manager.count).toBe(0)
 		expect(manager.remove(['missing', 'also-missing'])).toBe(false)
+	})
+
+	it('remove([]) reports true vacuously — no id failed to be removed', () => {
+		const manager = createWorkflowManager()
+		manager.add(buildReleaseDefinition('a'))
+
+		expect(manager.remove([])).toBe(true)
+		expect(manager.count).toBe(1)
 	})
 
 	it('clear() empties the registry', () => {
@@ -152,7 +159,7 @@ describe('WorkflowManager — coordinated durable access', () => {
 	})
 
 	it('coalesces same-id misses into one hydration promise and one live object', async () => {
-		const read = createGate<WorkflowSnapshot | undefined>()
+		const read = Promise.withResolvers<WorkflowSnapshot | undefined>()
 		const store = new WorkflowStoreBoundary([read])
 		const manager = createWorkflowManager({ store })
 		const snapshot = createWorkflowManager().add(buildReleaseDefinition('shared')).snapshot()
@@ -196,7 +203,7 @@ describe('WorkflowManager — coordinated durable access', () => {
 	})
 
 	it('returns a concurrent same-id add to every pending open', async () => {
-		const read = createGate<WorkflowSnapshot | undefined>()
+		const read = Promise.withResolvers<WorkflowSnapshot | undefined>()
 		const store = new WorkflowStoreBoundary([read])
 		const manager = createWorkflowManager({ store })
 		const stored = createWorkflowManager().add(buildReleaseDefinition('race')).snapshot()
@@ -212,7 +219,7 @@ describe('WorkflowManager — coordinated durable access', () => {
 	})
 
 	it('keeps a concurrent add when hostile snapshot traversal reenters during cloning', async () => {
-		const read = createGate<WorkflowSnapshot | undefined>()
+		const read = Promise.withResolvers<WorkflowSnapshot | undefined>()
 		const store = new WorkflowStoreBoundary([read])
 		const manager = createWorkflowManager({ store })
 		const snapshot = createWorkflowManager().add(buildReleaseDefinition('clone-add')).snapshot()
@@ -234,7 +241,7 @@ describe('WorkflowManager — coordinated durable access', () => {
 	})
 
 	it('lets a reentrant clear outrank a hostile snapshot traversal failure', async () => {
-		const read = createGate<WorkflowSnapshot | undefined>()
+		const read = Promise.withResolvers<WorkflowSnapshot | undefined>()
 		const store = new WorkflowStoreBoundary([read])
 		const manager = createWorkflowManager({ store })
 		const snapshot = createWorkflowManager().add(buildReleaseDefinition('clone-clear')).snapshot()
@@ -254,11 +261,11 @@ describe('WorkflowManager — coordinated durable access', () => {
 	})
 
 	it('keeps a concurrent add when a function entry reenters during restoration', async () => {
-		const read = createGate<WorkflowSnapshot | undefined>()
+		const read = Promise.withResolvers<WorkflowSnapshot | undefined>()
 		const store = new WorkflowStoreBoundary([read])
 		const managers: WorkflowManagerInterface[] = []
 		let added: WorkflowInterface | undefined
-		const functions: WorkflowFunctions = {
+		const functions: WorkflowRegistry = {
 			get compile(): WorkflowFunction {
 				const manager = managers[0]
 				if (manager === undefined) throw new Error('expected manager fixture')
@@ -276,10 +283,10 @@ describe('WorkflowManager — coordinated durable access', () => {
 	})
 
 	it('does not register a restoration whose function entry reenters remove', async () => {
-		const read = createGate<WorkflowSnapshot | undefined>()
+		const read = Promise.withResolvers<WorkflowSnapshot | undefined>()
 		const store = new WorkflowStoreBoundary([read])
 		const managers: WorkflowManagerInterface[] = []
-		const functions: WorkflowFunctions = {
+		const functions: WorkflowRegistry = {
 			get compile(): WorkflowFunction {
 				const manager = managers[0]
 				if (manager === undefined) throw new Error('expected manager fixture')
@@ -297,11 +304,11 @@ describe('WorkflowManager — coordinated durable access', () => {
 	})
 
 	it('lets a reentrant clear outrank a function-entry failure during restoration', async () => {
-		const read = createGate<WorkflowSnapshot | undefined>()
+		const read = Promise.withResolvers<WorkflowSnapshot | undefined>()
 		const store = new WorkflowStoreBoundary([read])
 		const fault = new Error('function resolution failed')
 		const managers: WorkflowManagerInterface[] = []
-		const functions: WorkflowFunctions = {
+		const functions: WorkflowRegistry = {
 			get compile(): WorkflowFunction {
 				const manager = managers[0]
 				if (manager === undefined) throw new Error('expected manager fixture')
@@ -319,10 +326,10 @@ describe('WorkflowManager — coordinated durable access', () => {
 	})
 
 	it('propagates the exact function-entry failure while hydration still owns the id', async () => {
-		const read = createGate<WorkflowSnapshot | undefined>()
+		const read = Promise.withResolvers<WorkflowSnapshot | undefined>()
 		const store = new WorkflowStoreBoundary([read])
 		const fault = new Error('current function resolution failed')
-		const functions: WorkflowFunctions = {
+		const functions: WorkflowRegistry = {
 			get compile(): WorkflowFunction {
 				throw fault
 			},
@@ -336,8 +343,8 @@ describe('WorkflowManager — coordinated durable access', () => {
 	})
 
 	it('remove invalidates an earlier hydration even when the id was absent', async () => {
-		const staleRead = createGate<WorkflowSnapshot | undefined>()
-		const freshRead = createGate<WorkflowSnapshot | undefined>()
+		const staleRead = Promise.withResolvers<WorkflowSnapshot | undefined>()
+		const freshRead = Promise.withResolvers<WorkflowSnapshot | undefined>()
 		const store = new WorkflowStoreBoundary([staleRead, freshRead])
 		const manager = createWorkflowManager({ store })
 		const snapshot = createWorkflowManager().add(buildReleaseDefinition('removed')).snapshot()
@@ -354,8 +361,8 @@ describe('WorkflowManager — coordinated durable access', () => {
 	})
 
 	it('retains a newer same-id hydration lease after an older detached open settles', async () => {
-		const staleRead = createGate<WorkflowSnapshot | undefined>()
-		const freshRead = createGate<WorkflowSnapshot | undefined>()
+		const staleRead = Promise.withResolvers<WorkflowSnapshot | undefined>()
+		const freshRead = Promise.withResolvers<WorkflowSnapshot | undefined>()
 		const store = new WorkflowStoreBoundary([staleRead, freshRead])
 		const manager = createWorkflowManager({ store })
 		const snapshot = createWorkflowManager().add(buildReleaseDefinition('leased')).snapshot()
@@ -373,8 +380,10 @@ describe('WorkflowManager — coordinated durable access', () => {
 	})
 
 	it('does not resurrect any stale hydration after repeated add-remove churn', async () => {
-		const staleReads = Array.from({ length: 32 }, () => createGate<WorkflowSnapshot | undefined>())
-		const freshRead = createGate<WorkflowSnapshot | undefined>()
+		const staleReads = Array.from({ length: 32 }, () =>
+			Promise.withResolvers<WorkflowSnapshot | undefined>(),
+		)
+		const freshRead = Promise.withResolvers<WorkflowSnapshot | undefined>()
 		const store = new WorkflowStoreBoundary([...staleReads, freshRead])
 		const manager = createWorkflowManager({ store })
 		const snapshot = createWorkflowManager().add(buildReleaseDefinition('churn')).snapshot()
@@ -395,9 +404,9 @@ describe('WorkflowManager — coordinated durable access', () => {
 	})
 
 	it('clear invalidates every earlier hydration', async () => {
-		const alphaRead = createGate<WorkflowSnapshot | undefined>()
-		const betaRead = createGate<WorkflowSnapshot | undefined>()
-		const freshRead = createGate<WorkflowSnapshot | undefined>()
+		const alphaRead = Promise.withResolvers<WorkflowSnapshot | undefined>()
+		const betaRead = Promise.withResolvers<WorkflowSnapshot | undefined>()
+		const freshRead = Promise.withResolvers<WorkflowSnapshot | undefined>()
 		const store = new WorkflowStoreBoundary([alphaRead, betaRead, freshRead])
 		const manager = createWorkflowManager({ store })
 		const alpha = manager.open('alpha')
@@ -416,9 +425,9 @@ describe('WorkflowManager — coordinated durable access', () => {
 	})
 
 	it('clears misses and failures from the in-flight registry so later opens retry', async () => {
-		const miss = createGate<WorkflowSnapshot | undefined>()
-		const failure = createGate<WorkflowSnapshot | undefined>()
-		const hit = createGate<WorkflowSnapshot | undefined>()
+		const miss = Promise.withResolvers<WorkflowSnapshot | undefined>()
+		const failure = Promise.withResolvers<WorkflowSnapshot | undefined>()
+		const hit = Promise.withResolvers<WorkflowSnapshot | undefined>()
 		const store = new WorkflowStoreBoundary([miss, failure, hit])
 		const manager = createWorkflowManager({ store })
 		const fault = new Error('read failed')
@@ -439,7 +448,7 @@ describe('WorkflowManager — coordinated durable access', () => {
 	})
 
 	it('rejects a valid payload stored under the wrong requested key without registering either id', async () => {
-		const read = createGate<WorkflowSnapshot | undefined>()
+		const read = Promise.withResolvers<WorkflowSnapshot | undefined>()
 		const store = new WorkflowStoreBoundary([read])
 		const manager = createWorkflowManager({ store })
 		const opening = manager.open('requested')
@@ -457,8 +466,8 @@ describe('WorkflowManager — coordinated durable access', () => {
 	})
 
 	it('captures same-id snapshots at invocation and writes them in order across a rejection', async () => {
-		const firstWrite = createGate()
-		const secondWrite = createGate()
+		const firstWrite = Promise.withResolvers<void>()
+		const secondWrite = Promise.withResolvers<void>()
 		const store = new WorkflowStoreBoundary([], [firstWrite, secondWrite])
 		const manager = createWorkflowManager({ store })
 		manager.add({ ...buildReleaseDefinition('ordered'), name: 'First' })
@@ -514,8 +523,8 @@ describe('WorkflowManager — coordinated durable access', () => {
 	})
 
 	it('starts writes for different ids independently', async () => {
-		const alphaWrite = createGate()
-		const betaWrite = createGate()
+		const alphaWrite = Promise.withResolvers<void>()
+		const betaWrite = Promise.withResolvers<void>()
 		const store = new WorkflowStoreBoundary([], [alphaWrite, betaWrite])
 		const manager = createWorkflowManager({ store })
 		manager.add(buildReleaseDefinition('alpha'))
@@ -533,7 +542,7 @@ describe('WorkflowManager — coordinated durable access', () => {
 })
 
 // The open/save store seam, parametrized over BOTH the Memory and the Database twins (AGENTS
-// §16.1 — one shared assertion suite driven over each real backend, no mocks).
+// one shared assertion suite driven over each real backend, no mocks).
 const stores: ReadonlyArray<readonly [string, () => ReturnType<typeof createMemoryWorkflowStore>]> =
 	[
 		['MemoryWorkflowStore', () => createMemoryWorkflowStore()],
@@ -609,7 +618,7 @@ for (const [label, makeStore] of stores) {
 			expect(opened?.snapshot()).toEqual(workflow.snapshot())
 		})
 
-		it('save(id) re-save UPSERTS the latest snapshot', async () => {
+		it('save(id) re-save UPSERTS the most recent snapshot', async () => {
 			const store = makeStore()
 			const manager = createWorkflowManager({ store, functions: RELEASE_FUNCTIONS })
 			const workflow = manager.add(buildReleaseDefinition('evolving'))
@@ -640,6 +649,6 @@ for (const [label, makeStore] of stores) {
 	})
 }
 
-// Not covered: an `active` / `switch` suite — dropped by design (AGENTS §21). Unlike its
+// Not covered: an `active` / `switch` suite — dropped by design. Unlike its
 // ConversationManager / WorkspaceManager twins, nothing in the workflow domain renders "the
 // current workflow", so carrying a render pointer with no consumer would be a speculative extra.

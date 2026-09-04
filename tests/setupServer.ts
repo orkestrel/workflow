@@ -1,4 +1,4 @@
-// ── Server-only setup (AGENTS §16.1) ──────────────────────────────────────────
+// ── Server-only setup ─────────────────────────────────────────────────────────
 //
 // Loaded after `setup.ts` for the `src:server` test project, which runs under
 // Node. No node-only fixtures are needed yet — the Node scheduler backend's

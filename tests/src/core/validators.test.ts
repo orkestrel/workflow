@@ -1,4 +1,4 @@
-import type { WorkflowFunctions } from '@src/core'
+import type { WorkflowRegistry } from '@src/core'
 import {
 	createWorkflow,
 	hasWorkflowHandlers,
@@ -386,7 +386,7 @@ describe('snapshot logical leaves', () => {
 			],
 		}).snapshot()
 		let reads = 0
-		const functions: WorkflowFunctions = {}
+		const functions: WorkflowRegistry = {}
 		Object.defineProperty(functions, 'work', {
 			configurable: true,
 			get: () => {

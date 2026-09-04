@@ -1,12 +1,12 @@
 import type { Result } from '@orkestrel/contract'
 import type { EmitterInterface } from '@orkestrel/emitter'
 import type {
+	LifecycleStatus,
 	PhaseContext,
 	PhaseEventMap,
 	PhaseInterface,
 	PhaseOptions,
 	PhaseSnapshot,
-	PhaseStatus,
 	PhaseUpdate,
 	TaskDefinition,
 	TaskInterface,
@@ -16,8 +16,8 @@ import type {
 	TaskSnapshot,
 	TaskUpdate,
 	WorkflowFunction,
-	WorkflowFunctions,
 	WorkflowInterface,
+	WorkflowRegistry,
 } from '../types.js'
 import { Emitter } from '@orkestrel/emitter'
 import { WorkflowError } from '../errors.js'
@@ -34,8 +34,8 @@ import { Task } from '../tasks/Task.js'
 import { TaskManager } from '../tasks/TaskManager.js'
 
 /**
- * Implements the live DERIVED state machine (W-b) for one phase — an observable (AGENTS §13) whose
- * {@link PhaseStatus} is computed from its tasks (never set directly) and recomputed
+ * Implements the live DERIVED state machine (W-b) for one phase — an observable whose
+ * {@link LifecycleStatus} is computed from its tasks (never set directly) and recomputed
  * reactively as a task transitions (the middle tier of the cascade).
  *
  * @remarks
@@ -43,20 +43,20 @@ import { TaskManager } from '../tasks/TaskManager.js'
  *   {@link derivePhaseStatus} over the live tasks' statuses. `#recompute` (passed to
  *   each child {@link Task}) re-derives on every child transition; a CHANGE emits the matching
  *   event AND escalates to the workflow (`#escalate`, the upward step of the cascade).
- * - **Override (AGENTS §10).** `skip` / `stop` FORCE the phase's status (e.g. skipping a whole
+ * - **Override.** `skip` / `stop` FORCE the phase's status (for example, skipping a whole
  *   phase), overriding the derived value; the override is PERSISTED in the snapshot's own
  *   `override` field and restored DIRECTLY (no divergence guess), so a forced phase round-trips.
- * - **Children (AGENTS §9).** `tasks` is the lean {@link TaskManager} (an accessor + `count`,
+ * - **Children.** `tasks` is the lean {@link TaskManager} (an accessor + `count`,
  *   no batch matrix); built positionally from the snapshot so order survives an interior `skip`.
  *   `results()` collects the settled tasks' {@link TaskResult}s (the phase tier of the result
  *   tree); `workflow` navigates UP to the live parent.
- * - **Observable (AGENTS §13).** The owned {@link emitter} ({@link PhaseEventMap}) fires
+ * - **Observable.** The owned {@link emitter} ({@link PhaseEventMap}) fires
  *   `start` / `complete` / `fail` / `pause` / `resume` / `skip` / `stop` after the
  *   corresponding status or runtime-gate change. Status events fire after the phase recomputes
  *   and before it escalates to the workflow, preserving child/phase cause before parent effect.
  *   The emitter isolates a listener throw and routes it to its `error` handler (the `error`
  *   option); `fail` carries the failing task's {@link TaskResult}.
- * - **Structural API (AGENTS §7).** `add` / `remove` / `move` / `update` gate BEFORE
+ * - **Structural API.** `add` / `remove` / `move` / `update` gate BEFORE
  *   delegating to {@link tasks} (the manager gates the target's own existence/status/id/
  *   bounds), then emit the matching {@link PhaseEventMap} event on success only. NATIVE
  *   gating, purely from this phase's own derived `status` (no runner-installed hook): while
@@ -64,22 +64,22 @@ import { TaskManager } from '../tasks/TaskManager.js'
  *   append (a live runner subscribed to the `add` event picks it up), and `remove` / `move` /
  *   `update` always fail gracefully (the tasks are already handed to the execution
  *   substrate); while terminal, everything is refused.
- * - **Patch (AGENTS §12).** `patch` applies a validated {@link PhaseUpdate} to SELF
+ * - **Patch.** `patch` applies a validated {@link PhaseUpdate} to SELF
  *   (`name` / `description` / `concurrency` / `bail`) — defense-in-depth: it throws a
  *   `MUTATION` {@link WorkflowError} unless this phase's own `status` is `pending`, mirroring
  *   the owning {@link WorkflowInterface.update}'s gate.
- * - **Minting (AGENTS §7).** {@link add} MINTS a live {@link Task} from a {@link TaskDefinition}
+ * - **Minting.** {@link add} MINTS a live {@link Task} from a {@link TaskDefinition}
  *   (converts it to a {@link TaskSnapshot}, builds the task wired to THIS phase) — the same
  *   construction path {@link #append} uses at build time, so a live mint and a restored/built
  *   task are wired IDENTICALLY. At construction, the workflow-level
- *   {@link import('../types.js').WorkflowFunctions} registry (threaded from
+ *   {@link import('../types.js').WorkflowRegistry} registry (threaded from
  *   {@link import('../types.js').WorkflowOptions.functions}) resolves every unique initial `behavior`
  *   name ONCE before any task is built; siblings sharing a name receive the exact same captured
  *   runtime {@link import('../types.js').TaskInterface.handler}. A later live {@link add} reads
  *   that name once from the retained registry at its own mint moment. An omitted or unregistered
  *   `behavior` resolves to no handler; only omission is a no-op, while an unresolved present name makes
  *   the containing tree non-drivable.
- * - **Runtime lifecycle (AGENTS §10).** `pause` / `resume` / `wait` mirror the workflow's own
+ * - **Runtime lifecycle.** `pause` / `resume` / `wait` mirror the workflow's own
  *   quartet, scoped to this phase — a driving
  *   {@link import('../types.js').WorkflowRunnerInterface.execute} gates a task's own
  *   pre-dispatch on the workflow's gate FIRST, then this phase's gate, WITHOUT touching
@@ -100,23 +100,23 @@ export class Phase implements PhaseInterface {
 	// The workflow-level function registry retained from Workflow. Initial tasks capture one
 	// binding per unique behavior name. A later live mint reads its own
 	// binding from this retained registry; existing handlers never change when the registry does.
-	readonly #functions: WorkflowFunctions | undefined
+	readonly #functions: WorkflowRegistry | undefined
 	readonly #silence: number | undefined
 	// The EFFECTIVE failure policy this phase runs under (`phase.bail ?? workflow.bail`, resolved
 	// at seed time and carried on the snapshot) — read by the runner to decide fail-fast vs
 	// settle-all for THIS phase, and by the workflow's per-phase-bail-aware status derivation.
-	// Mutable (AGENTS §7): a `pending` phase's `patch` may override it before a run starts.
+	// Mutable: a `pending` phase's `patch` may override it before a run starts.
 	#bail: boolean
 	// Max tasks in flight at once (a resource throttle), seeded from the snapshot; mutable through a
-	// `pending` phase's `patch` (AGENTS §7). `undefined` ⇒ unbounded.
+	// `pending` phase's `patch`. `undefined` ⇒ unbounded.
 	#concurrency: number | undefined
-	// The PUSH observation surface (§13) — owned, never inherited. The emitter isolates a
+	// The PUSH observation surface — owned, never inherited. The emitter isolates a
 	// listener throw (routing it to the `error` handler), never the cascade.
 	readonly #emitter: Emitter<PhaseEventMap>
 	// The last computed status — the baseline a recompute diffs against to detect a CHANGE.
-	#status: PhaseStatus
+	#status: LifecycleStatus
 	// The forced status of a `skip` / `stop`, overriding the derived value; `undefined` ⇒ derived.
-	#override: PhaseStatus | undefined
+	#override: LifecycleStatus | undefined
 	// RUNTIME-ONLY (never persisted): whether the phase is paused.
 	#paused: boolean
 	// The parked `wait()` gate while paused; `undefined` when not paused — released (resolved) by
@@ -129,7 +129,7 @@ export class Phase implements PhaseInterface {
 		escalate: () => void,
 		options?: PhaseOptions,
 		bail?: boolean,
-		functions?: WorkflowFunctions,
+		functions?: WorkflowRegistry,
 		silence?: number,
 	) {
 		const on = options?.on
@@ -218,7 +218,7 @@ export class Phase implements PhaseInterface {
 		return this.#paused
 	}
 
-	get status(): PhaseStatus {
+	get status(): LifecycleStatus {
 		// The override wins when forced; otherwise the status is derived from the live tasks.
 		return this.#override ?? derivePhaseStatus(this.#statuses())
 	}
@@ -242,9 +242,9 @@ export class Phase implements PhaseInterface {
 	}
 
 	skip(): void {
-		// `skip` (AGENTS §10) FORCES the phase to `skipped`, overriding the derived value — then
+		// `skip` FORCES the phase to `skipped`, overriding the derived value — then
 		// recompute so the change is detected, emitted, and escalated.
-		// IDEMPOTENT / NO-OP once `status` is already terminal (a settled phase cannot be
+		// IDEMPOTENT / NO-OP after `status` is already terminal (a settled phase cannot be
 		// re-forced) — but a parked `wait()` waiter is ALWAYS released regardless (a terminal
 		// phase must never hold one; kept unconditional for safety).
 		if (!isTerminalStatus(this.status)) this.#force('skipped')
@@ -253,10 +253,10 @@ export class Phase implements PhaseInterface {
 	}
 
 	stop(): void {
-		// `stop` (AGENTS §10) FORCES the phase to `stopped` — same override discipline as `skip`;
-		// `stopped` IS a PhaseEventMap event, so this emit fires. NO-OP once `status` is already
+		// `stop` FORCES the phase to `stopped` — same override discipline as `skip`;
+		// `stopped` IS a PhaseEventMap event, so this emit fires. NO-OP after `status` is already
 		// terminal (a settled phase cannot be re-forced). Always releases a parked `wait()`
-		// waiter (AGENTS §10 — a permanently-ended phase has nothing left to pause for), even on
+		// waiter (a permanently-ended phase has nothing left to pause for), even on
 		// the no-op branch, for safety.
 		if (!isTerminalStatus(this.status)) this.#force('stopped')
 		this.#paused = false
@@ -281,7 +281,7 @@ export class Phase implements PhaseInterface {
 	}
 
 	wait(): Promise<void> {
-		// Promise-parked (AGENTS §21), never a timer or busy-loop — resolves immediately when not
+		// Promise-parked, never a timer or busy-loop — resolves immediately when not
 		// paused; while paused, the shared gate resolves on `resume` / `stop` / `skip`.
 		return this.#paused && this.#gate !== undefined ? this.#gate.promise : Promise.resolve()
 	}
@@ -358,7 +358,7 @@ export class Phase implements PhaseInterface {
 	}
 
 	patch(value: PhaseUpdate): void {
-		// Defense-in-depth (AGENTS §12): the owning WorkflowInterface.update gates FIRST, so a
+		// Defense-in-depth: the owning WorkflowInterface.update gates FIRST, so a
 		// direct call here THROWS unless this phase is genuinely `pending`.
 		if (this.status !== 'pending') {
 			throw new WorkflowError('MUTATION', `phase '${this.#id}' can only be patched while pending`, {
@@ -413,7 +413,7 @@ export class Phase implements PhaseInterface {
 
 	// Apply a forced status (skip / stop): set the override, then recompute so the change is
 	// detected, emitted (when the status maps to an event), and escalated.
-	#force(status: PhaseStatus): void {
+	#force(status: LifecycleStatus): void {
 		this.#override = status
 		this.#recompute()
 	}
@@ -421,7 +421,7 @@ export class Phase implements PhaseInterface {
 	// Emit the PhaseEventMap event matching a newly-entered status. `running` ⇒ `start`,
 	// `completed` ⇒ `complete`, `failed` ⇒ `fail` (with the failing task's result), `stopped`
 	// ⇒ `stop`, `skipped` ⇒ `skip`. `pending` has no event.
-	#emitFor(status: PhaseStatus): void {
+	#emitFor(status: LifecycleStatus): void {
 		if (status === 'running') this.#emitter.emit('start', this.id)
 		else if (status === 'completed') this.#emitter.emit('complete')
 		else if (status === 'failed') this.#emitter.emit('fail', this.#failure())
@@ -432,7 +432,7 @@ export class Phase implements PhaseInterface {
 	// The failing task's REAL recorded {@link TaskResult} — the first task whose result is a
 	// Failure — so the `fail` event carries the true cause. A phase derives `failed` ONLY when a
 	// child failed with a `Failure` result, so one always exists when `#emitFor('failed')` calls
-	// this: assert that invariant (§12 programmer-error guard, mirroring `Runner.#dispatch`) rather
+	// this: assert that invariant (a programmer-error guard, mirroring `Runner.#dispatch`) rather
 	// than fabricating a synthetic result — a fake, lineage-degenerate `TaskResult` would mask the
 	// true cause while still type-checking.
 	#failure(): TaskResult {
@@ -520,7 +520,7 @@ export class Phase implements PhaseInterface {
 	}
 
 	// The live tasks' statuses, in positional order — the input to `derivePhaseStatus`.
-	#statuses(): readonly PhaseStatus[] {
+	#statuses(): readonly LifecycleStatus[] {
 		return this.#tasks.tasks().map((task) => task.status)
 	}
 }

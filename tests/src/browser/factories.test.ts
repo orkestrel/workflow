@@ -16,9 +16,9 @@ describe('createBrowserScheduler', () => {
 
 		await expect(scheduler.yield()).resolves.toBeUndefined()
 
-		const start = Date.now()
+		const start = performance.now()
 		await scheduler.delay(20)
-		expect(Date.now() - start).toBeGreaterThanOrEqual(15)
+		expect(performance.now() - start).toBeGreaterThanOrEqual(15)
 	})
 
 	it('its yield is abort-aware — a pre-aborted signal rejects with the reason', async () => {
@@ -53,9 +53,9 @@ describe('createFrameScheduler', () => {
 
 		await expect(scheduler.yield()).resolves.toBeUndefined()
 
-		const start = Date.now()
+		const start = performance.now()
 		await scheduler.delay(20)
-		expect(Date.now() - start).toBeGreaterThanOrEqual(15)
+		expect(performance.now() - start).toBeGreaterThanOrEqual(15)
 	})
 
 	it('its yield is abort-aware — a pre-aborted signal rejects with the reason', async () => {
@@ -90,9 +90,9 @@ describe('createIdleScheduler', () => {
 
 		await expect(scheduler.yield()).resolves.toBeUndefined()
 
-		const start = Date.now()
+		const start = performance.now()
 		await scheduler.delay(20)
-		expect(Date.now() - start).toBeGreaterThanOrEqual(15)
+		expect(performance.now() - start).toBeGreaterThanOrEqual(15)
 	})
 
 	it('its yield is abort-aware — a pre-aborted signal rejects with the reason', async () => {

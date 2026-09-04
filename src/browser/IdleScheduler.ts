@@ -1,7 +1,7 @@
 import type { SchedulerInterface, SchedulerOptions } from '@src/core'
-import { delayHost, scheduleHost } from '@src/core'
 import type { AnyFunction } from '@orkestrel/contract'
 import type { IdleInterface } from './types.js'
+import { delayHost, scheduleHost } from '@src/core'
 import { isFunction } from '@orkestrel/contract'
 
 /**
@@ -14,7 +14,7 @@ import { isFunction } from '@orkestrel/contract'
  *   `yield()` waits on it, so the resumption happens when the browser has spare time after
  *   rendering and input — ideal for low-priority background work that must not contend with
  *   the user. The capability is feature-detected through a guard (`isFunction`), never an
- *   `as` (AGENTS §14). Where the API is absent (Safari today), it **falls back** to a
+ *   `as`. Where the API is absent (Safari today), it **falls back** to a
  *   `setTimeout(0)` macrotask — still a real host-turn, not idle-gated. `delay(ms)` is
  *   always a real `setTimeout`. `options.priority` is accepted for contract compliance but a
  *   no-op — idle scheduling has no priority dimension.

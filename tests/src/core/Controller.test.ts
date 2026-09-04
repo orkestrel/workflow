@@ -3,7 +3,6 @@ import { describe, expect, it } from 'vitest'
 import { createAbort } from '@orkestrel/abort'
 import { createRecorder, waitForDelay } from '@orkestrel/test'
 import { Controller } from '../../../src/core/Controller.js'
-import { createGate } from '../../setup.js'
 
 // Build a Controller the way the Runner does — over a real `Abort` whose signal is
 // the unit's cancellation. `signal` is that abort's signal (in the Runner it is the
@@ -63,7 +62,7 @@ describe('Controller', () => {
 
 	it('wait() resolves the moment a gated abort fires (driven by a gate)', async () => {
 		const { controller } = buildController<string, number>('payload')
-		const gate = createGate()
+		const gate = Promise.withResolvers<void>()
 		const settled = createRecorder<readonly []>()
 		const waiting = controller.wait().then(() => settled.handler())
 		// The abort is wired to the gate — `wait` resolves only once the gate opens.
@@ -88,7 +87,7 @@ describe('Controller', () => {
 		expect(calls.calls).toEqual([[21]])
 	})
 
-	it('wait() parks on the exposed signal — resolves when a PARENT fires, not just the own abort', async () => {
+	it('wait() parks on the exposed signal — resolves when a PARENT fires, not only the own abort', async () => {
 		// Faithful to the Runner's real wiring: the Controller's `signal` is the queue
 		// attempt's signal, which ANY-combines the unit's own `Abort` with parent signals
 		// (the runner-level abort, the per-attempt timeout). `wait()` must park on THAT

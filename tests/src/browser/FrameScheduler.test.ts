@@ -5,7 +5,7 @@ import { waitForDelay } from '@orkestrel/test'
 import { instrumentSignal } from '../../setup.js'
 
 // FrameScheduler — the frame-aligned browser cooperative-yield backend, run in REAL headless
-// Chromium where `requestAnimationFrame` is driven by the engine (AGENTS §16.2: do not fake a
+// Chromium where `requestAnimationFrame` is driven by the engine (do not fake a
 // browser API the browser has; fake timers are the WRONG tool for rAF). `yield` resumes in a
 // real frame callback; abort cancels the pending rAF handle and rejects with the verbatim
 // `signal.reason`.
@@ -86,9 +86,9 @@ describe('FrameScheduler', () => {
 	describe('delay', () => {
 		it('resolves after at least ms (real timing)', async () => {
 			const scheduler = new FrameScheduler()
-			const start = Date.now()
+			const start = performance.now()
 			await scheduler.delay(20)
-			expect(Date.now() - start).toBeGreaterThanOrEqual(15)
+			expect(performance.now() - start).toBeGreaterThanOrEqual(15)
 		})
 
 		it('aborting before the deadline rejects with the reason and the timer never fires', async () => {

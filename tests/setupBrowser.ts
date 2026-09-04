@@ -1,4 +1,4 @@
-// ── Browser-only setup (AGENTS §16.1) ─────────────────────────────────────────
+// ── Browser-only setup ────────────────────────────────────────────────────────
 //
 // Loaded after `setup.ts` for the `src:browser` test project, which runs in a
 // real Chromium (DOM + the browser scheduling APIs available). No browser-only

@@ -2,6 +2,7 @@ import type { Result } from '@orkestrel/contract'
 import type { AbortInterface } from '@orkestrel/abort'
 import type { EmitterInterface } from '@orkestrel/emitter'
 import type {
+	LifecycleStatus,
 	PhaseDefinition,
 	PhaseDerivation,
 	PhaseInterface,
@@ -12,11 +13,10 @@ import type {
 	TaskResult,
 	WorkflowContext,
 	WorkflowEventMap,
-	WorkflowFunctions,
 	WorkflowInterface,
 	WorkflowOptions,
+	WorkflowRegistry,
 	WorkflowSnapshot,
-	WorkflowStatus,
 } from './types.js'
 import { createAbort } from '@orkestrel/abort'
 import { Emitter } from '@orkestrel/emitter'
@@ -37,8 +37,8 @@ import { Phase } from './phases/Phase.js'
 import { PhaseManager } from './phases/PhaseManager.js'
 
 /**
- * Implements the live DERIVED state machine (W-b) for a whole workflow — the observable (AGENTS §13)
- * ROOT whose {@link WorkflowStatus} is computed from its phases under the `bail` policy and
+ * Implements the live DERIVED state machine (W-b) for a whole workflow — the observable ROOT
+ * whose {@link LifecycleStatus} is computed from its phases under the `bail` policy and
  * recomputed reactively as the cascade propagates up from a task transition.
  *
  * @remarks
@@ -51,7 +51,7 @@ import { PhaseManager } from './phases/PhaseManager.js'
  *   reachable ONLY under `bail: true` (a single failed task halts the workflow); under
  *   `bail: false` a failed phase folds into `completed`. `#recompute` diffs on each phase
  *   change; a CHANGE emits.
- * - **Override (AGENTS §10).** `skip` / `stop` FORCE the status; an executed task-free pending tree
+ * - **Override.** `skip` / `stop` FORCE the status; an executed task-free pending tree
  *   may also be force-completed vacuously. The override is PERSISTED in the snapshot's own
  *   `override` field and restored DIRECTLY (no divergence guess). The snapshot also persists
  *   `bail`, so a restore re-derives status identically without a silent policy default.
@@ -60,12 +60,12 @@ import { PhaseManager } from './phases/PhaseManager.js'
  *   navigate UP.
  * - **Snapshot.** `snapshot()` serializes the whole live tree to a {@link WorkflowSnapshot} (pure
  *   JSON); {@link import('./factories.js').createRestoredWorkflow} rebuilds an equivalent live tree.
- * - **Observable (AGENTS §13).** The owned {@link emitter} ({@link WorkflowEventMap}) fires
+ * - **Observable.** The owned {@link emitter} ({@link WorkflowEventMap}) fires
  *   `start` / `complete` / `fail` / `pause` / `resume` / `skip` / `stop` after the
  *   corresponding status or runtime-gate change; the emitter isolates a listener throw and
  *   routes it to its `error` handler (the `error` option); `fail` carries the failing task's
  *   {@link TaskResult}.
- * - **Structural API (AGENTS §7).** `add` / `remove` / `move` / `update` gate BEFORE
+ * - **Structural API.** `add` / `remove` / `move` / `update` gate BEFORE
  *   delegating to {@link phases} (the manager gates the target's own existence/status/id/
  *   bounds), then emit the matching {@link WorkflowEventMap} event on success only. NATIVE,
  *   bottom-up gating (no runner-installed hook): refused outright while this workflow's own
@@ -74,12 +74,27 @@ import { PhaseManager } from './phases/PhaseManager.js'
  *   {@link import('./helpers.js').deriveBoundary} over the live phases' statuses. A `pending`
  *   workflow's phases are all `pending`, so the boundary is `0` and every position is
  *   naturally accepted.
- * - **Runtime lifecycle (AGENTS §10).** `pause` / `resume` / `wait` gate execution at the runner's
+ * - **Runtime lifecycle.** `pause` / `resume` / `wait` gate execution at the runner's
  *   phase/task boundaries WITHOUT touching {@link status} — `paused` is runtime-only, never
  *   persisted. `destroy` is a terminal teardown: it `stop`s every non-terminal task and
  *   phase (releasing their gates and liveness resources), aborts {@link signal}, forces the
  *   workflow `stop` override when needed, releases its parked waiter, and marks
  *   {@link destroyed} — all idempotent.
+ *
+ * @example
+ * ```ts
+ * import { definitionToSnapshot, Workflow } from '@orkestrel/workflow'
+ *
+ * const definition = {
+ * 	id: 'release',
+ * 	name: 'Release',
+ * 	phases: [{ id: 'build', name: 'Build', tasks: [{ id: 'compile', name: 'Compile' }] }],
+ * }
+ * const workflow = new Workflow(definitionToSnapshot(definition))
+ * workflow.status // 'pending'
+ * workflow.phase('build')?.task('compile')?.status // 'pending'
+ * workflow.snapshot().id // 'release'
+ * ```
  */
 export class Workflow implements WorkflowInterface {
 	readonly #context: WorkflowContext
@@ -94,19 +109,19 @@ export class Workflow implements WorkflowInterface {
 	// construction — threaded to every Phase (and, transitively, every Task). Read at RESOLVE
 	// time (construction / a later live `add`'s mint), so mutating the object passed in AFTER
 	// construction changes only later mints, never tasks already resolved — do not mutate it.
-	readonly #functions: WorkflowFunctions | undefined
+	readonly #functions: WorkflowRegistry | undefined
 	readonly #silence: number | undefined
 	readonly #phases: PhaseManager = new PhaseManager()
-	// The PUSH observation surface (§13) — owned, never inherited. The emitter isolates a
+	// The PUSH observation surface — owned, never inherited. The emitter isolates a
 	// listener throw (routing it to the `error` handler), never the cascade.
 	readonly #emitter: Emitter<WorkflowEventMap>
 	// Creation / update stamps carried verbatim through a snapshot round-trip.
 	readonly #created: number
 	#updated: number
 	// The last computed status — the baseline a recompute diffs against to detect a CHANGE.
-	#status: WorkflowStatus
+	#status: LifecycleStatus
 	// The forced status of `skip` / `stop` or vacuous completion; `undefined` ⇒ derived.
-	#override: WorkflowStatus | undefined
+	#override: LifecycleStatus | undefined
 	// This workflow's own cancellation handle (AGENTS core precedent) — `signal` fires on `destroy`.
 	readonly #abort: AbortInterface
 	// RUNTIME-ONLY (never persisted): whether the workflow is paused.
@@ -197,7 +212,7 @@ export class Workflow implements WorkflowInterface {
 		return this.#abort.signal
 	}
 
-	get status(): WorkflowStatus {
+	get status(): LifecycleStatus {
 		// The override wins when forced; otherwise the status is derived from the live phases'
 		// derivations — each phase's status paired with the EFFECTIVE `bail` it ran under, so the
 		// failure outcome is per-phase-bail-aware (a strict phase halts even under a graceful workflow).
@@ -219,9 +234,9 @@ export class Workflow implements WorkflowInterface {
 	}
 
 	skip(): void {
-		// `skip` (AGENTS §10) FORCES the workflow to `skipped`, overriding the derived value — then
+		// `skip` FORCES the workflow to `skipped`, overriding the derived value — then
 		// recompute so the change is detected and the `skip` event is emitted. IDEMPOTENT /
-		// NO-OP once `status` is already terminal (a settled workflow cannot be re-forced) — but a
+		// NO-OP after `status` is already terminal (a settled workflow cannot be re-forced) — but a
 		// parked `wait()` waiter is ALWAYS released regardless (a terminal workflow must never hold
 		// one; kept unconditional for safety even though a terminal entity holds none parked).
 		if (!isTerminalStatus(this.status)) this.#force('skipped')
@@ -230,10 +245,10 @@ export class Workflow implements WorkflowInterface {
 	}
 
 	stop(): void {
-		// `stop` (AGENTS §10) FORCES the workflow to `stopped` — `stopped` IS a WorkflowEventMap
-		// event, so this emit fires. NO-OP once `status` is already terminal (mirrors `skip` and
+		// `stop` FORCES the workflow to `stopped` — `stopped` IS a WorkflowEventMap
+		// event, so this emit fires. NO-OP after `status` is already terminal (mirrors `skip` and
 		// `destroy`'s own `if (!isTerminalStatus(...))` guard) — a settled workflow cannot be
-		// re-forced. Always releases a parked `wait()` waiter (AGENTS §10 — a permanently-ended
+		// re-forced. Always releases a parked `wait()` waiter (a permanently-ended
 		// workflow has nothing left to pause for), even on the no-op branch, for safety.
 		if (!isTerminalStatus(this.status)) this.#force('stopped')
 		this.#paused = false
@@ -295,7 +310,7 @@ export class Workflow implements WorkflowInterface {
 	}
 
 	wait(): Promise<void> {
-		// Promise-parked (AGENTS §21), never a timer or busy-loop — resolves immediately when not
+		// Promise-parked, never a timer or busy-loop — resolves immediately when not
 		// paused; while paused, the shared gate resolves on `resume` / `skip` / `stop` / `destroy`.
 		return this.#paused && this.#gate !== undefined ? this.#gate.promise : Promise.resolve()
 	}
@@ -430,7 +445,7 @@ export class Workflow implements WorkflowInterface {
 
 	// Apply a forced status (skip / stop / vacuous complete): set the override, then recompute so
 	// the change is detected + emitted (when the status maps to an event).
-	#force(status: WorkflowStatus): void {
+	#force(status: LifecycleStatus): void {
 		this.#override = status
 		this.#recompute()
 	}
@@ -438,7 +453,7 @@ export class Workflow implements WorkflowInterface {
 	// Emit the WorkflowEventMap event matching a newly-entered status. `running` ⇒ `start`,
 	// `completed` ⇒ `complete`, `failed` ⇒ `fail` (with the failing task's result, reachable only
 	// under `bail: true`), `skipped` ⇒ `skip`, `stopped` ⇒ `stop`. `pending` has no event.
-	#emitFor(status: WorkflowStatus): void {
+	#emitFor(status: LifecycleStatus): void {
 		if (status === 'running') this.#emitter.emit('start', this.id)
 		else if (status === 'completed') this.#emitter.emit('complete')
 		else if (status === 'failed') this.#emitter.emit('fail', this.#failure())
@@ -473,7 +488,7 @@ export class Workflow implements WorkflowInterface {
 	// The failing task's REAL recorded {@link TaskResult} — the first failed result across every
 	// phase — so the `fail` event carries the true cause. A workflow derives `failed` ONLY under
 	// `bail` when some task failed with a `Failure` result, so one always exists when
-	// `#emitFor('failed')` calls this: assert that invariant (§12 programmer-error guard, mirroring
+	// `#emitFor('failed')` calls this: assert that invariant (a programmer-error guard, mirroring
 	// `Runner.#dispatch`) rather than fabricating a synthetic, lineage-degenerate result that would
 	// mask the true cause while still type-checking.
 	#failure(): TaskResult {

@@ -1,7 +1,6 @@
 import type { RunnerInterface, TaskInterface } from '@src/core'
 import { describe, expect, it } from 'vitest'
-import { createRunner } from '@src/core'
-import { RunHolder } from '../../../src/core/RunHolder.js'
+import { createRunner, RunHolder } from '@src/core'
 
 /** A substrate runner over live tasks — the exact shape a phase hands the holder. */
 function buildPhaseRunner(): RunnerInterface<TaskInterface, void> {
@@ -24,7 +23,7 @@ describe('RunHolder — the run-scoped active-phase-runner cell', () => {
 		expect(holder.runner).toBeUndefined()
 	})
 
-	it('swaps to the runner of the phase now starting', () => {
+	it('swaps to the runner of the phase that is starting', () => {
 		const holder = new RunHolder()
 		const first = buildPhaseRunner()
 		const second = buildPhaseRunner()
@@ -39,13 +38,12 @@ describe('RunHolder — the run-scoped active-phase-runner cell', () => {
 		const holder = new RunHolder()
 		// The engine arms its run-level abort listener before any phase starts, closing over the
 		// holder rather than over a runner — this is the read that makes the late swap visible.
-		const readActive = (): RunnerInterface<TaskInterface, void> | undefined => holder.runner
 		const runner = buildPhaseRunner()
 
-		expect(readActive()).toBeUndefined()
+		expect(holder.runner).toBeUndefined()
 		holder.hold(runner)
 
-		expect(readActive()).toBe(runner)
+		expect(holder.runner).toBe(runner)
 	})
 
 	it('gives each run its own cell, so a nested run cannot clobber the outer one', () => {

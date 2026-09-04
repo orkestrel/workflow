@@ -1,32 +1,24 @@
-import type {
-	PhaseEventMap,
-	PhaseStatus,
-	TaskEventMap,
-	TaskStatus,
-	WorkflowEventMap,
-	WorkflowStatus,
-} from './types.js'
+import type { LifecycleStatus, PhaseEventMap, TaskEventMap, WorkflowEventMap } from './types.js'
 
 // Workflow constants — the centralized data the contract, the derivation helpers,
-// and the entities read. UPPER_SNAKE, `Object.freeze`d, every member exported
-// (AGENTS §5). The status-vocabulary arrays are the runtime source of truth for the
-// §10 unions, and the guards read them: `isLifecycleStatus` scans `TASK_STATUSES`
-// and `isTerminalStatus` scans `TERMINAL_TASK_STATUSES`, so the vocabulary has one
-// definition rather than a hard-coded copy per predicate.
+// and the entities read. UPPER_SNAKE, `Object.freeze`d, every member exported. The
+// status-vocabulary arrays are the runtime source of truth for the lifecycle union,
+// and the guards read them: `isLifecycleStatus` scans `LIFECYCLE_STATUSES` and
+// `isTerminalStatus` scans `TERMINAL_STATUSES`, so the vocabulary has one definition
+// rather than a hard-coded copy per predicate.
 
 /** Names the default {@link import('./types.js').WorkflowDefinition.bail} — graceful (continue on a leaf failure). */
 export const DEFAULT_BAIL = false
 
 /**
- * Lists every {@link TaskStatus} value, frozen — the lifecycle vocabulary of a task.
+ * Lists every {@link LifecycleStatus} value, frozen — the vocabulary every tier draws from.
  *
  * @remarks
  * Ordered pending → running → terminal (`completed` / `failed` / `skipped` /
  * `stopped`). The runtime source of truth for the union:
- * {@link import('./validators.js').isLifecycleStatus} reads this array, and
- * {@link PHASE_STATUSES} / {@link WORKFLOW_STATUSES} name it rather than repeating its members.
+ * {@link import('./validators.js').isLifecycleStatus} reads this array.
  */
-export const TASK_STATUSES: readonly TaskStatus[] = Object.freeze([
+export const LIFECYCLE_STATUSES: readonly LifecycleStatus[] = Object.freeze([
 	'pending',
 	'running',
 	'completed',
@@ -36,33 +28,14 @@ export const TASK_STATUSES: readonly TaskStatus[] = Object.freeze([
 ])
 
 /**
- * Lists every {@link PhaseStatus} value, frozen — the lifecycle vocabulary of a phase.
- *
- * @remarks
- * The three tiers alias one {@link import('./types.js').LifecycleStatus} vocabulary, so this names
- * the same frozen array {@link TASK_STATUSES} holds rather than repeating its members. One array
- * cannot drift from another.
- */
-export const PHASE_STATUSES: readonly PhaseStatus[] = TASK_STATUSES
-
-/**
- * Lists every {@link WorkflowStatus} value, frozen — the lifecycle vocabulary of a workflow.
- *
- * @remarks
- * The workflow tier of the same aliased vocabulary; it names the {@link TASK_STATUSES} array
- * rather than repeating its members.
- */
-export const WORKFLOW_STATUSES: readonly WorkflowStatus[] = TASK_STATUSES
-
-/**
- * Lists the {@link TaskStatus} values that are TERMINAL — a task in one of these will
+ * Lists the {@link LifecycleStatus} values that are TERMINAL — a node in one of these will
  * not transition further, frozen.
  *
  * @remarks
  * The source of truth behind {@link import('./helpers.js').isTerminalStatus}.
  * `pending` and `running` are the only non-terminal members.
  */
-export const TERMINAL_TASK_STATUSES: readonly TaskStatus[] = Object.freeze([
+export const TERMINAL_STATUSES: readonly LifecycleStatus[] = Object.freeze([
 	'completed',
 	'failed',
 	'skipped',
@@ -70,7 +43,7 @@ export const TERMINAL_TASK_STATUSES: readonly TaskStatus[] = Object.freeze([
 ])
 
 /**
- * Declares the legal {@link TaskStatus} transition graph of the live W-b task state machine —
+ * Declares the legal {@link LifecycleStatus} transition graph of the live W-b task state machine —
  * each current status mapped to the statuses it may move to directly, frozen.
  *
  * @remarks
@@ -82,14 +55,15 @@ export const TERMINAL_TASK_STATUSES: readonly TaskStatus[] = Object.freeze([
  * transitions again. So completing a non-`running` task, or starting a settled one, is
  * rejected.
  */
-export const TASK_TRANSITIONS: Readonly<Record<TaskStatus, readonly TaskStatus[]>> = Object.freeze({
-	pending: ['running', 'skipped', 'stopped'],
-	running: ['completed', 'failed', 'skipped', 'stopped'],
-	completed: [],
-	failed: [],
-	skipped: [],
-	stopped: [],
-})
+export const TASK_TRANSITIONS: Readonly<Record<LifecycleStatus, readonly LifecycleStatus[]>> =
+	Object.freeze({
+		pending: ['running', 'skipped', 'stopped'],
+		running: ['completed', 'failed', 'skipped', 'stopped'],
+		completed: [],
+		failed: [],
+		skipped: [],
+		stopped: [],
+	})
 
 /**
  * Names the default per-phase task concurrency the {@link import('./factories.js').createWorkflowRunner}

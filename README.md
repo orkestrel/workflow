@@ -34,12 +34,12 @@ attempt. Runtime pause gates are intentionally not persisted.
 Provider sessions, external processes, MCP projection, journals, leases, and
 distributed fencing remain integration concerns rather than core workflow
 behavior. See [guides/workflow.md](./guides/workflow.md) for the complete
-shipped contract. The proposed integration architecture now lives with the
+shipped contract. The proposed integration architecture lives with the
 package that implements it, as `plan/PROPOSAL.md` in `@orkestrel/supervisor`.
 
 ## Package
 
-Published as three environment-scoped entry points: `.` provides the shared
+Published as environment-scoped entry points: `.` provides the shared
 environment-agnostic core and default scheduler, `./browser` adds browser-native
 schedulers, and `./server` adds the Node-native scheduler. Core ships dual
 ESM+CJS builds; `./browser` is ESM-only.

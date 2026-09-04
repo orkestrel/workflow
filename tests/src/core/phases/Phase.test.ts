@@ -5,14 +5,14 @@ import type {
 	WorkflowDefinition,
 	WorkflowInterface,
 } from '@src/core'
+import type { PhaseEvent } from '../../../setup.js'
 import { createWorkflow, createRestoredWorkflow } from '@src/core'
 import { describe, expect, it } from 'vitest'
 import { createRecorder, createRecorders } from '@orkestrel/test'
 import { Phase } from '../../../../src/core/phases/Phase.js'
-import type { PhaseEvent } from '../../../setup.js'
 import { createErrorRecorder, PHASE_EVENTS } from '../../../setup.js'
 
-// The DERIVED phase state machine (W-b): status derived from its tasks via the W-a
+// The DERIVED phase state machine (W-b): status derived from its tasks through the W-a
 // helper, recomputed reactively as a task transitions (the cascade's middle tier), the
 // override, and the phase tier of the result tree. Real definition stubs — no mocks.
 
@@ -153,7 +153,7 @@ describe('Phase — derived status (the cascade)', () => {
 		expect(mixed.status).toBe('completed')
 	})
 
-	it('becomes stopped when every task is stopped (the entity path, not just the helper)', () => {
+	it('becomes stopped when every task is stopped (the entity path, not only the helper)', () => {
 		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(2)))
 		for (const task of phase.tasks.tasks()) task.stop()
 		expect(phase.status).toBe('stopped')
@@ -185,7 +185,7 @@ describe('Phase — degenerate sizes (zero-task + single-task)', () => {
 		expect(phase.status).toBe('completed')
 	})
 
-	it('a zero-task phase can still be force-skipped / force-stopped via the override', () => {
+	it('a zero-task phase can still be force-skipped / force-stopped through the override', () => {
 		const skipped = lonePhase(createWorkflow(buildPhaseWorkflow(0)))
 		skipped.skip()
 		expect(skipped.status).toBe('skipped')
@@ -414,7 +414,7 @@ describe('Phase — pause/resume/paused', () => {
 		expect(phase.snapshot()).not.toHaveProperty('paused')
 	})
 
-	it('pause is a no-op once the phase is terminal', () => {
+	it('pause is a no-op after the phase is terminal', () => {
 		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(1)))
 		const events = createRecorders<PhaseEventMap, PhaseEvent>(phase.emitter, PHASE_EVENTS)
 		phase.pause()
@@ -489,7 +489,7 @@ describe('Phase — structural API: add() mints a live task', () => {
 		expect(phase.tasks.count).toBe(2)
 	})
 
-	it('a minted task cascades status recomputes via start()/complete()', () => {
+	it('a minted task cascades status recomputes through start()/complete()', () => {
 		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(0)))
 		expect(phase.status).toBe('pending')
 		const result = phase.add({ id: 't0', name: 'T0', behavior: 'f' })
@@ -527,7 +527,7 @@ describe('Phase — structural API: add() mints a live task', () => {
 
 	it('a running phase only accepts a pure append — a positioned add fails, a plain add succeeds', () => {
 		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(2)))
-		phase.task('t0')?.start() // phase is now running
+		phase.task('t0')?.start() // phase is running
 		expect(phase.status).toBe('running')
 		const positioned = phase.add({ id: 't2', name: 'T2', behavior: 'f' }, 0)
 		if (positioned.success) throw new Error('expected positioned add to fail')
@@ -568,7 +568,7 @@ describe('Phase — add() resolves a minted task’s handler against the workflo
 })
 
 describe('Phase — remove/move/update only while pending', () => {
-	it('remove/move/update succeed while pending, refuse once running', () => {
+	it('remove/move/update succeed while pending, refuse after running starts', () => {
 		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(2)))
 		expect(phase.remove('t1').success).toBe(true)
 		const rebuilt = lonePhase(createWorkflow(buildPhaseWorkflow(2)))
@@ -583,7 +583,7 @@ describe('Phase — remove/move/update only while pending', () => {
 		expect(running.update('t1', { name: 'x' }).success).toBe(false)
 	})
 
-	it('remove/move/update refuse once terminal', () => {
+	it('remove/move/update refuse after the phase becomes terminal', () => {
 		const phase = lonePhase(createWorkflow(buildPhaseWorkflow(1)))
 		phase.stop()
 		expect(phase.remove('t0').success).toBe(false)
@@ -734,7 +734,7 @@ describe('Phase — leak checks (repeated pause/resume churn stays sound)', () =
 	})
 })
 
-describe('Phase — emit-safety (§13)', () => {
+describe('Phase — emit-safety', () => {
 	it('isolates a throwing listener, routes it to the error handler, and still derives', () => {
 		const errors = createErrorRecorder()
 		const phase = lonePhase(

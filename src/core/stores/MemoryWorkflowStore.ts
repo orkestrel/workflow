@@ -7,7 +7,7 @@ import { cloneWorkflowSnapshot } from '../cloners.js'
  * {@link import('../factories.js').createMemoryWorkflowStore} builds.
  *
  * @remarks
- * A plain `Map<string, WorkflowSnapshot>` (AGENTS §21 — the snapshot is already pure,
+ * A plain `Map<string, WorkflowSnapshot>` (the snapshot is already pure,
  * self-contained JSON, so no encoding is needed for the memory tier). UNLIKE the server
  * package's `SessionStoreInterface`'s memory store there is
  * NO idle-TTL and NO eviction: a persisted workflow run-state is durable orchestration state
@@ -23,7 +23,7 @@ import { cloneWorkflowSnapshot } from '../cloners.js'
  * - **`set` inserts / replaces under the snapshot's OWN `id`** (no separate id param).
  * - **`delete` drops a snapshot by id**; an absent id is a no-op (no throw).
  *
- * The public surface is EXACTLY `get` / `set` / `delete` — no extra members (the §22 method
+ * The public surface is EXACTLY `get` / `set` / `delete` — no extra members (the guide's method
  * bijection with {@link WorkflowStoreInterface}). Restore is a caller concern: read a snapshot
  * back and rebuild the live tree with {@link import('../factories.js').createRestoredWorkflow}.
  *

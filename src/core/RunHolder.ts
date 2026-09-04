@@ -30,8 +30,7 @@ export class RunHolder implements RunHolderInterface {
 	 * @example
 	 * ```ts
 	 * import type { TaskInterface } from '@orkestrel/workflow'
-	 * import { createRunner } from '@orkestrel/workflow'
-	 * import { RunHolder } from './RunHolder.js'
+	 * import { createRunner, RunHolder } from '@orkestrel/workflow'
 	 *
 	 * const holder = new RunHolder()
 	 * holder.hold(createRunner<TaskInterface, void>({ handler: () => undefined }))

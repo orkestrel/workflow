@@ -1,7 +1,7 @@
 import type { WorkflowDefinition, WorkflowSnapshot, WorkflowStoreInterface } from '@src/core'
 import { createWorkflow, createWorkflowRunner, WorkflowPersistence } from '@src/core'
 import { describe, expect, it } from 'vitest'
-import { createGate, createRecordingScheduler } from '../../setup.js'
+import { createRecordingScheduler } from '../../setup.js'
 
 const DEFINITION: WorkflowDefinition = {
 	id: 'durable',
@@ -29,7 +29,7 @@ function taskSnapshot(
 }
 
 describe('runner durability', () => {
-	it('reserves the writer before a synchronous store mutation and persists the latest state', async () => {
+	it('reserves the writer before a synchronous store mutation and persists the most recent state', async () => {
 		const workflow = createWorkflow(DEFINITION, { functions: { work: () => null } })
 		const task = workflow.phase('phase')?.task('task')
 		if (task === undefined) throw new Error('expected persistence task')
@@ -118,8 +118,8 @@ describe('runner durability', () => {
 	)
 
 	it('awaits a successful attempt checkpoint before invoking the handler', async () => {
-		const entered = createGate<void>()
-		const release = createGate<void>()
+		const entered = Promise.withResolvers<void>()
+		const release = Promise.withResolvers<void>()
 		let calls = 0
 		let writes = 0
 		const store: WorkflowStoreInterface = {
@@ -194,7 +194,7 @@ describe('runner durability', () => {
 
 	it('does not retain a repaired best-effort activity write as a required fault', async () => {
 		let writes = 0
-		const failed = createGate<void>()
+		const failed = Promise.withResolvers<void>()
 		const store: WorkflowStoreInterface = {
 			get: () => Promise.resolve(undefined),
 			delete: () => Promise.resolve(),
@@ -227,8 +227,8 @@ describe('runner durability', () => {
 	})
 
 	it('emits terminal state before settlement storage and awaits final durability', async () => {
-		const entered = createGate<void>()
-		const release = createGate<void>()
+		const entered = Promise.withResolvers<void>()
+		const release = Promise.withResolvers<void>()
 		let writes = 0
 		let settled = false
 		const store: WorkflowStoreInterface = {
@@ -245,7 +245,7 @@ describe('runner durability', () => {
 		const workflow = createWorkflow(DEFINITION, {
 			functions: { work: () => null },
 		})
-		const completed = createGate<void>()
+		const completed = Promise.withResolvers<void>()
 		workflow
 			.phase('phase')
 			?.task('task')
@@ -265,8 +265,8 @@ describe('runner durability', () => {
 	})
 
 	it('persists initial, attempt, settlement, and final states without concurrent writes', async () => {
-		const release = createGate<void>()
-		const activity = createGate<void>()
+		const release = Promise.withResolvers<void>()
+		const activity = Promise.withResolvers<void>()
 		const snapshots: WorkflowSnapshot[] = []
 		let active = 0
 		let maximum = 0
@@ -307,9 +307,9 @@ describe('runner durability', () => {
 		expect(taskSnapshot(snapshots.at(-1) ?? result.workflow.snapshot()).status).toBe('completed')
 	})
 
-	it('coalesces rapid activity with one writer, persists the latest frame, and detaches after final', async () => {
-		const entered = createGate<void>()
-		const release = createGate<void>()
+	it('coalesces rapid activity with one writer, persists the most recent frame, and detaches after final', async () => {
+		const entered = Promise.withResolvers<void>()
+		const release = Promise.withResolvers<void>()
 		const snapshots: WorkflowSnapshot[] = []
 		let active = 0
 		let maximum = 0

@@ -11,11 +11,22 @@ import { PERSISTED_NODE_EVENTS, PERSISTED_TASK_EVENTS } from './constants.js'
 import { errorToMessage } from './helpers.js'
 
 /**
- * Coordinates advanced run-local snapshot persistence with one writer and one coalesced latest obligation.
+ * Coordinates advanced run-local snapshot persistence with one writer and one coalesced most recent obligation.
  *
  * @remarks
  * Normally composed by `WorkflowRunner.execute({ store })`; exported for hosts that need to
  * coordinate the same required boundaries around their own runner integration.
+ *
+ * @example
+ * ```ts
+ * import { WorkflowPersistence, createMemoryWorkflowStore, createWorkflow } from '@orkestrel/workflow'
+ *
+ * const workflow = createWorkflow({ id: 'durable', name: 'Durable', phases: [] })
+ * const persistence = new WorkflowPersistence(workflow, createMemoryWorkflowStore())
+ * await persistence.checkpoint('initial')
+ * const durable = await persistence.finalize()
+ * persistence.detach() // idempotent after finalize
+ * ```
  */
 export class WorkflowPersistence implements WorkflowPersistenceInterface {
 	readonly #workflow: WorkflowInterface
@@ -57,7 +68,7 @@ export class WorkflowPersistence implements WorkflowPersistenceInterface {
 	 * @param checkpoint - The boundary being made durable
 	 * @param task - The task owning an attempt or settlement
 	 * @param attempt - The persisted attempt number
-	 * @returns True if the latest state reached the store; false otherwise
+	 * @returns True if the most recent state reached the store; false otherwise
 	 */
 	async checkpoint(
 		checkpoint: WorkflowCheckpoint,

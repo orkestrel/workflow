@@ -1,6 +1,6 @@
 import type { WorkflowErrorCode } from './types.js'
 
-// AGENTS §12: an illegal state-machine transition, structurally invalid restore, refused
+// The fault kinds: an illegal state-machine transition, structurally invalid restore, refused
 // mutation, refused host schedule, or broken internal invariant carries a machine-readable
 // `code`, so a `catch` branches on `error.code` instead of parsing the message. The `context`
 // bag names the offending node / status / parameter. Optional lookups (`task` / `phase`) return

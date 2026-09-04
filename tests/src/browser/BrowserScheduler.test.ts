@@ -5,7 +5,7 @@ import { waitForDelay } from '@orkestrel/test'
 import { instrumentSignal } from '../../setup.js'
 
 // BrowserScheduler — the browser-native cooperative-yield backend, run in REAL headless
-// Chromium (AGENTS §16.2: do not mock a browser API the browser has). Chromium ships the
+// Chromium (do not mock a browser API the browser has). Chromium ships the
 // Prioritized Task Scheduling API (`scheduler.postTask`), so `yield` exercises the NATIVE
 // postTask path here; the `setTimeout(0)` fallback is covered by the guard logic + a note
 // (we never fake away the native API). Abort fidelity is the load-bearing property — the
@@ -15,7 +15,7 @@ import { instrumentSignal } from '../../setup.js'
 
 describe('BrowserScheduler', () => {
 	it('exposes the Prioritized Task Scheduling API in this Chromium (the native path is under test)', () => {
-		// A sanity check that the native branch — not the fallback — is what these tests cover.
+		// A quick check that the native branch — not the fallback — is what these tests cover.
 		const candidate: unknown = Reflect.get(globalThis, 'scheduler')
 		const post =
 			candidate !== null && typeof candidate === 'object'
@@ -109,9 +109,9 @@ describe('BrowserScheduler', () => {
 	describe('delay', () => {
 		it('resolves after at least ms (real timing)', async () => {
 			const scheduler = new BrowserScheduler()
-			const start = Date.now()
+			const start = performance.now()
 			await scheduler.delay(20)
-			expect(Date.now() - start).toBeGreaterThanOrEqual(15)
+			expect(performance.now() - start).toBeGreaterThanOrEqual(15)
 		})
 
 		it('an already-aborted signal rejects immediately with the reason', async () => {

@@ -75,11 +75,11 @@ describe('Scheduler', () => {
 	describe('delay', () => {
 		it('does not resolve before its requested interval', async () => {
 			const scheduler = new Scheduler()
-			const start = Date.now()
+			const start = performance.now()
 
 			await scheduler.delay(20)
 
-			expect(Date.now() - start).toBeGreaterThanOrEqual(20)
+			expect(performance.now() - start).toBeGreaterThanOrEqual(20)
 		})
 
 		it('rejects before the deadline and never settles again after it passes', async () => {

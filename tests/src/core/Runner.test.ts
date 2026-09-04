@@ -1,9 +1,9 @@
 import type { RunnerEntryOptions, RunnerEventMap, RunnerInterface, RunnerOptions } from '@src/core'
+import type { RunnerEvent } from '../../setup.js'
 import { describe, expect, it } from 'vitest'
 import { createRunner } from '@src/core'
 import { createRecorder, createRecorders, waitForDelay } from '@orkestrel/test'
-import type { RunnerEvent } from '../../setup.js'
-import { createErrorRecorder, createGate, RUNNER_EVENTS } from '../../setup.js'
+import { createErrorRecorder, RUNNER_EVENTS } from '../../setup.js'
 
 describe('Runner', () => {
 	it('execute runs every input and returns results in declared order', async () => {
@@ -61,7 +61,7 @@ describe('Runner', () => {
 	})
 
 	it('bounded concurrency limits handlers in flight', async () => {
-		const gate = createGate()
+		const gate = Promise.withResolvers<void>()
 		let inFlight = 0
 		let peak = 0
 		const runner = createRunner<number, number>({
@@ -126,14 +126,14 @@ describe('Runner', () => {
 	})
 
 	it('fail-fast: a unit failure rejects execute and aborts the siblings', async () => {
-		const release = createGate()
+		const release = Promise.withResolvers<void>()
 		const observed: boolean[] = []
 		const runner = createRunner<string, string>({
 			concurrency: 4,
 			retries: 0,
 			handler: async (controller) => {
 				if (controller.input === 'boom') throw new Error('kaboom')
-				// A sibling that parks until aborted — it should see its signal fire.
+				// A sibling that parks until aborted — it must see its signal fire.
 				await Promise.race([controller.wait(), release.promise])
 				observed.push(controller.aborted)
 				return controller.input
@@ -184,13 +184,13 @@ describe('Runner', () => {
 			},
 		})
 		await runner.execute([1])
-		// The run has settled — the captured spawn is now invalid (throws synchronously).
+		// The captured spawn is invalid after the run settles (throws synchronously).
 		expect(escaped).toBeDefined()
 		expect(() => escaped?.(2)).toThrow('spawn is unavailable outside an active run')
 	})
 
 	it('active reports the outstanding unit count, stopped flips after abort', async () => {
-		const gate = createGate()
+		const gate = Promise.withResolvers<void>()
 		const runner = createRunner<number, number>({
 			concurrency: 4,
 			handler: async (controller) => {
@@ -237,7 +237,7 @@ describe('Runner', () => {
 	})
 
 	it('concurrency:1 fan-out drains without self-starvation (parent frees the slot, then the spawn)', async () => {
-		// The headline fire-and-track guarantee at the tightest setting: one slot. The
+		// The headline fire-and-track behavior at the tightest setting: one slot. The
 		// parent must return (freeing the only slot) for the spawned child to run FIFO; if
 		// the runner ever awaited the spawn inside the parent's slot, this would deadlock.
 		const ran: string[] = []
@@ -309,7 +309,7 @@ describe('Runner', () => {
 		const ran: number[] = []
 		const error = new Error('sync boom')
 		// concurrency:1 — the single worker is occupied by the parent through its synchronous
-		// throw, so the fail-fast abort drains the just-spawned child before any worker can
+		// throw, so the fail-fast abort drains the spawned child before any worker can
 		// run its handler (at a higher concurrency an idle worker could race in and run it).
 		const runner = createRunner<number, number>({
 			concurrency: 1,
@@ -323,7 +323,7 @@ describe('Runner', () => {
 				return controller.input
 			},
 		})
-		// The parent's throw is the first failure → fail-fast aborts the run; the just-spawned
+		// The parent's throw is the first failure → fail-fast aborts the run; the spawned
 		// child is cancelled before its handler runs, the count still balances, and the run rejects.
 		await expect(runner.execute([1])).rejects.toBe(error)
 		await waitForDelay(0)
@@ -371,7 +371,7 @@ describe('Runner', () => {
 	})
 
 	it('abort fans out to a deeply-spawned grandchild (nested-spawn propagation)', async () => {
-		const release = createGate()
+		const release = Promise.withResolvers<void>()
 		let grandchildAborted: boolean | undefined
 		const runner = createRunner<number, number>({
 			concurrency: 8,
@@ -402,7 +402,7 @@ describe('Runner', () => {
 		release.resolve()
 		await waitForDelay(0)
 		// The grandchild — spawned two levels deep — observed its signal fire: `abort`
-		// reaches every tracked unit, not just the declared roots.
+		// reaches every tracked unit, not only the declared roots.
 		expect(grandchildAborted).toBe(true)
 	})
 
@@ -465,7 +465,7 @@ describe('Runner', () => {
 	it('wide + deep spawn tree drains the full transitive closure in declaration→spawn order', async () => {
 		// A root that fans out a wide tree several levels deep: 3 declared roots, each
 		// spawns 3 children, each child spawns 3 grandchildren (depth 3). `execute` must
-		// await the ENTIRE closure (3 + 9 + 27 = 39 units) via the count gate — not a
+		// await the ENTIRE closure (3 + 9 + 27 = 39 units) through the count gate — not a
 		// one-time snapshot of the 3 declared roots — and order is declared-first, then
 		// every spawn in spawn order (the live id-list append order).
 		const ran: number[] = []
@@ -524,7 +524,7 @@ describe('Runner', () => {
 		// `{ value }`, so presence is map MEMBERSHIP, never an `undefined` (or any falsy)
 		// sentinel. Here a large run returns a deliberate mix — `0`, `''`, `false`,
 		// `null`, `undefined`, and real objects — at known indices. A regression to a
-		// sentinel-based `#collect` (e.g. `if (value)` or `value !== SENTINEL`) would
+		// sentinel-based `#collect` (for example, `if (value)` or `value !== SENTINEL`) would
 		// silently DROP whichever falsy values collided with the sentinel, shifting every
 		// later result left. Asserting the exact array at every index catches that.
 		const palette: readonly unknown[] = [0, '', false, null, undefined, { ok: true }, 42, 'x']
@@ -556,7 +556,7 @@ describe('Runner', () => {
 	})
 
 	it('mixed falsy results survive across the declared + spawned boundary', async () => {
-		// The boxed-outcome guarantee must hold for spawned units too: a declared unit
+		// The boxed-outcome contract must hold for spawned units too: a declared unit
 		// returns a falsy value AND spawns a sibling that also returns a (different) falsy
 		// value. Both must land — declared first, then the spawn — neither dropped.
 		const runner = createRunner<number, unknown>({
@@ -585,7 +585,7 @@ describe('Runner', () => {
 		// failer queued behind permanently-parked siblings could never run — by design).
 		const total = 60
 		const concurrency = 8
-		const release = createGate()
+		const release = Promise.withResolvers<void>()
 		const observed: boolean[] = []
 		const boom = new Error('in-flight failure')
 		const runner = createRunner<number, number>({
@@ -643,8 +643,8 @@ describe('Runner', () => {
 		// Cascade across the spawn boundary at scale: a root spawns a wide set of children;
 		// one child fails while its siblings (spawned before AND after it) are parked. The
 		// fail-fast abort must reach every tracked unit — earlier spawns, later spawns, and
-		// the still-running root — not just the declared root.
-		const release = createGate()
+		// the still-running root — not only the declared root.
+		const release = Promise.withResolvers<void>()
 		const abortedInputs: number[] = []
 		const boom = new Error('child failure')
 		const runner = createRunner<number, number>({
@@ -729,7 +729,7 @@ describe('Runner', () => {
 	})
 
 	it('many parked wait() handlers are all woken by destroy() mid-run', async () => {
-		// Same drain guarantee via the teardown verb: `destroy()` aborts + stops the queue,
+		// Same drain contract through the teardown verb: `destroy()` aborts + stops the queue,
 		// so every parked handler wakes and `execute` rejects with the synthesized abort.
 		const total = 40
 		const woken = createRecorder<readonly [number]>()
@@ -830,7 +830,7 @@ describe('Runner', () => {
 		// gated open, `active` equals the full input count mid-run; after an abort releases
 		// them all and the run drains, it returns to exactly 0 (settle-based, not a snapshot).
 		const total = 64
-		const gate = createGate()
+		const gate = Promise.withResolvers<void>()
 		const runner = createRunner<number, number>({
 			concurrency: total,
 			handler: async (controller) => {
@@ -865,7 +865,7 @@ describe('Runner', () => {
 		await expect(runner.execute([999])).rejects.toThrow('already executed')
 	})
 
-	it('a spawn captured during a large run throws once that run has settled', async () => {
+	it('a spawn captured during a large run throws after that run has settled', async () => {
 		// `spawn` is valid only during an active run. A handler in a big fan-out leaks its
 		// `controller.spawn`; after the whole closure settles, invoking it must throw — a
 		// captured controller cannot inject work into a finished run.
@@ -887,7 +887,11 @@ describe('Runner', () => {
 		// children whose completion is gated in REVERSE order (the last-spawned finishes
 		// first). The output must still be declared-root then spawns in SPAWN order — the
 		// ordered id-list, never arrival order, defines the result sequence.
-		const gates = [createGate(), createGate(), createGate()]
+		const gates = [
+			Promise.withResolvers<void>(),
+			Promise.withResolvers<void>(),
+			Promise.withResolvers<void>(),
+		]
 		const runner = createRunner<number, number>({
 			concurrency: 8,
 			handler: async (controller) => {
@@ -959,7 +963,7 @@ describe('Runner', () => {
 		// (retries: 0 → terminal), failing the run and aborting the in-flight siblings — the
 		// whole thing drains rather than hanging on the stalled handler.
 		const observed: boolean[] = []
-		const release = createGate()
+		const release = Promise.withResolvers<void>()
 		const runner = createRunner<number, number>({
 			concurrency: 4,
 			retries: 0,
@@ -986,16 +990,16 @@ describe('Runner', () => {
 	})
 })
 
-// ── Emitter — the PUSH observation surface (AGENTS §13) ──────────────────────
+// ── Emitter — the PUSH observation surface ───────────────────────────────────
 //
 // The Runner exposes a typed `emitter` (`RunnerEventMap<TResult>`) carrying its run
 // lifecycle — `start` / `unit` / `spawn` / `settle` / `fail` / `finish` / `abort` — for
 // fire-and-forget observers, alongside the eventual `execute` result. Every event is emitted
 // directly; the emitter isolates a listener throw (it never escapes into the one-shot /
-// fail-fast / spawn-tracking engine, AGENTS §13, routing it to the emitter's own `error`
+// fail-fast / spawn-tracking engine, routing it to the emitter's own `error`
 // handler — the `error` option), each placed AFTER its launch / settle / drain transition.
 // These pin: each event fires at the right moment with the right payload; `on?` wires initial
-// listeners; and the LOAD-BEARING emit-safety guarantee — a throwing observer cannot unbalance
+// listeners; and the LOAD-BEARING emit-safety contract — a throwing observer cannot unbalance
 // the count gate or break fail-fast (the run still drains / still rejects with the first
 // error), yet the `error` handler fires.
 
@@ -1064,7 +1068,7 @@ describe('Runner — emitter (push observation surface)', () => {
 
 	it('fires fail then abort on a unit failure (fail-fast), and no finish', async () => {
 		const boom = new Error('kaboom')
-		const release = createGate()
+		const release = Promise.withResolvers<void>()
 		const runner = createRunner<string, string>({
 			concurrency: 4,
 			retries: 0,
@@ -1153,7 +1157,7 @@ describe('Runner — emitter (push observation surface)', () => {
 
 	it('EMIT SAFETY: a throwing fail listener cannot break fail-fast, and routes to the error handler', async () => {
 		const boom = new Error('kaboom')
-		const release = createGate()
+		const release = Promise.withResolvers<void>()
 		const observed: boolean[] = []
 		const errors = createErrorRecorder()
 		const runner = createRunner<string, string>({
@@ -1207,11 +1211,11 @@ describe('Runner — emitter (push observation surface)', () => {
 
 // ── Substrate hardening: live spawn(), pause/resume queue-native semantics, and
 // graceful stop() with a never-dispatched pending backlog (the workflow Engine composes
-// exactly this behavior over a live tree). Real timers/gates only (AGENTS §16), no mocks.
+// exactly this behavior over a live tree). Real timers/gates only, no mocks.
 
 describe('Runner — spawn() (live, external — a Runner-level counterpart to controller.spawn)', () => {
 	it('spawn mid-execute returns a promise that settles with the unit result, and execute() awaits it (count gate)', async () => {
-		const gate = createGate()
+		const gate = Promise.withResolvers<void>()
 		const runner = createRunner<number, number>({
 			concurrency: 4,
 			handler: async (controller) => {
@@ -1280,7 +1284,7 @@ describe('Runner — spawn() (live, external — a Runner-level counterpart to c
 describe('Runner — pause() / resume() (queue-native: in-flight finishes, next dispatch parks)', () => {
 	it('concurrency:1, several units: pause() after the first dispatch lets it finish but withholds the next; resume() continues in order', async () => {
 		const dispatched: number[] = []
-		const gate = createGate()
+		const gate = Promise.withResolvers<void>()
 		const runner = createRunner<number, number>({
 			concurrency: 1,
 			handler: async (controller) => {
@@ -1307,7 +1311,7 @@ describe('Runner — pause() / resume() (queue-native: in-flight finishes, next 
 		expect(results).toEqual([1, 2, 3])
 	})
 
-	it('pause()/resume() are no-ops once the runner is stopped (§10 — stop() is the terminal gate)', async () => {
+	it('pause()/resume() are no-ops after the runner is stopped — stop() is the terminal gate', async () => {
 		const runner = createRunner<number, number>({ handler: (controller) => controller.input })
 		const stopping = runner.stop()
 		runner.pause()
@@ -1321,7 +1325,7 @@ describe('Runner — pause() / resume() (queue-native: in-flight finishes, next 
 describe('Runner — stop() (graceful, permanent: never-dispatched pending settle WITHOUT failing)', () => {
 	it('stop() with a never-dispatched pending backlog resolves execute() (no throw, no fail-fast trip)', async () => {
 		const dispatched: number[] = []
-		const gate = createGate()
+		const gate = Promise.withResolvers<void>()
 		const runner = createRunner<number, number>({
 			concurrency: 1,
 			handler: async (controller) => {
@@ -1355,7 +1359,7 @@ describe('Runner — stop() (graceful, permanent: never-dispatched pending settl
 	})
 
 	it('spawn() after stop() returns undefined, even mid-run with an in-flight unit still settling', async () => {
-		const gate = createGate()
+		const gate = Promise.withResolvers<void>()
 		const runner = createRunner<number, number>({
 			concurrency: 1,
 			handler: async (controller) => {
@@ -1378,7 +1382,7 @@ describe('Runner — stop() (graceful, permanent: never-dispatched pending settl
 		// queue rejects it with its own "stopped" error, classified as a stop artifact (not a
 		// failure), so `execute` still resolves rather than rejecting.
 		const ran: number[] = []
-		const gate = createGate()
+		const gate = Promise.withResolvers<void>()
 		const runner = createRunner<number, number>({
 			concurrency: 1,
 			retries: 0,
@@ -1579,7 +1583,7 @@ describe('Runner — lifecycle and hostile option boundaries', () => {
 	})
 
 	it('escalates a graceful stop when an in-flight unit fails and cancels its dispatched sibling', async () => {
-		const release = createGate()
+		const release = Promise.withResolvers<void>()
 		const failure = new Error('failed after stop')
 		let siblingAborted = false
 		const runner = createRunner<string, string>({
@@ -1615,7 +1619,7 @@ describe('Runner — lifecycle and hostile option boundaries', () => {
 		expect(aborted.abort()).toBe(aborting)
 		await aborting
 
-		const cleanup = createGate()
+		const cleanup = Promise.withResolvers<void>()
 		const destroyed = createRunner<number, number>({
 			handler: async (controller) => {
 				await controller.wait()
@@ -1737,7 +1741,7 @@ describe('Runner — lifecycle and hostile option boundaries', () => {
 	})
 
 	it('returns the same destroy barrier from an abort listener and destroys observation last', async () => {
-		const cleanup = createGate()
+		const cleanup = Promise.withResolvers<void>()
 		const runner = createRunner<number, number>({
 			handler: async (controller) => {
 				await controller.wait()
@@ -1824,7 +1828,7 @@ describe('Runner — lifecycle and hostile option boundaries', () => {
 	})
 
 	it('rejects Controller.spawn after stop before creating observable work', async () => {
-		const gate = createGate()
+		const gate = Promise.withResolvers<void>()
 		let spawn: ((input: number) => Promise<number>) | undefined
 		const events = createRecorder<[string, string | undefined]>()
 		const runner = createRunner<number, number>({

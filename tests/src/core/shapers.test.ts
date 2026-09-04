@@ -15,14 +15,14 @@ import { describe, expect, it } from 'vitest'
 
 describe('taskShape', () => {
 	it('requires id / name and makes description / behavior optional', () => {
-		expect(taskShape.type).toBe('object')
-		expect(taskShape.properties.id).toMatchObject({ type: 'string', min: 1 })
-		expect(taskShape.properties.name).toMatchObject({ type: 'string', min: 1 })
-		expect(taskShape.properties.description.type).toBe('optional')
+		expect(taskShape.category).toBe('object')
+		expect(taskShape.properties.id).toMatchObject({ category: 'string', min: 1 })
+		expect(taskShape.properties.name).toMatchObject({ category: 'string', min: 1 })
+		expect(taskShape.properties.description.category).toBe('optional')
 		const behavior = taskShape.properties.behavior
-		expect(behavior.type).toBe('optional')
-		expect(behavior.type === 'optional' && behavior.inner).toMatchObject({
-			type: 'string',
+		expect(behavior.category).toBe('optional')
+		expect(behavior.category === 'optional' && behavior.inner).toMatchObject({
+			category: 'string',
 			min: 1,
 		})
 	})
@@ -31,28 +31,28 @@ describe('taskShape', () => {
 		const keys: ReadonlyArray<'retries' | 'timeout'> = ['retries', 'timeout']
 		for (const key of keys) {
 			const field = taskShape.properties[key]
-			expect(field.type).toBe('optional')
-			expect(field.type === 'optional' && field.inner).toMatchObject({
-				type: 'number',
+			expect(field.category).toBe('optional')
+			expect(field.category === 'optional' && field.inner).toMatchObject({
+				category: 'number',
 				integer: true,
 				min: 0,
 			})
 		}
 		const timeout = taskShape.properties.timeout
-		expect(timeout.type === 'optional' && timeout.inner).toMatchObject({ max: MAX_TIMER_MS })
+		expect(timeout.category === 'optional' && timeout.inner).toMatchObject({ max: MAX_TIMER_MS })
 	})
 })
 
 describe('phaseShape', () => {
 	it('holds an array of tasks and an optional positive-integer concurrency', () => {
-		expect(phaseShape.properties.tasks).toMatchObject({ type: 'array' })
-		expect(phaseShape.properties.tasks.type === 'array' && phaseShape.properties.tasks.items).toBe(
-			taskShape,
-		)
+		expect(phaseShape.properties.tasks).toMatchObject({ category: 'array' })
+		expect(
+			phaseShape.properties.tasks.category === 'array' && phaseShape.properties.tasks.items,
+		).toBe(taskShape)
 		const concurrency = phaseShape.properties.concurrency
-		expect(concurrency.type).toBe('optional')
-		expect(concurrency.type === 'optional' && concurrency.inner).toMatchObject({
-			type: 'number',
+		expect(concurrency.category).toBe('optional')
+		expect(concurrency.category === 'optional' && concurrency.inner).toMatchObject({
+			category: 'number',
 			integer: true,
 			min: 1,
 		})
@@ -60,9 +60,9 @@ describe('phaseShape', () => {
 
 	it('carries an optional boolean-literal bail (the per-phase failure-policy override)', () => {
 		const bail = phaseShape.properties.bail
-		expect(bail.type).toBe('optional')
-		expect(bail.type === 'optional' && bail.inner).toMatchObject({
-			type: 'literal',
+		expect(bail.category).toBe('optional')
+		expect(bail.category === 'optional' && bail.inner).toMatchObject({
+			category: 'literal',
 			values: [true, false],
 		})
 	})
@@ -70,14 +70,14 @@ describe('phaseShape', () => {
 
 describe('workflowShape', () => {
 	it('holds an array of phases and an optional boolean-literal bail', () => {
-		expect(workflowShape.properties.phases).toMatchObject({ type: 'array' })
+		expect(workflowShape.properties.phases).toMatchObject({ category: 'array' })
 		expect(
-			workflowShape.properties.phases.type === 'array' && workflowShape.properties.phases.items,
+			workflowShape.properties.phases.category === 'array' && workflowShape.properties.phases.items,
 		).toBe(phaseShape)
 		const bail = workflowShape.properties.bail
-		expect(bail.type).toBe('optional')
-		expect(bail.type === 'optional' && bail.inner).toMatchObject({
-			type: 'literal',
+		expect(bail.category).toBe('optional')
+		expect(bail.category === 'optional' && bail.inner).toMatchObject({
+			category: 'literal',
 			values: [true, false],
 		})
 	})
@@ -86,7 +86,7 @@ describe('workflowShape', () => {
 describe('literalShape — a literal shape carrying a description', () => {
 	it('attaches the description while preserving the literal values', () => {
 		const shape = literalShape(['function', 'tool', 'agent'], { description: 'how to run' })
-		expect(shape.type).toBe('literal')
+		expect(shape.category).toBe('literal')
 		expect(shape.values).toEqual(['function', 'tool', 'agent'])
 		expect(shape.description).toBe('how to run')
 	})
@@ -97,18 +97,22 @@ describe('per-field descriptions (Rank 1)', () => {
 	it('the strict shapes describe their key identity + structural fields', () => {
 		expect(
 			typeof (
-				workflowShape.properties.id.type === 'string' && workflowShape.properties.id.description
+				workflowShape.properties.id.category === 'string' && workflowShape.properties.id.description
 			),
 		).toBe('string')
 		expect(
 			typeof (
-				workflowShape.properties.phases.type === 'array' &&
+				workflowShape.properties.phases.category === 'array' &&
 				workflowShape.properties.phases.description
 			),
 		).toBe('string')
 		const bail = workflowShape.properties.bail
 		expect(
-			typeof (bail.type === 'optional' && bail.inner.type === 'literal' && bail.inner.description),
+			typeof (
+				bail.category === 'optional' &&
+				bail.inner.category === 'literal' &&
+				bail.inner.description
+			),
 		).toBe('string')
 	})
 
@@ -116,8 +120,8 @@ describe('per-field descriptions (Rank 1)', () => {
 		const behavior = taskShape.properties.behavior
 		expect(
 			typeof (
-				behavior.type === 'optional' &&
-				behavior.inner.type === 'string' &&
+				behavior.category === 'optional' &&
+				behavior.inner.category === 'string' &&
 				behavior.inner.description
 			),
 		).toBe('string')
@@ -126,8 +130,8 @@ describe('per-field descriptions (Rank 1)', () => {
 
 // The compiled contract behavior for the new fields (the shapes flow into one guard / parser /
 // schema / generator at the single regen point) — accept a phase `bail` + task `retries` / `timeout`,
-// and reject a NEGATIVE retries/timeout (the `min: 0` refinement). Real contract, no mocks (§16).
-describe('the new optional fields flow through the compiled contract', () => {
+// and reject a NEGATIVE retries/timeout (the `min: 0` refinement). Real contract, no mocks.
+describe('the added optional fields flow through the compiled contract', () => {
 	const contract = createWorkflowContract()
 	const withFields = (overrides: {
 		readonly bail?: boolean
@@ -197,7 +201,7 @@ describe('the new optional fields flow through the compiled contract', () => {
 		expect(contract.is(emptyBehavior)).toBe(false)
 	})
 
-	it('rejects the old object-form behavior ({ via, name }) — behavior is now a plain string', () => {
+	it('rejects the old object-form behavior ({ via, name }) — behavior is a plain string', () => {
 		const oldForm = {
 			id: 'w',
 			name: 'W',

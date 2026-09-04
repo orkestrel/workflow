@@ -15,12 +15,12 @@ import {
 // microtask turns), the per-task abort fold, the emitter cascade, then a full snapshot serialize
 // (and, for the Database twin, a real `databases` driver round-trip). Pacing is already made
 // deterministic by an injected `createRecordingScheduler` (no wall-clock `setTimeout`), but the
-// chain itself cannot be made instantaneous without MOCKING the unit under test (forbidden, §16.2).
+// chain itself cannot be made instantaneous without MOCKING the unit under test (forbidden).
 // Under full-`src:core`-project parallel load (~105 test files across the fork pool saturating every
 // CPU), that real-async chain — which finishes in well under a millisecond in isolation — can be
 // event-loop-starved past vitest's 5s default and flake. A generous ceiling (6× the default)
 // absorbs worst-case starvation while still failing fast on a genuine hang (a real deadlock never
-// settles, so 30s still catches it). Scoped to the real-async tests only (§16.3 — a measured
+// settles, so 30s still catches it). Scoped to the real-async tests only (a measured
 // setting with a current reason); the synchronous store tests keep the fast default.
 const ROUND_TRIP_TIMEOUT_MS = 30_000
 
@@ -34,18 +34,18 @@ const RESTORE_FUNCTIONS = {
 // The W-d MemoryWorkflowStore — the in-memory default behind the WorkflowStoreInterface
 // persistence seam (get / set / delete, async, keyed by a snapshot's own id). It persists the
 // W-a WorkflowSnapshot (the complete, self-contained, pure-JSON run state) UNCHANGED; restore is
-// the shipped `createRestoredWorkflow`, never re-implemented here. REAL data only (AGENTS §16) — a real
+// the shipped `createRestoredWorkflow`, never re-implemented here. REAL data only — a real
 // WorkflowDefinition, a real all-pending snapshot AND a real SETTLED snapshot driven through
 // `createWorkflowRunner().execute` (so recorded statuses / results / bail are exercised), NO mocks.
 
 // The real two-phase `release` WorkflowDefinition (`buildReleaseDefinition`), its by-name handler
 // map, and the deterministic `settleSnapshot` driver (paced by an injected recording scheduler so
-// the run is wall-clock-free, AGENTS §16) all live in `tests/setup.ts` — the shared store-test
-// fixture this and the Database twin drive (AGENTS §16.1), so the definition + run stay in one place.
+// the run is wall-clock-free) all live in `tests/setup.ts` — the shared store-test
+// fixture this and the Database twin drive, so the definition + run stay in one place.
 
 // The "driver-swap parity" check — the pure-JSON snapshot must survive a full
 // `JSON.parse(JSON.stringify(...))` round-trip byte-for-byte — uses the shared `roundTripJSON`
-// (tests/setup.ts, AGENTS §16.1), since a JSON / SQLite / IndexedDB backend persists the payload
+// (tests/setup.ts), because a JSON / SQLite / IndexedDB backend persists the payload
 // AS JSON.
 
 describe('MemoryWorkflowStore — round-trip → identical live tree', () => {
@@ -72,7 +72,7 @@ describe('MemoryWorkflowStore — round-trip → identical live tree', () => {
 
 				// The retrieved snapshot deep-equals what was stored (the durable payload survives).
 				expect(got).toEqual(snapshot)
-				// Narrow `got` to a concrete snapshot via an early-return guard (no `!`), so the restore
+				// Narrow `got` to a concrete snapshot through an early-return guard (no `!`), so the restore
 				// assertion below is UNCONDITIONAL — the `toEqual` above already proved it is present.
 				expect(got).toBeDefined()
 				if (got === undefined) return
@@ -105,7 +105,7 @@ describe('MemoryWorkflowStore — round-trip → identical live tree', () => {
 describe('MemoryWorkflowStore — driver-swap parity (JSON portability)', () => {
 	// After `set`, the retrieved payload must survive a full JSON round-trip AND restore identically
 	// from the JSON-revived form — proving it persists unchanged across ANY JSON / SQLite / IndexedDB
-	// backend (the real driver-swap guarantee). Run it for the settled snapshot (the richer payload).
+	// backend (the real driver-swap contract). Run it for the settled snapshot (the richer payload).
 	it(
 		'the retrieved snapshot survives JSON.stringify/parse and restores identically',
 		async () => {

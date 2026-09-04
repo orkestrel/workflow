@@ -5,6 +5,7 @@ import type {
 	WorkflowInterface,
 	WorkflowOptions,
 } from '@src/core'
+import type { TaskEvent, WorkflowEvent } from '../../setup.js'
 import {
 	createWorkflow,
 	definitionToSnapshot,
@@ -14,7 +15,6 @@ import {
 } from '@src/core'
 import { describe, expect, it } from 'vitest'
 import { captureError, createRecorder, createRecorders, waitForDelay } from '@orkestrel/test'
-import type { TaskEvent, WorkflowEvent } from '../../setup.js'
 import {
 	buildWorkflowDefinition,
 	createErrorRecorder,
@@ -277,7 +277,7 @@ describe('Workflow — multi-phase cascade (sequential phases, reactive re-deriv
 
 	it('a transition in a LATER phase re-derives the workflow through the cascade', () => {
 		// Settle phase a, then drive phase b's task. The workflow must re-derive to completed off the
-		// later phase's change — the cascade reaches the root from any phase, not just the first.
+		// later phase's change — the cascade reaches the root from any phase, not only the first.
 		const workflow = createWorkflow(buildTwoPhaseWorkflow(false))
 		completeTask(workflow, 'a', 't0')
 		completeTask(workflow, 'a', 't1')
@@ -818,7 +818,7 @@ describe('Workflow — the snapshot is self-contained (bail + override persist)'
 	it('the snapshot is DATA, not a pin: an explicit options.bail override re-derives', () => {
 		// The same `failed` snapshot, restored with an explicit bail:false override, re-derives
 		// `running` (one phase terminal, one pending) — proving the stored `failed` was never a pin,
-		// just the effective status under the policy it ran under. The explicit override wins.
+		// only the effective status under the policy it ran under. The explicit override wins.
 		const workflow = createWorkflow(buildTwoPhaseWorkflow(true))
 		completeTask(workflow, 'a', 't0')
 		const t1 = workflow.phase('a')?.task('t1')
@@ -835,7 +835,7 @@ describe('Workflow — the snapshot is self-contained (bail + override persist)'
 		expect(restored.status).toBe('completed')
 	})
 
-	it('round-trips a forced override via the explicit field (workflow tier)', () => {
+	it('round-trips a forced override through the explicit field (workflow tier)', () => {
 		const workflow = createWorkflow(buildTwoPhaseWorkflow(false))
 		workflow.phase('a')?.task('t0')?.start() // derived would be running
 		workflow.stop() // FORCE stopped — an override that diverges from the derived value
@@ -853,7 +853,7 @@ describe('Workflow — the snapshot is self-contained (bail + override persist)'
 		expect(restored.status).toBe('stopped')
 	})
 
-	it('round-trips a forced override via the explicit field (phase tier)', () => {
+	it('round-trips a forced override through the explicit field (phase tier)', () => {
 		const workflow = createWorkflow(buildTwoPhaseWorkflow(false))
 		workflow.phase('a')?.task('t0')?.start() // phase a derived running
 		workflow.phase('a')?.skip() // FORCE phase a to skipped — diverges from derived running
@@ -939,7 +939,7 @@ describe('Workflow — pause/resume/paused', () => {
 		expect(workflow.snapshot()).not.toHaveProperty('paused')
 	})
 
-	it('pause is a no-op once the workflow is terminal', () => {
+	it('pause is a no-op after the workflow is terminal', () => {
 		const workflow = createWorkflow(buildMultiPhaseWorkflow(1))
 		const events = createRecorders<WorkflowEventMap, WorkflowEvent>(
 			workflow.emitter,
@@ -954,7 +954,7 @@ describe('Workflow — pause/resume/paused', () => {
 		expect(events.resume.count).toBe(0)
 	})
 
-	it('pause is a no-op once the workflow is destroyed', () => {
+	it('pause is a no-op after the workflow is destroyed', () => {
 		const workflow = createWorkflow(buildMultiPhaseWorkflow(1))
 		const events = createRecorders<WorkflowEventMap, WorkflowEvent>(
 			workflow.emitter,
@@ -1157,7 +1157,7 @@ describe('Workflow — destroy()', () => {
 		expect(workflow.phase('p1')?.status).toBe('stopped')
 	})
 
-	it('releases a parked phase-level wait() gate via the destroy cascade', async () => {
+	it('releases a parked phase-level wait() gate through the destroy cascade', async () => {
 		const workflow = createWorkflow(buildMultiPhaseWorkflow(1))
 		const phase = workflow.phase('p0')
 		if (phase === undefined) throw new Error('expected phase p0 to exist')
@@ -1199,7 +1199,7 @@ describe('Workflow — destroy()', () => {
 		expect(workflow.signal).toBe(signal)
 	})
 
-	it('refuses every structural mutator and pause once destroyed', () => {
+	it('refuses every structural mutator and pause after destruction', () => {
 		const workflow = createWorkflow(buildMultiPhaseWorkflow(2))
 		workflow.destroy()
 		const addResult = workflow.add({
@@ -1246,7 +1246,7 @@ describe('Workflow — structural API: add() mints a live phase', () => {
 		expect(workflow.phases.count).toBe(2)
 	})
 
-	it('a task minted into a phase cascades status recomputes when driven via start()/complete()', () => {
+	it('a task minted into a phase cascades status recomputes when driven through start()/complete()', () => {
 		const workflow = createWorkflow(buildMultiPhaseWorkflow(1))
 		const result = workflow.add({
 			id: 'p1',
@@ -1291,11 +1291,11 @@ describe('Workflow — structural API: add() mints a live phase', () => {
 })
 
 describe('Workflow — the pending-suffix boundary (add/remove/move gate against terminal-prefix)', () => {
-	it('add at index 0 fails once an early phase is terminal; add at the end succeeds', () => {
+	it('add at index 0 fails after an early phase is terminal; add at the end succeeds', () => {
 		const workflow = createWorkflow(buildMultiPhaseWorkflow(2))
 		const leaf = workflow.phase('p0')?.task('t0')
 		leaf?.start()
-		leaf?.complete('ok') // p0 is now terminal (completed) — the boundary moves past it
+		leaf?.complete('ok') // p0 is terminal (completed) — the boundary moves past it
 		const front = workflow.add({ id: 'new', name: 'New', tasks: [] }, 0)
 		if (front.success) throw new Error('expected front add to fail')
 		expect(front.error.code).toBe('MUTATION')
@@ -1307,7 +1307,7 @@ describe('Workflow — the pending-suffix boundary (add/remove/move gate against
 		const workflow = createWorkflow(buildMultiPhaseWorkflow(3))
 		const leaf = workflow.phase('p0')?.task('t0')
 		leaf?.start()
-		leaf?.complete('ok') // boundary is now 1 (p0 terminal, p1/p2 pending)
+		leaf?.complete('ok') // boundary is 1 (p0 terminal, p1/p2 pending)
 		// Moving a pending phase TO a position before the boundary fails.
 		const toBoundary = workflow.move('p1', 0)
 		if (toBoundary.success) throw new Error('expected move to boundary to fail')
@@ -1426,7 +1426,7 @@ describe('Workflow — leak checks (destroy releases waiters, pause/resume churn
 	})
 })
 
-describe('Workflow — emit-safety (§13)', () => {
+describe('Workflow — emit-safety', () => {
 	it('isolates a throwing listener, routes it to the error handler, and still cascades', () => {
 		const errors = createErrorRecorder()
 		const workflow = createWorkflow(buildTwoPhaseWorkflow(false), { error: errors.handler })
@@ -1453,7 +1453,7 @@ describe('Workflow — emit-safety (§13)', () => {
 		// The cascade is Task → Phase → Workflow. A buggy listener on the phase must not break the
 		// chain: the phase's emitter isolates the throw (routing it to its own error handler), and
 		// the workflow still re-derives all the way to completed. Emit-safety holds at every tier of
-		// the cascade, not just at the entity that threw.
+		// the cascade, not only at the entity that threw.
 		const errors = createErrorRecorder()
 		const workflow = createWorkflow(buildTwoPhaseWorkflow(false), {
 			phases: { a: { error: errors.handler } },
