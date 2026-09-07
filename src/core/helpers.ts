@@ -78,8 +78,8 @@ export function captureWorkflowOptions(options?: WorkflowOptions): WorkflowOptio
 // === Status predicates
 
 /**
- * Tests whether a {@link LifecycleStatus} is TERMINAL — a node in this state will not
- * transition further.
+ * Tests whether a {@link LifecycleStatus} is terminal — `completed`, `failed`, `skipped`, or
+ * `stopped`, the states a node never transitions out of.
  *
  * @remarks
  * The ONE terminal check across every tier (AGENTS.md § Design laws, "one concept, one term"):
@@ -98,7 +98,8 @@ export function isTerminalStatus(status: LifecycleStatus): boolean {
 }
 
 /**
- * Tests whether a driving run must stop giving a workflow more work.
+ * Tests whether a driving run must stop giving a workflow — or one forced phase of it —
+ * more work.
  *
  * @remarks
  * The halt gate a {@link import('./WorkflowRunner.js').WorkflowRunner} consults before starting a
@@ -134,7 +135,7 @@ export function isHalted(workflow: WorkflowInterface, phase?: PhaseInterface): b
 }
 
 /**
- * Tests whether forcing a workflow `stopped` would still record something.
+ * Tests whether forcing a workflow `stopped` would still record the cancellation.
  *
  * @remarks
  * `stop()` is a no-op after a workflow's status becomes terminal, so a run that must record a
@@ -245,8 +246,8 @@ export function ownsAttempt(
 // === Status derivation
 
 /**
- * Derives a phase's status from its tasks' statuses (tasks are concurrent, so this
- * is an order-insensitive reduction).
+ * Derives a phase's status from its tasks' statuses, the most severe terminal status winning
+ * (tasks are concurrent, so this is an order-insensitive reduction).
  *
  * @remarks
  * The truth table (most-severe terminal wins; `bail`-agnostic — a phase surfaces a
@@ -277,9 +278,10 @@ export function derivePhaseStatus(tasks: readonly LifecycleStatus[]): LifecycleS
 
 /**
  * Derives a workflow's status from its phases' {@link PhaseDerivation}s — each phase's status
- * paired with the EFFECTIVE `bail` it ran under (`phase.bail ?? workflow.bail`) — so the
- * failure outcome is PER-PHASE-bail-aware (phases are sequential, but the derivation is an
- * order-insensitive reduction over the settled set).
+ * paired with the effective `bail` it ran under (`phase.bail ?? workflow.bail`) — so the
+ * failure outcome is aware of each phase's own policy, and `failed` is reachable only where
+ * that policy is `true` (phases are sequential, but the derivation is an order-insensitive
+ * reduction over the settled set).
  *
  * @remarks
  * `bail` is a per-phase override, so it is carried on each
@@ -324,8 +326,9 @@ export function deriveWorkflowStatus(phases: readonly PhaseDerivation[]): Lifecy
 // === Pending-suffix boundary (bottom-up NATIVE mutation gating)
 
 /**
- * Derives the PENDING SUFFIX boundary of a positional list of {@link LifecycleStatus}es —
- * the index of the first entry in the contiguous trailing run of `pending` entries.
+ * Derives the pending-suffix boundary of a positional list of {@link LifecycleStatus}es —
+ * the index of the first entry in the contiguous trailing run of `pending` entries, or the
+ * list's length where it has none.
  *
  * @remarks
  * The native, hook-free replacement for a runner-installed cursor: a
@@ -375,7 +378,8 @@ export function canTransitionTask(from: LifecycleStatus, to: LifecycleStatus): b
 }
 
 /**
- * Resolves a task's runtime silence window against its workflow default.
+ * Resolves a task's runtime silence window against its workflow default, to a host-safe
+ * `1..MAX_TIMER_MS` window or to `undefined` where the task disables it.
  *
  * @param value - The task-level override; any present non-positive or non-finite value disables
  * @param fallback - The workflow-level default
@@ -528,9 +532,9 @@ export function buildTaskContext(phase: PhaseContext, node: WorkflowContext): Ta
 // === Definition → initial snapshot (the unified construction input)
 
 /**
- * Converts a {@link WorkflowDefinition} into an INITIAL {@link WorkflowSnapshot} — every
- * node `pending`, no results, empty metadata — so the live W-b tree has ONE construction
- * path (snapshot-driven) for both a fresh build and a restore.
+ * Converts a {@link WorkflowDefinition} into an initial {@link WorkflowSnapshot} — every
+ * node `pending`, no results, empty metadata — so the live W-b tree has one construction
+ * path, snapshot-driven, for a fresh build and for a restore alike.
  *
  * @remarks
  * The structural fields (`id` / `name` / `description` + the ordered phases / tasks)
@@ -1158,7 +1162,7 @@ export function delayHost(ms: number, signal?: AbortSignal): Promise<void> {
 
 /**
  * Parks until `signal` aborts — a promise-parked wait, never a timer or
- * busy-loop, that NEVER rejects.
+ * busy-loop, that resolves on the abort event and never rejects.
  *
  * @remarks
  * Resolves IMMEDIATELY when `signal` is already aborted; otherwise attaches a one-shot

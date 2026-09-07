@@ -5,8 +5,9 @@ import { POST_TASK_PRIORITY } from './constants.js'
 
 /**
  * Implements the browser {@link SchedulerInterface} — the browser-native cooperative-yield backend
- * built on the Prioritized Task Scheduling API (`scheduler.postTask`), falling back to a
- * zero-delay macrotask where it is absent.
+ * built on the Prioritized Task Scheduling API (`scheduler.postTask`) at the mapped priority,
+ * falling back to a zero-delay macrotask where it is absent, and rejecting an aborted wait
+ * with the caller's own reason.
  *
  * @remarks
  * - **`yield` prefers `scheduler.postTask`, honouring priority.** When `globalThis`

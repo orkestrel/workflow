@@ -11,7 +11,8 @@ import { PERSISTED_NODE_EVENTS, PERSISTED_TASK_EVENTS } from './constants.js'
 import { errorToMessage } from './helpers.js'
 
 /**
- * Coordinates advanced run-local snapshot persistence with one writer and one coalesced most recent obligation.
+ * Coordinates advanced run-local snapshot persistence with one writer and one coalesced most
+ * recent obligation, normally composed through `execute({ store })` rather than built directly.
  *
  * @remarks
  * Normally composed by `WorkflowRunner.execute({ store })`; exported for hosts that need to

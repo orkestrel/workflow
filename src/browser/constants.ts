@@ -1,8 +1,9 @@
 import type { SchedulerPriority } from '@src/core'
 
 /**
- * Maps each portable {@link SchedulerPriority} to the browser-native `postTask` priority — the
- * Prioritized Task Scheduling API's three levels.
+ * Maps each portable {@link SchedulerPriority} to the browser-native `postTask` priority —
+ * `user` to `'user-blocking'`, `normal` to `'user-visible'`, and `background` to
+ * `'background'`.
  *
  * @remarks
  * A `user` hint maps to the most urgent `'user-blocking'`, `normal` to the default

@@ -1,8 +1,14 @@
 # @orkestrel/workflow
 
-A typed, host-independent workflow engine for the `@orkestrel` line. It keeps
-work as a serializable `Workflow → Phase → Task` tree and executes task behavior
-through a caller-supplied function registry on a cooperative scheduler.
+> Orchestration as data: a JSON-serializable `Workflow → Phase → Task` tree that a UI or an
+> LLM authors, a store persists, and a thin engine drives by composing the shipped execution
+> substrate.
+
+Author the definition as plain JSON, register the functions its tasks name, and
+hand both to the runner: it builds the live tree, runs each phase in turn with
+that phase's tasks concurrent, and resolves the settled result. Host-independent,
+with browser-native and Node-native scheduler backends beside the default. Part
+of the `@orkestrel` line.
 
 ## Install
 

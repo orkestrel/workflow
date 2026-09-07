@@ -48,8 +48,8 @@ import { WorkflowPersistence } from './WorkflowPersistence.js'
 // suspended awaiting that handler. Each run cancels exactly its own phase Runner.
 
 /**
- * Implements the thin orchestrator that EXECUTES a live W-b workflow tree by COMPOSING the shipped
- * substrate — phases sequential, tasks concurrent — dispatching each task through its OWN
+ * Implements the thin orchestrator that executes a live W-b workflow tree by composing the shipped
+ * substrate — phases sequential, tasks concurrent — dispatching each task through its own
  * resolved handler under the `bail` policy.
  *
  * @remarks

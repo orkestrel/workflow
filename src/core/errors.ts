@@ -7,11 +7,13 @@ import type { WorkflowErrorCode } from './types.js'
 // `undefined` — they never throw.
 
 /**
- * Represents an error raised by the workflow runtime.
+ * Represents an error the workflow runtime raises for an operation it refuses — a
+ * {@link WorkflowErrorCode} (`TRANSITION`, `RESTORE`, `MUTATION`, `SCHEDULE`, or `INVARIANT`)
+ * beside an optional `context` naming the node or the parameter at fault.
  *
  * @remarks
- * Carries a {@link WorkflowErrorCode} and an optional `context` bag naming the
- * offending node id / status / parameter. Raised for an illegal lifecycle transition
+ * The `context` bag names the offending node id, status, or parameter. Raised for an illegal
+ * lifecycle transition
  * (`TRANSITION`), a structurally invalid {@link import('./types.js').WorkflowSnapshot}
  * boundary (`RESTORE`), a refused structural/activity edit (`MUTATION`), a host
  * schedule refused before arming because the caller's `signal` is not a native

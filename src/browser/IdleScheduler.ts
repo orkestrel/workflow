@@ -7,7 +7,8 @@ import { isFunction } from '@orkestrel/contract'
 /**
  * Implements the idle-time {@link SchedulerInterface} — a browser cooperative-yield backend whose
  * `yield` resumes when the host is idle through `requestIdleCallback`, falling back to a
- * zero-delay macrotask where it is absent.
+ * zero-delay macrotask where it is absent, and rejecting an aborted wait with the caller's own
+ * reason. A `priority` hint is accepted and does nothing.
  *
  * @remarks
  * - **`yield` resumes during idle time.** When `globalThis` exposes `requestIdleCallback`,

@@ -7,11 +7,15 @@ import type { LifecycleStatus, PhaseEventMap, TaskEventMap, WorkflowEventMap } f
 // `isTerminalStatus` scans `TERMINAL_STATUSES`, so the vocabulary has one definition
 // rather than a hard-coded copy per predicate.
 
-/** Names the default {@link import('./types.js').WorkflowDefinition.bail} — graceful (continue on a leaf failure). */
+/**
+ * Names the default {@link import('./types.js').WorkflowDefinition.bail}, `false` — the graceful
+ * policy that records a leaf failure and finishes every phase.
+ */
 export const DEFAULT_BAIL = false
 
 /**
- * Lists every {@link LifecycleStatus} value, frozen — the vocabulary every tier draws from.
+ * Lists every {@link LifecycleStatus} value, frozen — the vocabulary every tier draws from,
+ * in the order `pending`, `running`, `completed`, `failed`, `skipped`, `stopped`.
  *
  * @remarks
  * Ordered pending → running → terminal (`completed` / `failed` / `skipped` /
@@ -28,8 +32,8 @@ export const LIFECYCLE_STATUSES: readonly LifecycleStatus[] = Object.freeze([
 ])
 
 /**
- * Lists the {@link LifecycleStatus} values that are TERMINAL — a node in one of these will
- * not transition further, frozen.
+ * Lists the terminal {@link LifecycleStatus} values, frozen — `completed`, `failed`, `skipped`,
+ * and `stopped`, each a state a node never transitions out of.
  *
  * @remarks
  * The source of truth behind {@link import('./helpers.js').isTerminalStatus}.
@@ -68,7 +72,7 @@ export const TASK_TRANSITIONS: Readonly<Record<LifecycleStatus, readonly Lifecyc
 /**
  * Names the default per-phase task concurrency the {@link import('./factories.js').createWorkflowRunner}
  * runner applies when a {@link import('./types.js').PhaseDefinition} omits its `concurrency`
- * throttle — a cap that is effectively unbounded for any realistic phase.
+ * throttle — `1024`, a cap that is effectively unbounded for any realistic phase.
  *
  * @remarks
  * The determinism principle fixes that a phase's tasks run CONCURRENTLY; `concurrency` is
@@ -87,13 +91,15 @@ export const TASK_TRANSITIONS: Readonly<Record<LifecycleStatus, readonly Lifecyc
 export const DEFAULT_PHASE_CONCURRENCY = 1024
 
 /**
- * Names the largest delay representable by the host timer APIs without overflow or clamping.
+ * Names the largest delay representable by the host timer APIs without overflow or clamping,
+ * `2_147_483_647` milliseconds.
  */
 export const MAX_TIMER_MS = 2_147_483_647
 
 /**
  * Lists the {@link WorkflowEventMap} / {@link PhaseEventMap} events that make a durable observer
- * re-persist the live tree, frozen.
+ * re-persist the live tree, frozen — `start`, `complete`, `fail`, `skip`, `stop`, `move`, and
+ * `update`.
  *
  * @remarks
  * The two maps carry the same event names, so one list serves both tiers. It is the source of
@@ -106,7 +112,8 @@ export const PERSISTED_NODE_EVENTS: ReadonlyArray<keyof WorkflowEventMap & keyof
 	Object.freeze(['start', 'complete', 'fail', 'skip', 'stop', 'move', 'update'])
 
 /**
- * Lists the {@link TaskEventMap} events that make a durable observer re-persist the live tree, frozen.
+ * Lists the {@link TaskEventMap} events that make a durable observer re-persist the live tree,
+ * frozen — `start`, `complete`, `fail`, `skip`, `stop`, `report`, and `pulse`.
  *
  * @remarks
  * The leaf counterpart of {@link PERSISTED_NODE_EVENTS}, and the source of truth behind the task

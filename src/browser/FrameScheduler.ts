@@ -3,7 +3,8 @@ import { delayHost, scheduleHost } from '@src/core'
 
 /**
  * Implements the frame-aligned {@link SchedulerInterface} — a browser cooperative-yield backend
- * whose `yield` resumes before the next paint through `requestAnimationFrame`.
+ * whose `yield` resumes before the next paint through `requestAnimationFrame`, rejecting an
+ * aborted wait with the caller's own reason. A `priority` hint is accepted and does nothing.
  *
  * @remarks
  * - **`yield` resumes before the next paint.** `yield()` waits on `requestAnimationFrame`,

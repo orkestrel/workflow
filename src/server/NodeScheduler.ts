@@ -2,7 +2,9 @@ import type { SchedulerInterface, SchedulerOptions } from '@src/core'
 import { delayHost, scheduleHost } from '@src/core'
 
 /**
- * Implements the Node {@link SchedulerInterface} — the server-native cooperative-yield backend.
+ * Implements the Node {@link SchedulerInterface} — the server-native cooperative-yield backend
+ * whose `yield` waits on `setImmediate` and whose abort rejects with the caller's own reason.
+ * A `priority` hint is accepted and does nothing, because Node has no priority primitive.
  *
  * @remarks
  * - **`yield` is a `setImmediate` host-turn.** `yield()` waits on `setImmediate`, the

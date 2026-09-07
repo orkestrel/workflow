@@ -89,7 +89,7 @@ export function createWorkflowContract(): ContractInterface<WorkflowDefinition> 
  * Builds the live W-b entity tree from a {@link WorkflowDefinition} — the whole
  * {@link WorkflowInterface} → {@link import('./types.js').PhaseInterface} →
  * {@link import('./types.js').TaskInterface} tree, each level wired with its lineage
- * context, its emitter, and the cascade.
+ * context, its emitter, and the cascade, and every node born `pending`.
  *
  * @remarks
  * The definition is the DECLARATIVE blueprint; this seeds an initial all-`pending`
@@ -210,7 +210,8 @@ export function createRestoredWorkflow(
 }
 
 /**
- * Builds an interrupted workflow back to life at its remaining retry budget.
+ * Builds an interrupted workflow back to life at its remaining retry budget, normalizing a
+ * leaf whose attempts are exhausted into a recovery failure.
  *
  * @remarks
  * Each phase captures every unique initial `behavior` binding once before constructing tasks. Recovery
@@ -252,8 +253,9 @@ export function createRecoveredWorkflow(
 
 /**
  * Creates the in-memory durable {@link WorkflowStoreInterface} — a process-lifetime
- * {@link MemoryWorkflowStore} persisting {@link WorkflowSnapshot}s by workflow id, the DEFAULT
- * backend behind the W-d persistence seam.
+ * {@link MemoryWorkflowStore} persisting {@link WorkflowSnapshot}s by workflow id, the default
+ * backend behind the W-d persistence seam. It takes no options and expires nothing: a
+ * persisted run state lives until an explicit `delete`.
  *
  * @remarks
  * The snapshot analogue of the server package's `createMemorySessionStore`
@@ -286,7 +288,8 @@ export function createMemoryWorkflowStore(): WorkflowStoreInterface {
 /**
  * Creates a {@link DatabaseWorkflowStore} over any {@link DriverInterface} — the durable,
  * driver-pluggable backing for the W-d persistence seam, the opt-in twin of
- * {@link createMemoryWorkflowStore}.
+ * {@link createMemoryWorkflowStore}. It holds the snapshot as one opaque JSON column, and its
+ * `driver` defaults to memory, so it works before any durable driver is passed.
  *
  * @remarks
  * Builds a one-table database (`snapshots`, keyed by `id`) over the supplied driver, the snapshot
@@ -331,9 +334,11 @@ export function createDatabaseWorkflowStore(
 }
 
 /**
- * Creates the thin orchestrator — a {@link WorkflowRunnerInterface} — that EXECUTES a live W-b
- * workflow tree by COMPOSING the shipped substrate: phases sequential, tasks concurrent, each
- * task dispatched through its OWN resolved handler under the workflow's `bail` policy.
+ * Creates the thin orchestrator — a {@link WorkflowRunnerInterface} — that executes a live W-b
+ * workflow tree by composing the shipped substrate: phases sequential, tasks concurrent, each
+ * task dispatched through its own resolved handler under the workflow's `bail` policy. The
+ * engine is pure — it carries no behavior or provider registry, and its only option is the
+ * scheduler it paces phase boundaries with.
  *
  * @remarks
  * The runner is a PURE engine — it re-implements no concurrency / retry / abort logic, AND it
@@ -360,19 +365,43 @@ export function createDatabaseWorkflowStore(
  *   See {@link WorkflowRunnerOptions}.
  * @returns A working {@link WorkflowRunnerInterface}
  *
- * @example
+ * @example Author a definition and run it
  * ```ts
  * import { createWorkflowRunner } from '@orkestrel/workflow'
+ * import type { WorkflowDefinition } from '@orkestrel/workflow'
  *
- * const runner = createWorkflowRunner()
- * const definition = { id: 'w', name: 'W', phases: [{ id: 'p', name: 'P', tasks: [
- * 	{ id: 't', name: 'T', behavior: 'compile' },
- * ] }] }
+ * const definition: WorkflowDefinition = {
+ * 	id: 'release',
+ * 	name: 'Release',
+ * 	phases: [
+ * 		{
+ * 			id: 'build',
+ * 			name: 'Build',
+ * 			tasks: [
+ * 				{ id: 'compile', name: 'Compile', behavior: 'compile' },
+ * 				{ id: 'lint', name: 'Lint', behavior: 'lint' },
+ * 			],
+ * 		},
+ * 		{
+ * 			id: 'ship',
+ * 			name: 'Ship',
+ * 			tasks: [{ id: 'publish', name: 'Publish', behavior: 'publish' }],
+ * 		},
+ * 	],
+ * }
+ *
+ * const runner = createWorkflowRunner() // a pure engine — no registries
+ *
  * const result = await runner.execute(definition, {
- * 	functions: { compile: async (controller) => `built ${controller.task.id}` },
+ * 	functions: {
+ * 		compile: async (controller) => `built ${controller.task.id}`,
+ * 		lint: async () => 'clean',
+ * 		publish: async () => 'published',
+ * 	},
  * })
  * result.status // 'completed'
- * result.workflow.phase('p')?.task('t')?.status // 'completed'
+ * result.workflow.phase('build')?.task('compile')?.status // 'completed'
+ * result.results // every settled task's TaskResult, in positional order
  * ```
  */
 export function createWorkflowRunner(options?: WorkflowRunnerOptions): WorkflowRunnerInterface {
@@ -382,7 +411,9 @@ export function createWorkflowRunner(options?: WorkflowRunnerOptions): WorkflowR
 /**
  * Creates a {@link WorkflowManagerInterface} — the store-backed registry of
  * {@link WorkflowInterface}s, the additive manager tier mirroring the `@orkestrel/agent`
- * line's `createConversationManager` / `createWorkspaceManager`.
+ * line's `createConversationManager` / `createWorkspaceManager`. The returned registry makes
+ * hydrated named work runnable when `options.functions` is supplied, and leaves it
+ * inspectable when it is not.
  *
  * @remarks
  * `options.functions` flows into every workflow the manager mints (`add`, through
@@ -463,7 +494,8 @@ export function createScheduler(): SchedulerInterface {
 
 /**
  * Creates a thin generic orchestrator that drives declared units — and any they
- * `spawn` — through a bounded-concurrency queue, collecting their results in order.
+ * `spawn` — through a bounded-concurrency queue, collecting their results in order and
+ * failing the run fast on the first genuine unit failure.
  *
  * @remarks
  * The Runner composes the workers `Queue` for backpressure, FIFO ordering, bounded

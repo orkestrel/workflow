@@ -3,8 +3,9 @@ import { cloneWorkflowSnapshot } from '../cloners.js'
 
 /**
  * Implements the in-memory {@link WorkflowStoreInterface} — a process-lifetime `Map` of
- * {@link WorkflowSnapshot}s keyed by workflow id, the DEFAULT store
- * {@link import('../factories.js').createMemoryWorkflowStore} builds.
+ * {@link WorkflowSnapshot}s keyed by workflow id, the default store
+ * {@link import('../factories.js').createMemoryWorkflowStore} builds. It expires nothing: a
+ * persisted snapshot lives until an explicit `delete`.
  *
  * @remarks
  * A plain `Map<string, WorkflowSnapshot>` (the snapshot is already pure,

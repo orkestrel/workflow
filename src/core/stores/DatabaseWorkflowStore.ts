@@ -4,7 +4,7 @@ import { cloneWorkflowSnapshot } from '../cloners.js'
 
 /**
  * Implements a {@link WorkflowStoreInterface} backed by one table of the `databases` layer — a
- * workflow's durable run-state IS a row, so persistence reduces to keyed point-access
+ * workflow's durable run state is a row, so persistence reduces to keyed point-access
  * (`get` / `set` / `delete`) over a `TableInterface`, the driver-pluggable twin of the
  * plain-`Map` {@link import('./MemoryWorkflowStore.js').MemoryWorkflowStore}.
  *
