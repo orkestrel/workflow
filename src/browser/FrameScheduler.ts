@@ -3,7 +3,7 @@ import { delayHost, scheduleHost } from '@src/core'
 
 /**
  * Implements the frame-aligned {@link SchedulerInterface} — a browser cooperative-yield backend
- * whose `yield` resumes just before the next paint through `requestAnimationFrame`.
+ * whose `yield` resumes before the next paint through `requestAnimationFrame`.
  *
  * @remarks
  * - **`yield` resumes before the next paint.** `yield()` waits on `requestAnimationFrame`,
@@ -32,7 +32,7 @@ import { delayHost, scheduleHost } from '@src/core'
  */
 export class FrameScheduler implements SchedulerInterface {
 	/**
-	 * Yields control to the host until just before the next paint through
+	 * Yields control to the host until the moment before the next paint through
 	 * `requestAnimationFrame`, then resumes; abort rejects with `signal.reason`.
 	 */
 	yield(options?: SchedulerOptions): Promise<void> {

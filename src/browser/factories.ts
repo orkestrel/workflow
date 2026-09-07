@@ -34,7 +34,7 @@ export function createBrowserScheduler(): SchedulerInterface {
 
 /**
  * Creates the frame-aligned cooperative-yield {@link SchedulerInterface} — `yield()` resumes
- * just before the next paint through `requestAnimationFrame`; `delay(ms)` is a real
+ * before the next paint through `requestAnimationFrame`; `delay(ms)` is a real
  * `setTimeout`.
  *
  * @remarks

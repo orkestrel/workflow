@@ -24,7 +24,7 @@ import {
 } from '@src/core'
 import { TaskController } from '../src/core/tasks/TaskController.js'
 
-/** Shared invalid task activity frames used by cloner and guard boundary tests. */
+/** Lists the invalid task activity frames the cloner and guard boundary tests share. */
 export const INVALID_TASK_ACTIVITIES: ReadonlyArray<readonly [input: unknown]> = Object.freeze([
 	[{ note: '' }],
 	[{ progress: { progress: Number.NaN } }],
@@ -54,7 +54,7 @@ export const INVALID_TASK_ACTIVITIES: ReadonlyArray<readonly [input: unknown]> =
 // beside it, so the pair cannot drift: a name missing from the constant is missing from the
 // union, and a call site reading that recorder stops at the typecheck rather than at runtime.
 
-/** Every {@link import('@src/core').WorkflowEventMap} event name, in declaration order. */
+/** Lists every {@link import('@src/core').WorkflowEventMap} event name, in declaration order. */
 export const WORKFLOW_EVENTS = Object.freeze([
 	'start',
 	'complete',
@@ -69,10 +69,10 @@ export const WORKFLOW_EVENTS = Object.freeze([
 	'update',
 ] as const)
 
-/** One recorded workflow event name. */
+/** Names one recorded workflow event. */
 export type WorkflowEvent = (typeof WORKFLOW_EVENTS)[number]
 
-/** Every {@link import('@src/core').PhaseEventMap} event name, in declaration order. */
+/** Lists every {@link import('@src/core').PhaseEventMap} event name, in declaration order. */
 export const PHASE_EVENTS = Object.freeze([
 	'start',
 	'complete',
@@ -87,10 +87,10 @@ export const PHASE_EVENTS = Object.freeze([
 	'update',
 ] as const)
 
-/** One recorded phase event name. */
+/** Names one recorded phase event. */
 export type PhaseEvent = (typeof PHASE_EVENTS)[number]
 
-/** Every {@link import('@src/core').TaskEventMap} event name, in declaration order. */
+/** Lists every {@link import('@src/core').TaskEventMap} event name, in declaration order. */
 export const TASK_EVENTS = Object.freeze([
 	'start',
 	'complete',
@@ -104,10 +104,10 @@ export const TASK_EVENTS = Object.freeze([
 	'silence',
 ] as const)
 
-/** One recorded task event name. */
+/** Names one recorded task event. */
 export type TaskEvent = (typeof TASK_EVENTS)[number]
 
-/** Every {@link import('@src/core').RunnerEventMap} event name, in declaration order. */
+/** Lists every {@link import('@src/core').RunnerEventMap} event name, in declaration order. */
 export const RUNNER_EVENTS = Object.freeze([
 	'start',
 	'unit',
@@ -118,10 +118,10 @@ export const RUNNER_EVENTS = Object.freeze([
 	'abort',
 ] as const)
 
-/** One recorded runner event name. */
+/** Names one recorded runner event. */
 export type RunnerEvent = (typeof RUNNER_EVENTS)[number]
 
-/** Copy a task snapshot while omitting its exact-optional activity field. */
+/** Copies a task snapshot while omitting its exact-optional activity field. */
 export function omitTaskActivity(snapshot: TaskSnapshot): TaskSnapshot {
 	return {
 		id: snapshot.id,
@@ -144,7 +144,7 @@ export function omitTaskActivity(snapshot: TaskSnapshot): TaskSnapshot {
 // `src:browser`, and `src:server` alike. Environment-specific helpers live in their
 // own matching setup file (`setupBrowser.ts`, `setupServer.ts`).
 
-/** Resolve a required live task fixture or throw a fixture-construction error. */
+/** Resolves a required live task fixture, or throws a fixture-construction error. */
 export function requireTask(
 	workflow: WorkflowInterface,
 	phase: string,
@@ -153,7 +153,7 @@ export function requireTask(
 	return requireValue(workflow.phase(phase)?.task(task), `expected task '${phase}/${task}'`)
 }
 
-/** Build a real TaskController over a live task for direct handle tests. */
+/** Builds a real TaskController over a live task for direct handle tests. */
 export function createTaskControllerFixture(
 	task: TaskInterface,
 	signal: AbortSignal,
@@ -171,8 +171,9 @@ export function createTaskControllerFixture(
 }
 
 /**
- * A scripted real {@link WorkflowStoreInterface} boundary whose queued gates control store
- * settlement while its readonly histories expose the exact durable calls made by a test.
+ * Controls store settlement through queued gates, as a scripted real
+ * {@link WorkflowStoreInterface} boundary whose readonly histories expose the exact durable calls
+ * made by a test.
  */
 export class WorkflowStoreBoundary implements WorkflowStoreInterface {
 	readonly #reads: Array<PromiseWithResolvers<WorkflowSnapshot | undefined>>
@@ -219,7 +220,7 @@ export class WorkflowStoreBoundary implements WorkflowStoreInterface {
 	}
 }
 
-/** A real budget boundary whose signal getter throws the supplied setup failure. */
+/** Implements a real budget boundary whose signal getter throws the supplied setup failure. */
 export class FaultBudget implements BudgetInterface<TokenUsage> {
 	readonly id = 'fault-budget'
 	readonly max = 10
@@ -268,7 +269,7 @@ export class FaultBudget implements BudgetInterface<TokenUsage> {
 // here is the emitter-error channel's argument order, named once.
 
 /**
- * Create a recorder for an {@link import('@orkestrel/emitter').EmitterErrorHandler} — the
+ * Creates a recorder for an {@link import('@orkestrel/emitter').EmitterErrorHandler} — the
  * emitter's own listener-error channel: a `RecorderInterface<[error, event]>`
  * whose `handler` is wired as the `error` option, so an emit-safety test asserts a buggy
  * listener's throw was routed here (with the offending event name) instead of corrupting the
@@ -283,7 +284,7 @@ export function createErrorRecorder(): RecorderInterface<readonly [error: unknow
 
 // ── Signal instrumentation (a real AbortSignal, wrapped) ──────────────────────
 
-/** A real {@link AbortSignal}'s `'abort'` listener bookkeeping — adds vs. removes counted. */
+/** Records a real {@link AbortSignal}'s `'abort'` listener bookkeeping — adds against removes. */
 export interface SignalListenerCountsInterface {
 	/** A recorder of `'abort'` `addEventListener` calls on the instrumented signal. */
 	readonly added: RecorderInterface<readonly [string]>
@@ -292,7 +293,7 @@ export interface SignalListenerCountsInterface {
 }
 
 /**
- * Instrument a REAL {@link AbortSignal}'s listener bookkeeping by wrapping its own
+ * Instruments a REAL {@link AbortSignal}'s listener bookkeeping by wrapping its own
  * `addEventListener` / `removeEventListener` (delegating to the genuine implementation) and
  * counting `'abort'` adds and removes — so a test can prove a scheduler / primitive detaches
  * every abort listener it attaches (no leak), counting on the real signal rather than mocking
@@ -336,13 +337,13 @@ export function instrumentSignal(signal: AbortSignal): SignalListenerCountsInter
 
 // ── Recording scheduler (a real SchedulerInterface, wrapped) ────────────────────
 
-/** A {@link SchedulerInterface} that records how many real turn boundaries its `yield` paced. */
+/** Records how many real turn boundaries a {@link SchedulerInterface}'s `yield` paced. */
 export interface RecordingSchedulerInterface extends SchedulerInterface {
 	/** How many times `yield` ran — the turn boundaries the loop paced through this scheduler. */
 	readonly yields: number
 }
 
-/** A recorder over one shipped scheduler instance. */
+/** Wraps one shipped scheduler instance as a recorder. */
 export class RecordingScheduler implements RecordingSchedulerInterface {
 	readonly #scheduler: SchedulerInterface
 	#yields = 0
@@ -366,7 +367,7 @@ export class RecordingScheduler implements RecordingSchedulerInterface {
 }
 
 /**
- * Create a {@link RecordingSchedulerInterface} that counts `yield` calls before delegating
+ * Creates a {@link RecordingSchedulerInterface} that counts `yield` calls before delegating
  * both methods to one shipped scheduler instance. Timing, cancellation, and cleanup therefore
  * retain the production scheduler's semantics.
  *
@@ -385,7 +386,7 @@ export function createRecordingScheduler(): RecordingSchedulerInterface {
 // (its own driver creation, a bespoke per-test definition).
 
 /**
- * A real, valid {@link WorkflowDefinition} stub — a workflow with two phases, one task of
+ * Builds a real, valid {@link WorkflowDefinition} stub — a workflow with two phases, one task of
  * each `via` form, a `concurrency` throttle, and an explicit `bail`. Apply `overrides` to
  * produce a variant. The shared base the contract / factory / W-b entity tests build on (the
  * live tree is built from this), so the definition shape stays in one place.
@@ -460,7 +461,7 @@ export function buildCollection(noun = 'task'): Collection<TaskInterface, TaskUp
 }
 
 /**
- * A real two-phase `release` {@link WorkflowDefinition} (≥1 task each) — phase `build` runs
+ * Builds a real two-phase `release` {@link WorkflowDefinition} (≥1 task each) — phase `build` runs
  * two `function` tasks concurrently, phase `ship` a third in a later phase. The handlers are
  * registered on the runner BY NAME (see {@link RELEASE_FUNCTIONS}), so a settled run records
  * real `completed` statuses + results. The shared store-test fixture both the Memory and the
@@ -492,9 +493,9 @@ export function buildReleaseDefinition(id = 'release'): WorkflowDefinition {
 }
 
 /**
- * The registered behaviors a {@link buildReleaseDefinition}'s tasks dispatch to BY NAME — each
- * a real {@link WorkflowFunction} returning a distinct value, so a settled snapshot carries real
- * boxed results (a real handler map shared by the store twins, never a mock).
+ * Holds the registered behaviors a {@link buildReleaseDefinition}'s tasks dispatch to BY NAME —
+ * each a real {@link WorkflowFunction} returning a distinct value, so a settled snapshot carries
+ * real boxed results (a real handler map shared by the store twins, never a mock).
  */
 export const RELEASE_FUNCTIONS: Readonly<Record<string, WorkflowFunction>> = {
 	compile: (controller) => `built ${controller.task.id}`,
@@ -503,7 +504,7 @@ export const RELEASE_FUNCTIONS: Readonly<Record<string, WorkflowFunction>> = {
 }
 
 /**
- * Drive a `definition` to a SETTLED {@link WorkflowSnapshot} through the real runner — the live
+ * Drives a `definition` to a SETTLED {@link WorkflowSnapshot} through the real runner — the live
  * tree is built, executed (phases sequential, tasks concurrent through {@link RELEASE_FUNCTIONS}),
  * and serialized. The genuine durable payload after a run (real `completed` statuses + recorded
  * TaskResults), not a hand-rolled stub. The runner is paced by an injected
@@ -519,7 +520,9 @@ export async function settleSnapshot(definition: WorkflowDefinition): Promise<Wo
 	return result.workflow.snapshot()
 }
 
-/** Whether a repository-relative Vue SFC path belongs to the private browser application. */
+/**
+ * Reports whether a repository-relative Vue SFC path belongs to the private browser application.
+ */
 export function isBrowserVuePath(path: string): boolean {
 	const normalized = path.replaceAll('\\', '/')
 	return normalized.startsWith('app/browser/')

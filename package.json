@@ -1,6 +1,6 @@
 {
 	"name": "@orkestrel/workflow",
-	"version": "0.0.17",
+	"version": "0.0.18",
 	"description": "A typed workflow engine for the @orkestrel line — a serializable Workflow → Phase → Task tree run by a composed runner on a cooperative scheduler. Part of the @orkestrel line.",
 	"keywords": [
 		"orchestration",
@@ -88,7 +88,8 @@
 		"test:distribution": "vitest run --config vite.config.ts --no-cache --reporter=dot --project distribution",
 		"test:probe": "vitest run --config vite.config.ts --no-cache --reporter=verbose --project probe",
 		"test:bench": "vitest bench --config vite.config.ts --no-cache --project probe",
-		"test:setup": "vitest run --config vite.config.ts --no-cache --reporter=dot --project setup"
+		"test:setup": "vitest run --config vite.config.ts --no-cache --reporter=dot --project setup",
+		"docs": "node --experimental-strip-types scripts/docs.ts"
 	},
 	"dependencies": {
 		"@orkestrel/abort": "^0.0.9",
