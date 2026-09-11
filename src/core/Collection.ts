@@ -14,9 +14,9 @@ import { failure, insertEntry, moveEntry, success } from './helpers.js'
  *   (`task` / `tasks`, `phase` / `phases`). The `Map`'s insertion order is the single source of
  *   positional truth; `add` and `move` rebuild it through the pure
  *   {@link import('./helpers.js').insertEntry} / {@link import('./helpers.js').moveEntry} leaves.
- * - **Gated mutation API.** `append` is the build-time wiring path and THROWS on a
+ * - **Gated mutation API.** `append` is the build-time wiring path and throws on a
  *   duplicate id; `add` / `remove` / `move` / `update` return a graceful `MUTATION`
- *   {@link WorkflowError} failure instead. Gating reads ONLY the target's own existence, `pending`
+ *   {@link WorkflowError} failure instead. Gating reads only the target's own existence, `pending`
  *   status, id, and bounds — a container's own status is the owning entity's gate, applied before
  *   it delegates here.
  * - **Event-free.** A purely structural container; the entity that owns it emits on success.
@@ -123,7 +123,7 @@ export class Collection<
 		return [...this.#entries.values()]
 	}
 
-	// The gate every targeted mutation shares: the entry exists AND is still `pending`. Returns the
+	// The gate every targeted mutation shares: the entry exists and is still `pending`. Returns the
 	// entry so the caller reads state once, or `undefined` for the one refusal `#refuse` names.
 	#pending(id: string): TEntry | undefined {
 		const target = this.#entries.get(id)

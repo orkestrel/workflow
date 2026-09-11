@@ -15,8 +15,8 @@ import { errorToMessage } from './helpers.js'
  * recent obligation, normally composed through `execute({ store })` rather than built directly.
  *
  * @remarks
- * Normally composed by `WorkflowRunner.execute({ store })`; exported for hosts that need to
- * coordinate the same required boundaries around their own runner integration.
+ * Exported for hosts that need to coordinate the same required boundaries around their own runner
+ * integration.
  *
  * @example
  * ```ts

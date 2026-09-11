@@ -8,9 +8,9 @@ import {
 } from '@orkestrel/contract'
 import { MAX_TIMER_MS } from './constants.js'
 
-// Workflow contract shapes — the shape VALUES the contract (factories.ts) compiles
+// Workflow contract shapes — the shape values the contract (factories.ts) compiles
 // into the four lockstep outputs (JSON Schema + guard + parser + generator). These
-// shapes MUST agree with the hand-written definition interfaces (types.ts), which
+// shapes must agree with the hand-written definition interfaces (types.ts), which
 // are the source of truth: a valid `WorkflowDefinition` is accepted by
 // the compiled `is` / `parse`, and the seeded `generate` produces a valid one.
 //
@@ -20,7 +20,7 @@ import { MAX_TIMER_MS } from './constants.js'
 // the shapes are consumed as plain `ContractShape` runtime descriptors and the
 // contract is typed `ContractInterface<WorkflowDefinition>` at the factory.
 //
-// Per-field `description`s ride INSIDE the advertised JSON Schema (compilers.ts
+// Per-field `description`s ride inside the advertised JSON Schema (compilers.ts
 // `compileSchema` emits a shape's `description` verbatim) — advisory metadata only: it
 // never changes what the guard / parser accept (the contract stays byte-for-byte strict).
 
@@ -108,9 +108,9 @@ export const workflowShape = objectShape({
 // === Update (patch) shapes — the mutation API's `update` payload validation
 //
 // These shapes validate a {@link import('./types.js').TaskUpdate} /
-// {@link import('./types.js').PhaseUpdate} — a declarative PARTIAL edit to an
+// {@link import('./types.js').PhaseUpdate} — a declarative partial edit to an
 // existing `pending` entity, never a full replacement. Every field is
-// therefore optional; a PROVIDED field still carries the same constraint as its
+// therefore optional; a provided field still carries the same constraint as its
 // creation-time counterpart (`taskShape` / `phaseShape`) so a patch cannot smuggle in
 // an invalid value.
 

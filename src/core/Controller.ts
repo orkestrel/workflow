@@ -11,11 +11,11 @@ import { parkSignal } from './helpers.js'
  *   unit it dispatches, handing it the unit's `id`, `input`, the unit's `Abort`
  *   handle, the queue attempt's `signal`, and a `spawn` callback that launches a
  *   sibling through the same queue.
- * - **Signal.** `signal` is the queue attempt's signal, which ANY-combines the
+ * - **Signal.** `signal` is the queue attempt's signal, which any-combines the
  *   unit's own abort, the runner-level abort (the runner aborts every unit), and
  *   the per-attempt timeout — so it fires on any of the three. `aborted` and
  *   `abort(reason)` delegate to the unit's `Abort` (the cancellation source of
- *   truth); because the attempt signal ANY-includes that abort, `abort()` fires
+ *   truth); because the attempt signal any-includes that abort, `abort()` fires
  *   `signal` too.
  * - **`wait` promise-parks (never a timer).** It resolves the instant the unit's
  *   `signal` fires (immediately if already aborted) through a one-shot listener — no
@@ -31,7 +31,7 @@ import { parkSignal } from './helpers.js'
 export class Controller<TInput, TResult> implements ControllerInterface<TInput, TResult> {
 	readonly #id: string
 	readonly #input: TInput
-	// The queue attempt's signal — ANY-combines the unit abort, the runner abort, and the timeout.
+	// The queue attempt's signal — any-combines the unit abort, the runner abort, and the timeout.
 	readonly #signal: AbortSignal
 	// The unit's cancellation handle — the source of truth for `aborted` / `abort`.
 	readonly #abort: AbortInterface

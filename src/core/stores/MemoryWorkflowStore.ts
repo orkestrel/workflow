@@ -9,22 +9,18 @@ import { cloneWorkflowSnapshot } from '../cloners.js'
  *
  * @remarks
  * A plain `Map<string, WorkflowSnapshot>` (the snapshot is already pure,
- * self-contained JSON, so no encoding is needed for the memory tier). UNLIKE the server
- * package's `SessionStoreInterface`'s memory store there is
- * NO idle-TTL and NO eviction: a persisted workflow run-state is durable orchestration state
- * that lives until an explicit `delete`, never silently aging out (a run that vanished
- * mid-flight would be a silent data loss, not a freed session). A durable backend (JSON /
- * SQLite / IndexedDB) swaps in through the SAME interface without touching the runner or the
+ * self-contained JSON, so no encoding is needed for the memory tier). A durable backend (JSON /
+ * SQLite / IndexedDB) swaps in through the same interface without touching the runner or the
  * entity tree — its driver-pluggable twin is
  * {@link import('./DatabaseWorkflowStore.js').DatabaseWorkflowStore} (the snapshot as one opaque
  * JSON column), exactly as `@orkestrel/queue`'s `MemoryQueueStore`
  * twins `DatabaseQueueStore`.
  *
  * - **`get` resolves the persisted snapshot for an id**, or `undefined` if none is stored.
- * - **`set` inserts / replaces under the snapshot's OWN `id`** (no separate id param).
+ * - **`set` inserts / replaces under the snapshot's own `id`** (no separate id param).
  * - **`delete` drops a snapshot by id**; an absent id is a no-op (no throw).
  *
- * The public surface is EXACTLY `get` / `set` / `delete` — no extra members (the guide's method
+ * The public surface is exactly `get` / `set` / `delete` — no extra members (the guide's method
  * bijection with {@link WorkflowStoreInterface}). Restore is a caller concern: read a snapshot
  * back and rebuild the live tree with {@link import('../factories.js').createRestoredWorkflow}.
  *
@@ -49,7 +45,7 @@ export class MemoryWorkflowStore implements WorkflowStoreInterface {
 	}
 
 	set(snapshot: WorkflowSnapshot): Promise<void> {
-		// Insert / replace under the snapshot's OWN id (no separate id param).
+		// Insert / replace under the snapshot's own id (no separate id param).
 		const owned = cloneWorkflowSnapshot(snapshot)
 		this.#snapshots.set(owned.id, owned)
 		return Promise.resolve()

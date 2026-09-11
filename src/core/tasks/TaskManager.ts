@@ -18,10 +18,10 @@ import { taskUpdateShape } from '../shapers.js'
  *   drift apart.
  * - **Positional store.** `append` adds one live {@link TaskInterface} at the end (the build-time
  *   wiring path), `task(id)` looks one up, `tasks()` lists them in positional order, `count` is
- *   the tally. A `skip` is a STATUS change on a stored task (never a removal), so order survives
+ *   the tally. A `skip` is a status change on a stored task (never a removal), so order survives
  *   it; a snapshot RESTORE re-`append`s in the snapshot's order, reproducing it exactly.
  * - **Gated mutation API.** `add` / `remove` / `move` / `update` are the graceful
- *   `Result` counterparts to `append`, gating ONLY on the target's OWN existence/status/id/bounds
+ *   `Result` counterparts to `append`, gating only on the target's own existence/status/id/bounds
  *   — a duplicate id, an absent/non-`pending` target, an out-of-bounds `index`, or a patch that
  *   fails {@link taskUpdateShape} validation all fail gracefully with a `MUTATION`
  *   {@link WorkflowError} instead of throwing.

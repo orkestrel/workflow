@@ -71,7 +71,7 @@ export function captureWorkflowOptions(options?: WorkflowOptions): WorkflowOptio
 // Workflow derivation helpers — pure, side-effect-free functions. Every function is
 // exported and unit-tested. The status derivations encode
 // the lifecycle truth-table logic: a phase status is derived from its tasks'
-// statuses, a workflow status from its phases' statuses UNDER the `bail` policy.
+// statuses, a workflow status from its phases' statuses under the `bail` policy.
 // Determinism is fixed by design (tasks concurrent, phases sequential), so these
 // derivations are order-insensitive set reductions, never sequencing decisions.
 
@@ -82,7 +82,7 @@ export function captureWorkflowOptions(options?: WorkflowOptions): WorkflowOptio
  * `stopped`, the states a node never transitions out of.
  *
  * @remarks
- * The ONE terminal check across every tier (AGENTS.md § Design laws, "one concept, one term"):
+ * The one terminal check across every tier (AGENTS.md § Design laws, "one concept, one term"):
  * a task, a phase, and a workflow share the same {@link LifecycleStatus} vocabulary, so a
  * single predicate covers them — {@link derivePhaseStatus} and {@link deriveWorkflowStatus}
  * both consult it to tell a settled node from an in-flight one. It reads the terminal set from
@@ -104,7 +104,7 @@ export function isTerminalStatus(status: LifecycleStatus): boolean {
  * @remarks
  * The halt gate a {@link import('./WorkflowRunner.js').WorkflowRunner} consults before starting a
  * phase, before dispatching a task, and after every cooperative gate. A workflow is halted after
- * its derived status is terminal but NOT `completed` — a `bail: true` failure, a caller's own
+ * its derived status is terminal but not `completed` — a `bail: true` failure, a caller's own
  * graceful `stop()`, or a forced `skip`. `completed` is excluded deliberately: a workflow that
  * completed vacuously is settled, not halted, and the distinction is what keeps the run from
  * sweeping a finished tree. When a `phase` is supplied, its own forced `skipped` / `stopped` halts
@@ -125,7 +125,7 @@ export function isTerminalStatus(status: LifecycleStatus): boolean {
 export function isHalted(workflow: WorkflowInterface, phase?: PhaseInterface): boolean {
 	const status = workflow.status
 	// The workflow half is the terminal set minus `completed`, so it reads the one terminal
-	// definition. The phase half is NOT that set — only a FORCED skip / stop halts a phase, because a
+	// definition. The phase half is not that set — only a forced skip / stop halts a phase, because a
 	// `failed` phase is the workflow policy's decision and a `completed` one is ordinary progress.
 	return (
 		(isTerminalStatus(status) && status !== 'completed') ||
@@ -139,7 +139,7 @@ export function isHalted(workflow: WorkflowInterface, phase?: PhaseInterface): b
  *
  * @remarks
  * `stop()` is a no-op after a workflow's status becomes terminal, so a run that must record a
- * cancellation forces it only while this holds. It is NOT the negation of
+ * cancellation forces it only while this holds. It is not the negation of
  * {@link isTerminalStatus}: `completed` and `skipped` both pass, because a run-level cancel that
  * lands on a vacuously-completed or fully-skipped tree still records `stopped` as the outcome the
  * caller asked for. Only an already-`failed` or already-`stopped` workflow has a terminal state
@@ -166,7 +166,7 @@ export function isStoppable(workflow: WorkflowInterface): boolean {
  * @remarks
  * A run that walked every phase and still derives `pending` executed nothing — zero phases, or
  * every phase empty — so it is vacuously done and the run settles it `completed`. Gated on
- * EXACTLY `pending` so a real `completed`, a `bail: true` `failed`, a `stopped`, or a derived
+ * exactly `pending` so a real `completed`, a `bail: true` `failed`, a `stopped`, or a derived
  * `skipped` is never overridden. The tree-is-empty half of the rule is
  * {@link WorkflowInterface.complete}'s own guard, which refuses a pending tree that still holds
  * tasks.
@@ -191,7 +191,7 @@ export function isCompletable(workflow: WorkflowInterface): boolean {
  * running task's folded signal, and only two of them mean "skip this task": the task's own
  * `signal` (its `stop` / `skip`), and the unit or run signal (a sibling fail-fast under
  * `bail: true`, or a run-level abort / timeout / budget / `destroy`). A bare per-attempt timeout
- * fires NEITHER — it aborts only the deadline portion of the attempt signal — so it stays a
+ * fires neither — it aborts only the deadline portion of the attempt signal — so it stays a
  * retryable failure of that attempt instead of skipping the leaf and losing the recorded fault.
  * Read fresh at each call so a cancel that lands mid-dispatch is seen.
  *
@@ -218,7 +218,7 @@ export function isSkipping(
  *
  * @remarks
  * A retried task is re-dispatched while an earlier attempt's handler may still be resolving, so
- * every settlement path re-checks ownership before touching the leaf. Ownership needs BOTH
+ * every settlement path re-checks ownership before touching the leaf. Ownership needs both
  * halves: the run-local `owners` ledger must still name this attempt, and the live task's own
  * `attempts` tally must still match it. A superseded attempt reads `false` and returns without
  * recording anything, so a late resolution can never overwrite the newer attempt's outcome.
@@ -253,7 +253,7 @@ export function ownsAttempt(
  * The truth table (most-severe terminal wins; `bail`-agnostic — a phase surfaces a
  * task failure as `failed` so the workflow's `bail` policy can decide):
  * - no tasks ⇒ `pending`.
- * - any task `running`, OR a mix of started-and-unsettled tasks (some non-`pending`
+ * - any task `running`, or a mix of started-and-unsettled tasks (some non-`pending`
  *   but not all terminal) ⇒ `running`.
  * - every task `pending` ⇒ `pending`.
  * - all terminal: any `failed` ⇒ `failed`; else any `stopped` ⇒ `stopped`; else any
@@ -285,17 +285,17 @@ export function derivePhaseStatus(tasks: readonly LifecycleStatus[]): LifecycleS
  *
  * @remarks
  * `bail` is a per-phase override, so it is carried on each
- * {@link PhaseDerivation} rather than passed as one scalar. It is the ONLY axis that changes
+ * {@link PhaseDerivation} rather than passed as one scalar. It is the only axis that changes
  * the failure outcome, decided per phase:
  * - **A `failed` phase whose effective `bail` is `true` (halt)** propagates ⇒ the workflow is
  *   `failed` (the database-transaction halt) — even when the workflow default is graceful.
- * - **A `failed` phase whose effective `bail` is `false` (graceful)** is DATA, not a workflow
- *   failure — it folds into completion like a settled phase. A graceful failed phase NEVER
+ * - **A `failed` phase whose effective `bail` is `false` (graceful)** is data, not a workflow
+ *   failure — it folds into completion like a settled phase. A graceful failed phase never
  *   makes the workflow `failed` — even when the workflow default is strict.
  *
  * The rest of the table is shared:
  * - no phases ⇒ `pending`.
- * - any phase `running`, OR a mix of started-and-unsettled phases (some non-`pending`
+ * - any phase `running`, or a mix of started-and-unsettled phases (some non-`pending`
  *   but not all terminal) ⇒ `running`.
  * - every phase `pending` ⇒ `pending`.
  * - all terminal (a `failed` phase counts as terminal here): any `stopped` ⇒ `stopped`; else
@@ -323,7 +323,7 @@ export function deriveWorkflowStatus(phases: readonly PhaseDerivation[]): Lifecy
 	return 'skipped'
 }
 
-// === Pending-suffix boundary (bottom-up NATIVE mutation gating)
+// === Pending-suffix boundary (bottom-up native mutation gating)
 
 /**
  * Derives the pending-suffix boundary of a positional list of {@link LifecycleStatus}es —
@@ -334,11 +334,11 @@ export function deriveWorkflowStatus(phases: readonly PhaseDerivation[]): Lifecy
  * The native, hook-free replacement for a runner-installed cursor: a
  * {@link import('./types.js').WorkflowInterface}'s `add` / `remove` / `move` / `update`
  * reads this over its live phases' statuses to decide which positions are safe to edit.
- * Because entries run SEQUENTIALLY (phases sequential, AGENTS determinism), every
- * already-started entry forms a contiguous LEADING prefix and every still-`pending`
+ * Because entries run sequentially (phases sequential, AGENTS determinism), every
+ * already-started entry forms a contiguous leading prefix and every still-`pending`
  * entry forms the trailing suffix — so the boundary is the count of leading
  * non-`pending` entries: the index of the first `pending` entry, or the full length when
- * none is `pending` (nothing is safely editable). A `pending` container's entries are ALL
+ * none is `pending` (nothing is safely editable). A `pending` container's entries are all
  * `pending`, so the boundary is `0` and every position is naturally accepted — callers
  * need no special case for that.
  *
@@ -401,7 +401,7 @@ export function resolveTaskSilence(
 }
 
 // === Result construction (`@orkestrel/contract` ships the `Result` /
-// `Success` / `Failure` TYPES but no `success`/`failure` constructors, so this module
+// `Success` / `Failure` types but no `success`/`failure` constructors, so this module
 // provides the ones every gated Result-constructing site in this package's W-b entities
 // + managers uses instead of a hand-rolled `{ success: true/false, ... }` literal)
 
@@ -461,7 +461,7 @@ export function errorToMessage(error: unknown): string {
  *
  * @remarks
  * The shared leaf behind {@link import('./phases/Phase.js').Phase} and
- * {@link import('./Workflow.js').Workflow}'s own `#failure` — each gathers ITS tier's
+ * {@link import('./Workflow.js').Workflow}'s own `#failure` — each gathers its tier's
  * results (a phase's own settled tasks, a workflow's flattened `results()`) and feeds
  * them here; the tier-local method keeps the invariant throw (a derived `failed`
  * status means a failing result exists) because throwing on `undefined` is
@@ -479,7 +479,7 @@ export function findFailure(results: readonly TaskResult[]): TaskResult | undefi
 	return results.find((result) => result.result?.success === false)
 }
 
-// === Lineage context builders (the chain carried back UP the tree)
+// === Lineage context builders (the chain carried back up the tree)
 
 /**
  * Builds a {@link WorkflowContext} — the identity every level inherits — from a node's
@@ -505,7 +505,7 @@ export function buildWorkflowContext(node: WorkflowContext): WorkflowContext {
  * Builds a {@link PhaseContext} — a phase's own identity plus a back-reference to its
  * workflow — from the parent {@link WorkflowContext} and the phase node's identity.
  *
- * @param workflow - The parent workflow context (the lineage pointer UP the tree)
+ * @param workflow - The parent workflow context (the lineage pointer up the tree)
  * @param node - The phase's identity (`id` / `name` / optional `description`)
  * @returns The {@link PhaseContext}
  */
@@ -518,7 +518,7 @@ export function buildPhaseContext(workflow: WorkflowContext, node: WorkflowConte
  * (and, transitively, its workflow) — from the parent {@link PhaseContext} and the task
  * node's identity.
  *
- * @param phase - The parent phase context (carrying the full lineage UP the tree)
+ * @param phase - The parent phase context (carrying the full lineage up the tree)
  * @param node - The task's identity (`id` / `name` / optional `description`)
  * @returns The {@link TaskContext}
  */
@@ -543,20 +543,20 @@ export function buildTaskContext(phase: PhaseContext, node: WorkflowContext): Ta
  * `retries` / `timeout` (persisted on the {@link TaskSnapshot}, like `bail` / `concurrency`,
  * so a restore + a {@link import('./types.js').WorkflowOptions.functions} registry resumes
  * real work). The `bail` policy carries over — at the
- * workflow tier AND, per phase, the
- * EFFECTIVE policy (`phase.bail ?? workflowBail`) on each {@link PhaseSnapshot} — so the seeded
+ * workflow tier and, per phase, the
+ * effective policy (`phase.bail ?? workflowBail`) on each {@link PhaseSnapshot} — so the seeded
  * snapshot is self-contained; a fresh seed has no `override`. `created` / `updated` are stamped at that point.
  * {@link import('./factories.js').createWorkflow} builds from this.
  *
- * The optional `bail` override is the EFFECTIVE workflow policy the tree will run under
+ * The optional `bail` override is the effective workflow policy the tree will run under
  * (`createWorkflow` / the runner resolve `options.bail ?? definition.bail ?? DEFAULT_BAIL` and
- * pass it here), so an `options.bail` override reaches BOTH the workflow tier AND the
+ * pass it here), so an `options.bail` override reaches both the workflow tier and the
  * inheritance default of every phase that declares no `bail` of its own — otherwise the
  * per-phase seeds would silently ignore the override. Omitted ⇒ the definition's own `bail`
  * (defaulting to the graceful {@link import('./constants.js').DEFAULT_BAIL}).
  *
  * @param definition - The workflow definition to seed from
- * @param bail - The EFFECTIVE workflow bail to seed both tiers with (defaults to the definition's)
+ * @param bail - The effective workflow bail to seed both tiers with (defaults to the definition's)
  * @returns An initial, all-`pending` {@link WorkflowSnapshot}
  */
 export function definitionToSnapshot(
@@ -585,7 +585,7 @@ export function definitionToSnapshot(
  * {@link PhaseSnapshot} — the per-phase step of {@link definitionToSnapshot}.
  *
  * @remarks
- * The snapshot persists the EFFECTIVE failure policy this phase runs under: the phase's own
+ * The snapshot persists the effective failure policy this phase runs under: the phase's own
  * `bail` when it declares one, else the `workflowBail` it inherits — so a restore reinstates
  * the same per-phase policy without a silent default (`effectiveBail = phase.bail ?? workflowBail`).
  * `concurrency` (the resource throttle) carries over verbatim, omitted when undefined.
@@ -710,7 +710,7 @@ export function recoverWorkflowSnapshot(snapshot: WorkflowSnapshot): WorkflowSna
  *
  * @remarks
  * The equality rule a lineage check needs: two descriptions match when they are the same value
- * AND that value is either a string or genuine absence. Anything else — a number, an object, a
+ * and that value is either a string or genuine absence. Anything else — a number, an object, a
  * `null` — never matches, even against itself, so a lineage stamped with a non-string description
  * is rejected rather than silently accepted.
  *
@@ -734,7 +734,7 @@ export function matchesDescription(left: unknown, right: unknown): boolean {
  *
  * @remarks
  * The four arguments are the result and the three snapshot nodes it claims to belong to, read
- * from the OUTSIDE in: a {@link TaskResult} is self-describing, so restoring one is only safe
+ * from the outside in: a {@link TaskResult} is self-describing, so restoring one is only safe
  * when every identity it carries agrees with the tree it was found in. It checks the exact key
  * set at each level, that `status` equals the owning task's, and that the `task` / `phase` /
  * `workflow` contexts — including the nested `task.phase.workflow` lineage — carry the same `id`,
@@ -1138,7 +1138,7 @@ export function scheduleHost(
  * {@link import('./Scheduler.js').Scheduler}, both Node primitives, and every browser backend's
  * `delay` and macrotask fallback route here, so the timer is armed and cleared in one place. It
  * composes {@link scheduleHost}, which owns listener safety, the cancellation race, the exact
- * caller reason, and once-only settlement. It does NOT validate `ms`: the value passes straight to
+ * caller reason, and once-only settlement. It does not validate `ms`: the value passes straight to
  * the host `setTimeout`, which clamps a negative value or `NaN` to about zero, so an
  * out-of-domain `ms` resumes on the next host turn rather than throwing. Pass a non-negative
  * finite `ms`.
@@ -1165,7 +1165,7 @@ export function delayHost(ms: number, signal?: AbortSignal): Promise<void> {
  * busy-loop, that resolves on the abort event and never rejects.
  *
  * @remarks
- * Resolves IMMEDIATELY when `signal` is already aborted; otherwise attaches a one-shot
+ * Resolves immediately when `signal` is already aborted; otherwise attaches a one-shot
  * `abort` listener and resolves when it fires, removing the listener either way. The
  * shared leaf behind the duplicate abort-wiring an execution engine otherwise hand-rolls
  * at every fold point.

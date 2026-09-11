@@ -75,18 +75,18 @@ export const TASK_TRANSITIONS: Readonly<Record<LifecycleStatus, readonly Lifecyc
  * throttle — `1024`, a cap that is effectively unbounded for any realistic phase.
  *
  * @remarks
- * The determinism principle fixes that a phase's tasks run CONCURRENTLY; `concurrency` is
+ * The determinism principle fixes that a phase's tasks run concurrently; `concurrency` is
  * only an optional resource throttle (max-in-flight). With none declared, the runner runs
  * all of a phase's tasks at once — modelled as this finite cap so the value flows straight
  * into the substrate {@link import('./types.js').RunnerInterface}'s `concurrency` (which
  * expects a positive integer) without a special unbounded branch. No realistic phase
  * declares enough tasks to reach it, so it behaves as "run them all".
  *
- * WHY `1024` and not a huge sentinel like `1_000_000`: the backing `@orkestrel/queue` Runner
- * EAGERLY spawns one parked worker loop per concurrency unit AT CONSTRUCTION, so this default
+ * why `1024` and not a huge sentinel like `1_000_000`: the backing `@orkestrel/queue` Runner
+ * eagerly spawns one parked worker loop per concurrency unit at construction, so this default
  * must be a value whose eager allocation cost is negligible for every default-concurrency
  * phase — a million-unit default meant ~1e6 promise/closure allocations per such phase. A
- * phase may still DECLARE a larger explicit `concurrency` and pays that allocation knowingly.
+ * phase may still declare a larger explicit `concurrency` and pays that allocation knowingly.
  */
 export const DEFAULT_PHASE_CONCURRENCY = 1024
 

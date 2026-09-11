@@ -20,13 +20,13 @@ import { Controller } from './Controller.js'
  *   bounded concurrency, retries, and the per-attempt timeout are all the Queue's —
  *   the Runner adds only orchestration (launching, ordering, draining, fail-fast).
  * - **Spawns actually run, results stay ordered (the B2 fix).** Declared inputs and
- *   `spawn`ed siblings flow through the SAME `#launch`, which appends the unit's `id`
+ *   `spawn`ed siblings flow through the same `#launch`, which appends the unit's `id`
  *   to an ordered `#order` list and records its settled value into `#values` by `id`.
  *   Results are read back as `#order.map(id => #values.get(id))` — declared first (in
  *   input order), then spawns (in spawn order). There is no one-time task snapshot,
  *   so a unit spawned mid-handler is run and ordered like any other.
  * - **`execute` awaits the full spawn closure through a count gate.** `#launch` increments
- *   an outstanding-unit `#count` BEFORE enqueuing and every settle decrements it,
+ *   an outstanding-unit `#count` before enqueuing and every settle decrements it,
  *   resolving the `#drained` deferred at zero. Because `spawn` calls `#launch` (so
  *   `#count += 1`) before the parent handler returns, the count never reaches zero
  *   mid-run — `execute` parks on `#drained` and so awaits the entire transitive
@@ -38,26 +38,26 @@ import { Controller } from './Controller.js'
  *   spawn by a bounded handler can still deadlock — that caveat is the caller's.)
  * - **Per-unit Controller + signal.** Each unit gets a `Controller` carrying its `id`,
  *   `input`, the unit's `Abort` (so `aborted` / `abort` delegate to it), and the queue
- *   attempt's `signal` (which ANY-combines the unit abort + runner abort + timeout). A
+ *   attempt's `signal` (which any-combines the unit abort + runner abort + timeout). A
  *   `spawn` callback is injected so `controller.spawn(input)` delegates to `#launch`.
  * - **One-shot + fail-fast.** `execute` runs once (a second call throws). The first
  *   unit failure (after its retries) records the error and `abort()`s the run, so every
  *   sibling's signal fires; later failures are ignored and `execute` rejects with the
  *   first error. A user `abort(reason)` likewise rejects a running `execute`.
  * - **`pause` / `resume` / `stop` ride the backing Queue.** `pause` / `resume`
- *   delegate straight to the Queue's own pause/resume (holding/releasing the NEXT
+ *   delegate straight to the Queue's own pause/resume (holding/releasing the next
  *   dispatch while an in-flight unit finishes); `paused` mirrors the Queue's. `stop` is a
- *   GRACEFUL permanent end, distinct from `abort`: still-pending (never-dispatched)
- *   units are rejected by the Queue's own stop WITHOUT their handler ever running, and
+ *   graceful permanent end, distinct from `abort`: still-pending (never-dispatched)
+ *   units are rejected by the Queue's own stop without their handler ever running, and
  *   `#settle` reads that fact (`#dispatched`) to treat the rejection as a stop artifact —
  *   not a failure, never tripping fail-fast — while an in-flight unit still runs to
- *   completion and settles normally. `execute` RESOLVES (never rejects) after every unit
+ *   completion and settles normally. `execute` resolves (never rejects) after every unit
  *   has settled, with whatever results actually completed.
  * - **Observable.** The owned {@link emitter} ({@link RunnerEventMap}) carries the run
  *   lifecycle — `start` / `unit` / `spawn` / `settle` / `fail` / `finish` / `abort` — for
- *   fire-and-forget observers. Every event is emitted directly, strictly AFTER the relevant
+ *   fire-and-forget observers. Every event is emitted directly, strictly after the relevant
  *   launch / settle / drain transition; the emitter isolates a listener throw and routes it
- *   to its `error` handler (the `error` option), so a buggy observer can NEVER reorder, throw
+ *   to its `error` handler (the `error` option), so a buggy observer can never reorder, throw
  *   into, or corrupt the one-shot / fail-fast / spawn-tracking engine: the outstanding-unit
  *   count gate stays balanced and fail-fast still fires regardless of what a listener does.
  *   Observation is purely a side-channel.
@@ -65,11 +65,11 @@ import { Controller } from './Controller.js'
 export class Runner<TInput, TResult> implements RunnerInterface<TInput, TResult> {
 	readonly #handler: RunnerOptions<TInput, TResult>['handler']
 	// The per-entry reliability resolver — spread into each enqueue so a unit's `retries` /
-	// `timeout` OVERRIDE the queue-level defaults (the Queue resolves default→override). Optional:
+	// `timeout` override the queue-level defaults (the Queue resolves default→override). Optional:
 	// with none supplied, the enqueue is byte-identical to the no-resolver path.
 	readonly #entries: RunnerOptions<TInput, TResult>['entries']
 	readonly #queue: QueueInterface<RunnerUnit<TInput>, TResult>
-	// The PUSH observation surface — owned, never inherited. The emitter isolates a
+	// The push observation surface — owned, never inherited. The emitter isolates a
 	// listener throw (routing it to the `error` handler), so it can never escape into the
 	// count gate / fail-fast / spawn tracking.
 	readonly #emitter: Emitter<RunnerEventMap<TResult>>
@@ -81,9 +81,9 @@ export class Runner<TInput, TResult> implements RunnerInterface<TInput, TResult>
 	// `undefined` sentinel), correct even when `TResult` includes `undefined`. Only the success
 	// branch writes here, so membership already carries the discriminant.
 	readonly #values = new Map<string, Success<TResult>>()
-	// The ids whose handler was actually DISPATCHED (`#dispatch` invoked) — the settlement-path
+	// The ids whose handler was actually dispatched (`#dispatch` invoked) — the settlement-path
 	// distinguisher a graceful `stop` needs: a never-dispatched unit's enqueue rejection (the
-	// queue's own "queue is stopped" error for a still-PENDING entry) is a stop artifact, never a
+	// queue's own "queue is stopped" error for a still-pending entry) is a stop artifact, never a
 	// unit failure; a dispatched unit's rejection is a genuine failure even while stopping.
 	readonly #dispatched = new Set<string>()
 	readonly #queued = new Set<string>()
@@ -93,7 +93,7 @@ export class Runner<TInput, TResult> implements RunnerInterface<TInput, TResult>
 	#started = false
 	#running = false
 	#stopped = false
-	// Set the moment a GRACEFUL `stop()` is requested — read by `#settle` to classify a
+	// Set the moment a graceful `stop()` is requested — read by `#settle` to classify a
 	// never-dispatched unit's rejection as a stop artifact rather than a failure.
 	#stopping = false
 	// The first unit failure (fail-fast) — `execute` rejects with it after draining.
@@ -141,15 +141,15 @@ export class Runner<TInput, TResult> implements RunnerInterface<TInput, TResult>
 	}
 
 	/**
-	 * Injects one more unit into an IN-FLIGHT `execute` run — a LIVE counterpart to a
-	 * `Controller.spawn`, called from OUTSIDE any unit's handler.
+	 * Injects one more unit into an in-flight `execute` run — a live counterpart to a
+	 * `Controller.spawn`, called from outside any unit's handler.
 	 *
 	 * @remarks
 	 * Returns `undefined` synchronously (graceful, non-throwing) unless the
 	 * runner is mid-`execute` and not yet stopped — covering "never started",
 	 * "already drained", "aborted", and "destroyed". Otherwise the unit is routed through
-	 * the SAME backing queue as a declared/`spawn`ed unit through `#launch` — the outstanding-
-	 * unit count gate increments BEFORE this call returns, so an in-flight `execute`
+	 * the same backing queue as a declared/`spawn`ed unit through `#launch` — the outstanding-
+	 * unit count gate increments before this call returns, so an in-flight `execute`
 	 * keeps awaiting it (the drain race: `#running` flips to `false` as the very first
 	 * step after `execute`'s `await drained.promise` settles, so a `spawn` reaching this
 	 * method after the run has fully drained is cleanly rejected with `undefined` —
@@ -194,7 +194,7 @@ export class Runner<TInput, TResult> implements RunnerInterface<TInput, TResult>
 		const cleanup = await this.#cleanup()
 		if (this.#failure !== undefined) throw this.#failure.error
 		if (cleanup !== undefined) throw cleanup.error
-		// The batch drained successfully — observe `finish` with the ordered results, AFTER the
+		// The batch drained successfully — observe `finish` with the ordered results, after the
 		// drained gate resolved and the fail-fast check passed (a failed run throws above and
 		// emits no `finish`; its per-unit `fail` + run-level `abort` already fired).
 		const results = this.#collect()
@@ -214,7 +214,7 @@ export class Runner<TInput, TResult> implements RunnerInterface<TInput, TResult>
 		// it is the same value the unit signals carry (the abort flows to each unit's
 		// signal), and symmetric with `#settle`, which stores `outcome.error` as-is — only
 		// synthesizing an Error when no reason was given. The `#failure === undefined` guard
-		// keeps the FIRST failure (a fail-fast handler error recorded in `#settle` before its
+		// keeps the first failure (a fail-fast handler error recorded in `#settle` before its
 		// own `this.abort(...)` call) from being overwritten by the abort's write.
 		if (this.#running && this.#failure === undefined) {
 			this.#failure = failure(reason === undefined ? new Error('runner aborted') : reason)
@@ -223,7 +223,7 @@ export class Runner<TInput, TResult> implements RunnerInterface<TInput, TResult>
 		this.#stopped = true
 		const cleanup = this.#queue.abort(reason)
 		void this.#settleBarrier(barrier, cleanup, false)
-		// Observe the abort — AFTER every unit's signal fired, the backing queue was aborted,
+		// Observe the abort — after every unit's signal fired, the backing queue was aborted,
 		// and the run was marked stopped, so a swallowed listener throw can't perturb the
 		// cancel. Idempotent at the top (a second `abort` returns early), so this fires once.
 		this.#emitter.emit('abort', reason)
@@ -232,7 +232,7 @@ export class Runner<TInput, TResult> implements RunnerInterface<TInput, TResult>
 
 	/**
 	 * Suspends dispatch (resumable): delegates to the backing queue's own
-	 * `pause`, which holds the NEXT dispatch while any in-flight unit finishes.
+	 * `pause`, which holds the next dispatch while any in-flight unit finishes.
 	 *
 	 * @remarks
 	 * A no-op after the runner is `stopped` — a stopped runner has no dispatch left to
@@ -258,10 +258,10 @@ export class Runner<TInput, TResult> implements RunnerInterface<TInput, TResult>
 	}
 
 	/**
-	 * Ends the runner permanently — a GRACEFUL stop, distinct from `abort`.
+	 * Ends the runner permanently — a graceful stop, distinct from `abort`.
 	 * Marks the runner `stopping` + `stopped`, then stops the backing queue: every
-	 * still-PENDING (never-dispatched) unit is rejected by the queue with its own
-	 * "queue is stopped" error, WITHOUT running its handler; every already-in-flight unit
+	 * still-pending (never-dispatched) unit is rejected by the queue with its own
+	 * "queue is stopped" error, without running its handler; every already-in-flight unit
 	 * keeps running to completion and settles normally. `#settle` reads `#stopping` to
 	 * classify a never-dispatched unit's rejection as a stop artifact (decrement the count
 	 * gate, no recorded failure, no fail-fast trip) rather than a genuine failure — a
@@ -298,14 +298,14 @@ export class Runner<TInput, TResult> implements RunnerInterface<TInput, TResult>
 	}
 
 	// Launch one unit (a declared input, a handler-spawned sibling, or a live external
-	// `spawn`) through the shared queue. Increments `#count` BEFORE enqueuing — so a
+	// `spawn`) through the shared queue. Increments `#count` before enqueuing — so a
 	// spawn keeps the count above zero until the spawned unit itself settles, making
 	// `execute` await the full closure (B2). The settle bookkeeping records the value /
 	// first failure and drains at zero. A `parent` (present only for a handler `spawn`)
 	// means this is a sub-unit; `announce` (defaulted from `parent` but forced `true` by
 	// the public `spawn`, whose caller has no parent unit) decides whether to observe
-	// this launch as a `spawn` event — AFTER the unit's id is minted, tracked, and the
-	// count incremented (so the gate already accounts for it), BEFORE enqueuing. A
+	// this launch as a `spawn` event — after the unit's id is minted, tracked, and the
+	// count incremented (so the gate already accounts for it), before enqueuing. A
 	// declared launch (no parent, default `announce`) emits no `spawn`.
 	#launch(input: TInput, parent?: string, announce = parent !== undefined): Promise<TResult> {
 		const id = crypto.randomUUID()
@@ -345,10 +345,10 @@ export class Runner<TInput, TResult> implements RunnerInterface<TInput, TResult>
 	// The queue handler for one unit: build its Controller over the attempt signal and
 	// run the user handler against it. The unit's own `Abort` was passed as the entry
 	// signal, so `context.signal` already fires on unit abort, runner abort, or timeout
-	// — expose THAT as `controller.signal` (covering all three); `abort` / `aborted`
+	// — expose that as `controller.signal` (covering all three); `abort` / `aborted`
 	// delegate to the unit `Abort` through the Controller.
 	#dispatch(unit: RunnerUnit<TInput>, context: QueueContext): Promise<TResult> | TResult {
-		// `#launch` always stores the unit's `Abort` BEFORE enqueuing, so this lookup is an
+		// `#launch` always stores the unit's `Abort` before enqueuing, so this lookup is an
 		// invariant, never optional. Assert it (a programmer-error guard — narrows to a
 		// defined `Abort` without `!`) rather than fabricating a fresh, unlinked abort: a
 		// fallback `Abort` would be divorced from this entry's `context.signal`, silently
@@ -359,7 +359,7 @@ export class Runner<TInput, TResult> implements RunnerInterface<TInput, TResult>
 		}
 		// Record that this unit's handler was actually dispatched — the settlement-path
 		// distinguisher `#settle` reads to tell a graceful `stop`'s never-dispatched rejection
-		// (this branch never ran) from a genuine in-flight failure (this branch DID run).
+		// (this branch never ran) from a genuine in-flight failure (this branch did run).
 		this.#dispatched.add(unit.id)
 		const controller = new Controller<TInput, TResult>(
 			unit.id,
@@ -369,13 +369,13 @@ export class Runner<TInput, TResult> implements RunnerInterface<TInput, TResult>
 			(input) => this.#spawn(input, unit.id),
 		)
 		// Observe the unit beginning — the queue has dequeued it and is about to run its
-		// handler (mirrors the Queue's own `start`); AFTER the invariant abort lookup, BEFORE
+		// handler (mirrors the Queue's own `start`); after the invariant abort lookup, before
 		// the user handler runs, so a swallowed listener throw can't perturb the dispatch.
 		this.#emitter.emit('unit', unit.id)
 		return this.#handler(controller)
 	}
 
-	// `controller.spawn(input)` — only valid DURING a run; routes the sibling through
+	// `controller.spawn(input)` — only valid during a run; routes the sibling through
 	// the same `#launch` (and thus the queue), so it actually runs and is ordered. The
 	// spawning unit's `parent` id flows through so `#launch` can observe the `spawn`.
 	#spawn(input: TInput, parent: string): Promise<TResult> {
@@ -390,18 +390,18 @@ export class Runner<TInput, TResult> implements RunnerInterface<TInput, TResult>
 	// Record one unit's outcome as the package `Result` its `success` / `failure` helpers box,
 	// then decrement the outstanding count and drain at zero. The discriminant carries presence,
 	// so a `TResult` of `undefined` settles as a success rather than an absent result.
-	// The FIRST failure is fail-fast: store it and `abort()` so every sibling's signal
+	// The first failure is fail-fast: store it and `abort()` so every sibling's signal
 	// fires; later failures (incl. the abort-induced rejections) are ignored. A success
 	// boxes its value by id (presence by membership, so `undefined` is a valid result). A
-	// GRACEFUL `stop()`'s never-dispatched rejection (the handler never ran — `#dispatched`
+	// graceful `stop()`'s never-dispatched rejection (the handler never ran — `#dispatched`
 	// lacks `id`) is neither a success nor a failure: it settles the count gate silently,
 	// with no recorded failure and no fail-fast trip, so `execute` still resolves with
-	// whatever DID settle rather than rejecting.
+	// whatever did settle rather than rejecting.
 	#settle(id: string, outcome: Result<TResult, unknown>): void {
 		if (outcome.success) {
 			this.#values.set(id, outcome)
-			// Observe the successful unit — AFTER its value is recorded (the unit is settled);
-			// the emit only OBSERVES it and runs before the count decrement, so it cannot
+			// Observe the successful unit — after its value is recorded (the unit is settled);
+			// the emit only observes it and runs before the count decrement, so it cannot
 			// perturb the drain that follows.
 			this.#emitter.emit('settle', id)
 		} else if (this.#stopping && this.#queued.has(id) && !this.#dispatched.has(id)) {
@@ -409,7 +409,7 @@ export class Runner<TInput, TResult> implements RunnerInterface<TInput, TResult>
 			// a unit failure. Fall through to the count decrement below with no other bookkeeping.
 		} else if (this.#failure === undefined) {
 			this.#failure = failure(outcome.error)
-			// Observe the FIRST (fail-fast) failure — AFTER the error is recorded, BEFORE the
+			// Observe the first (fail-fast) failure — after the error is recorded, before the
 			// cascade `abort()` (so observers see cause `fail` then effect `abort`). Only the
 			// first failure emits `fail`; the abort-induced sibling rejections are ignored
 			// (they fall through neither branch), matching fail-fast's "later failures ignored".
@@ -451,7 +451,7 @@ export class Runner<TInput, TResult> implements RunnerInterface<TInput, TResult>
 
 	// Settle one lifecycle barrier: await the backing queue's own cleanup, park until every
 	// launched unit has drained, then resolve the barrier (or reject it with the cleanup error).
-	// `teardown` true destroys the emitter after the drain and BEFORE the barrier settles — the
+	// `teardown` true destroys the emitter after the drain and before the barrier settles — the
 	// `destroy()` ordering, which a caller awaiting the barrier relies on; false leaves the emitter
 	// live, which is what a graceful `stop()` and an `abort()` need.
 	async #settleBarrier(

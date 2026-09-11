@@ -19,7 +19,7 @@ import { phaseUpdateShape } from '../shapers.js'
  *   looks one up, `phases()` lists them in positional order, `count` is the tally. A snapshot
  *   RESTORE re-`append`s in the snapshot's order, reproducing it exactly.
  * - **Gated mutation API.** `add` / `remove` / `move` / `update` are the graceful
- *   `Result` counterparts to `append`, gating ONLY on the target's OWN existence/status/id/bounds
+ *   `Result` counterparts to `append`, gating only on the target's own existence/status/id/bounds
  *   — a duplicate id, an absent/non-`pending` target, an out-of-bounds `index`, or a patch that
  *   fails {@link phaseUpdateShape} validation all fail gracefully with a `MUTATION`
  *   {@link WorkflowError} instead of throwing.

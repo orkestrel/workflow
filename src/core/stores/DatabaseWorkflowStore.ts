@@ -11,21 +11,21 @@ import { cloneWorkflowSnapshot } from '../cloners.js'
  * @remarks
  * The store is driver-agnostic: it holds a single {@link TableInterface} whose backend
  * (memory, JSON, SQLite, IndexedDB) is chosen by whoever builds it (the factories), so a
- * JSON / SQLite / IndexedDB backend swaps in WITHOUT touching the runner or the entity tree
+ * JSON / SQLite / IndexedDB backend swaps in without touching the runner or the entity tree
  * — the same seam as `@orkestrel/queue`'s `DatabaseQueueStore`.
  * The driver defaults to memory ({@link import('../factories.js').createDatabaseWorkflowStore}
- * passes `createMemoryDriver()`), so it ALSO works in memory out of the box; you opt into the
+ * passes `createMemoryDriver()`), so it also works in memory out of the box; you opt into the
  * durable plumbing by passing a JSON / SQLite / IndexedDB driver.
  *
- * The {@link WorkflowSnapshot} is stored as ONE OPAQUE JSON COLUMN — the table is a row of
+ * The {@link WorkflowSnapshot} is stored as one opaque JSON column — the table is a row of
  * `{ id; snapshot }` ({@link WorkflowSnapshotRow}), the snapshot the whole JSON blob (a `rawShape`
  * column the factory builds) — exactly as `DatabaseQueueStore` stores its `input`. The snapshot is
- * already a COMPLETE, self-contained, pure-JSON payload, so storing it whole is lossless AND
+ * already a complete, self-contained, pure-JSON payload, so storing it whole is lossless and
  * sidesteps a TS2589 instantiation-depth blow-up: a structured multi-column table would force the
  * contract to `Infer` the deeply-nested snapshot shape (workflow → phases → tasks → results),
  * tripping the compiler — one JSON column keeps the row type flat (`snapshot` reads back as `unknown`).
  *
- * - **`set(snapshot)` upserts under the snapshot's OWN `id`** (no separate id param) — it writes
+ * - **`set(snapshot)` upserts under the snapshot's own `id`** (no separate id param) — it writes
  *   the row `{ id: snapshot.id, snapshot }`.
  * - **`get(id)` resolves the stored snapshot for an id**, owning and narrowing the opaque JSON
  *   column back to a {@link WorkflowSnapshot} through
@@ -35,9 +35,9 @@ import { cloneWorkflowSnapshot } from '../cloners.js'
  *   differs from the requested key rejects with normalized `RESTORE` evidence.
  * - **`delete(id)` drops a snapshot by id**; an absent id is a no-op (no throw).
  *
- * UNLIKE the server package's `SessionStoreInterface` there is NO
+ * unlike the server package's `SessionStoreInterface` there is no
  * idle-TTL / eviction — a persisted run-state is durable orchestration state that lives until an
- * explicit `delete`. The public surface is EXACTLY `get` / `set` / `delete` — no extra members (the
+ * explicit `delete`. The public surface is exactly `get` / `set` / `delete` — no extra members (the
  * guide's method bijection with {@link WorkflowStoreInterface}). Restore stays a caller concern: read a
  * snapshot back and rebuild the live tree with {@link import('../factories.js').createRestoredWorkflow}.
  *
@@ -76,7 +76,7 @@ export class DatabaseWorkflowStore implements WorkflowStoreInterface {
 		return cloneWorkflowSnapshot(row.snapshot, id)
 	}
 
-	/** Inserts or replaces under the snapshot's OWN `id` (no separate id param) — the row is `{ id, snapshot }`. */
+	/** Inserts or replaces under the snapshot's own `id` (no separate id param) — the row is `{ id, snapshot }`. */
 	async set(snapshot: WorkflowSnapshot): Promise<void> {
 		const owned = cloneWorkflowSnapshot(snapshot)
 		await this.#table.set({ id: owned.id, snapshot: owned })

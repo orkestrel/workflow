@@ -8,7 +8,7 @@ import { delayHost, scheduleHost } from '@src/core'
  *
  * @remarks
  * - **`yield` is a `setImmediate` host-turn.** `yield()` waits on `setImmediate`, the
- *   canonical Node "give the host a turn" — it runs AFTER the current operation and
+ *   canonical Node "give the host a turn" — it runs after the current operation and
  *   any pending I/O callbacks, so the event loop genuinely regains control before
  *   resuming (unlike a microtask, which drains within the current task). `delay(ms)`
  *   waits on a real `setTimeout`.
@@ -16,7 +16,7 @@ import { delayHost, scheduleHost } from '@src/core'
  *   `signal.reason` exactly. The shared `scheduleHost` lifecycle links an owned composite
  *   before arming either Node handle, so caller signal method mutation is harmless and the
  *   first completion, abort, or setup failure owns settlement and cleanup. It deliberately
- *   does NOT use `node:timers/promises`, whose `{ signal }` option replaces the caller reason
+ *   does not use `node:timers/promises`, whose `{ signal }` option replaces the caller reason
  *   with a Node `AbortError` (`code: 'ABORT_ERR'`).
  * - **Priority is accepted but a no-op.** Node has no priority primitive (no equivalent
  *   of the browser's `scheduler.postTask` priorities), so `options.priority` is accepted

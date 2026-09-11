@@ -22,9 +22,11 @@ Source: [`src/core`](../src/core). Published through `@orkestrel/workflow`.
 
 ## Surface
 
-The use case is: author a `WorkflowDefinition` (pure JSON — phases in order, each phase's tasks concurrent, each task naming a registered behavior), then run it through a `WorkflowRunner` that builds the live tree and drives it to a `WorkflowResult`:
+The use case starts with a `WorkflowDefinition`: pure JSON with phases in order, each phase's tasks concurrent, and each task naming a registered behavior.
 
 ### Author a definition and run it
+
+The following example runs that definition through a `WorkflowRunner` that builds the live tree and drives it to a `WorkflowResult`.
 
 ```ts
 import { createWorkflowRunner } from '@orkestrel/workflow'
@@ -192,7 +194,7 @@ Each backend is a standalone `implements SchedulerInterface`, so its public meth
 
 ### Stores
 
-The durable persistence seam (W-d) — a DUAL-store convention (the `QueueStore` / `SessionStore` pattern). A `WorkflowStoreInterface` persists the pure-JSON `WorkflowSnapshot` keyed by workflow id through interchangeable backends: `MemoryWorkflowStore` (a plain `Map`, the zero-plumbing default, `createMemoryWorkflowStore`) and `DatabaseWorkflowStore` (the opt-in, driver-pluggable twin over a `databases` table, the snapshot stored as one opaque JSON column, `createDatabaseWorkflowStore`). Both live under `src/core/stores/`. The Database store's driver defaults to memory, so it also works in memory out of the box; you opt into the durable plumbing (JSON / SQLite / IndexedDB) by passing a driver — and it swaps in through the same interface, without touching the engine or the entity tree. Restore stays the shipped `createRestoredWorkflow`.
+The durable persistence seam (W-d) — a dual-store convention (the `QueueStore` / `SessionStore` pattern). A `WorkflowStoreInterface` persists the pure-JSON `WorkflowSnapshot` keyed by workflow id through interchangeable backends: `MemoryWorkflowStore` (a plain `Map`, the zero-plumbing default, `createMemoryWorkflowStore`) and `DatabaseWorkflowStore` (the opt-in, driver-pluggable twin over a `databases` table, the snapshot stored as one opaque JSON column, `createDatabaseWorkflowStore`). Both live under `src/core/stores/`. The Database store's driver defaults to memory, so it also works in memory out of the box; you opt into the durable plumbing (JSON / SQLite / IndexedDB) by passing a driver — and it swaps in through the same interface, without touching the engine or the entity tree. Restore stays the shipped `createRestoredWorkflow`.
 
 | Class                   | Kind  | Summary                                                                                                                                                                                                                                                                                            |
 | ----------------------- | ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -345,17 +347,17 @@ resolveTaskSilence(0, 30_000) // undefined: the task explicitly disables inherit
 
 ### Shapes
 
-The shape values `createWorkflowContract` compiles into its lockstep JSON Schema, guard, parser, and generator. They agree with the hand-written definition interfaces (the source of truth); a round-trip parity test (`generate → is → parse`) guards against drift.
+`createWorkflowContract` derives its lockstep JSON Schema, guard, parser, and generator from these shape values. They agree with the hand-written definition interfaces (the source of truth); a round-trip parity test (`generate → is → parse`) guards against drift.
 
-A `Shape` cell holds the interface the shape value compiles into.
+A `Shape` cell holds the constant's declared type.
 
-| API                | Kind  | Shape                | Summary                                                                                                                                                                                                                                                                   |
-| ------------------ | ----- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `taskShape`        | const | `TaskDefinition`     | Describes the shape of a `TaskDefinition` — identity plus an optional `behavior` behavior reference (a plain registry-key string, min length 1). `description` is optional prose.                                                                                         |
-| `phaseShape`       | const | `PhaseDefinition`    | Describes the shape of a `PhaseDefinition` — identity, its ordered `taskShape` tasks, and an optional positive-integer `concurrency` throttle (max tasks in flight; omitted ⇒ unbounded).                                                                                 |
-| `workflowShape`    | const | `WorkflowDefinition` | Describes the shape of a `WorkflowDefinition` — the contract root: identity, its ordered `phaseShape` phases, and the optional `bail` boolean failure policy (the literal pair `true`/`false`, the runtime mirror of the boolean toggle; omitted ⇒ the graceful default). |
-| `taskUpdateShape`  | const | `TaskUpdate`         | Describes the shape of a `TaskUpdate` — a partial edit to a `pending` task's `name` / `description`, both optional.                                                                                                                                                       |
-| `phaseUpdateShape` | const | `PhaseUpdate`        | Describes the shape of a `PhaseUpdate` — a partial edit to a `pending` phase's `name` / `description` / `concurrency` / `bail`, all optional.                                                                                                                             |
+| API                | Kind  | Shape                                                                    | Summary                                                                                                                                                                                                                                                                   |
+| ------------------ | ----- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `taskShape`        | const | `ObjectShape<{ id, name, description?, behavior?, retries?, timeout? }>` | Describes the shape of a `TaskDefinition` — identity plus an optional `behavior` behavior reference (a plain registry-key string, min length 1). `description` is optional prose.                                                                                         |
+| `phaseShape`       | const | `ObjectShape<{ id, name, description?, tasks, concurrency?, bail? }>`    | Describes the shape of a `PhaseDefinition` — identity, its ordered `taskShape` tasks, and an optional positive-integer `concurrency` throttle (max tasks in flight; omitted ⇒ unbounded).                                                                                 |
+| `workflowShape`    | const | `ObjectShape<{ id, name, description?, phases, bail? }>`                 | Describes the shape of a `WorkflowDefinition` — the contract root: identity, its ordered `phaseShape` phases, and the optional `bail` boolean failure policy (the literal pair `true`/`false`, the runtime mirror of the boolean toggle; omitted ⇒ the graceful default). |
+| `taskUpdateShape`  | const | `ObjectShape<{ name?, description? }>`                                   | Describes the shape of a `TaskUpdate` — a partial edit to a `pending` task's `name` / `description`, both optional.                                                                                                                                                       |
+| `phaseUpdateShape` | const | `ObjectShape<{ name?, description?, concurrency?, bail? }>`              | Describes the shape of a `PhaseUpdate` — a partial edit to a `pending` phase's `name` / `description` / `concurrency` / `bail`, all optional.                                                                                                                             |
 
 ### Constants
 
@@ -363,12 +365,12 @@ A `Shape` cell holds the constant's declared type.
 
 | Constant                    | Kind  | Shape                                                           | Summary                                                                                                                                                                                                                 |
 | --------------------------- | ----- | --------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `DEFAULT_BAIL`              | const | `false`                                                         | Names the default `WorkflowDefinition.bail`, `false` — the graceful policy that records a leaf failure and finishes every phase.                                                                                        |
+| `DEFAULT_BAIL`              | const | `boolean`                                                       | Names the default `WorkflowDefinition.bail`, `false` — the graceful policy that records a leaf failure and finishes every phase.                                                                                        |
 | `LIFECYCLE_STATUSES`        | const | `readonly LifecycleStatus[]`                                    | Lists every `LifecycleStatus` value, frozen — the vocabulary every tier draws from, in the order `pending`, `running`, `completed`, `failed`, `skipped`, `stopped`.                                                     |
 | `TERMINAL_STATUSES`         | const | `readonly LifecycleStatus[]`                                    | Lists the terminal `LifecycleStatus` values, frozen — `completed`, `failed`, `skipped`, and `stopped`, each a state a node never transitions out of.                                                                    |
 | `TASK_TRANSITIONS`          | const | `Readonly<Record<LifecycleStatus, readonly LifecycleStatus[]>>` | Declares the legal `LifecycleStatus` transition graph of the live W-b task state machine — each current status mapped to the statuses it may move to directly, frozen.                                                  |
-| `DEFAULT_PHASE_CONCURRENCY` | const | `1024`                                                          | Names the default per-phase task concurrency the `createWorkflowRunner` runner applies when a `PhaseDefinition` omits its `concurrency` throttle — `1024`, a cap that is effectively unbounded for any realistic phase. |
-| `MAX_TIMER_MS`              | const | `2_147_483_647`                                                 | Names the largest delay representable by the host timer APIs without overflow or clamping, `2_147_483_647` milliseconds.                                                                                                |
+| `DEFAULT_PHASE_CONCURRENCY` | const | `number`                                                        | Names the default per-phase task concurrency the `createWorkflowRunner` runner applies when a `PhaseDefinition` omits its `concurrency` throttle — `1024`, a cap that is effectively unbounded for any realistic phase. |
+| `MAX_TIMER_MS`              | const | `number`                                                        | Names the largest delay representable by the host timer APIs without overflow or clamping, `2_147_483_647` milliseconds.                                                                                                |
 | `PERSISTED_NODE_EVENTS`     | const | `ReadonlyArray<keyof WorkflowEventMap & keyof PhaseEventMap>`   | Lists the `WorkflowEventMap` / `PhaseEventMap` events that make a durable observer re-persist the live tree, frozen — `start`, `complete`, `fail`, `skip`, `stop`, `move`, and `update`.                                |
 | `PERSISTED_TASK_EVENTS`     | const | `ReadonlyArray<keyof TaskEventMap>`                             | Lists the `TaskEventMap` events that make a durable observer re-persist the live tree, frozen — `start`, `complete`, `fail`, `skip`, `stop`, `report`, and `pulse`.                                                     |
 
@@ -404,7 +406,7 @@ A `Shape` cell holds an interface's data members as bare names in braces, `?` ma
 | `TaskSnapshot`                 | interface | `{ id, name, description?, status, result?, metadata, attempts, behavior?, retries?, timeout?, activity? }`                                                                                                                                                          | Represents a JSON-serializable snapshot of one task's state — the leaf of the snapshot tree the durable store (W-d) persists.                                                                                                                                                                                                                                                                                                                                                                 |
 | `PhaseSnapshot`                | interface | `{ id, name, description?, status, override?, bail, concurrency?, tasks }`                                                                                                                                                                                           | Represents a JSON-serializable snapshot of one phase's state — its identity, status, the forced override a whole-phase `skip` or `stop` left, the effective `bail` and `concurrency` it ran under, and its nested task snapshots.                                                                                                                                                                                                                                                             |
 | `WorkflowSnapshot`             | interface | `{ id, name, description?, status, override?, bail, phases, created, updated }`                                                                                                                                                                                      | Represents a JSON-serializable snapshot of a whole workflow's state — its identity, status, its forced override (if any), the `bail` policy it ran under, its nested phase snapshots, and creation / update timestamps.                                                                                                                                                                                                                                                                       |
-| `WorkflowStoreInterface`       | interface | `{} plus get, set, delete`                                                                                                                                                                                                                                           | Declares the durable persistence seam for a `WorkflowSnapshot` — three async primitives (`get` / `set` / `delete`) keyed by a workflow id, the snapshot analogue of the server package's `SessionStoreInterface` (and the `@orkestrel/queue` `QueueStoreInterface` driver-swap pattern).                                                                                                                                                                                                      |
+| `WorkflowStoreInterface`       | interface | `{} plus get, set, delete`                                                                                                                                                                                                                                           | Declares the durable persistence seam for a `WorkflowSnapshot` — the async `get` / `set` / `delete` primitives keyed by a workflow id, the snapshot analogue of the server package's `SessionStoreInterface` (and the `@orkestrel/queue` `QueueStoreInterface` driver-swap pattern).                                                                                                                                                                                                          |
 | `WorkflowSnapshotRow`          | interface | `{ id, snapshot }`                                                                                                                                                                                                                                                   | Represents one row of the table a `DatabaseWorkflowStore` persists — a workflow `id` plus its `WorkflowSnapshot` held as one opaque JSON column, read back as `unknown` and narrowed on `get`.                                                                                                                                                                                                                                                                                                |
 | `WorkflowEventMap`             | type      | `{ start, complete, fail, pause, resume, skip, stop, add, remove, move, update }`                                                                                                                                                                                    | Declares the push observation surface of the workflow entity (W-b) — the lifecycle moments a fire-and-forget observer subscribes to through `workflow.emitter.on`.                                                                                                                                                                                                                                                                                                                            |
 | `PhaseEventMap`                | type      | `{ start, complete, fail, pause, resume, skip, stop, add, remove, move, update }`                                                                                                                                                                                    | Declares the push observation surface of the phase entity (W-b) — analogous to `WorkflowEventMap`, scoped to one phase.                                                                                                                                                                                                                                                                                                                                                                       |
@@ -720,6 +722,8 @@ These patterns follow the layered arc — author, validate, and run a definition
 
 ### Authoring a definition (pure JSON)
 
+The following definition keeps authored workflow state as pure JSON.
+
 ```ts
 import type { WorkflowDefinition } from '@orkestrel/workflow'
 
@@ -752,6 +756,8 @@ const definition: WorkflowDefinition = {
 
 ### Validating + seeding with the contract
 
+The following contract calls validate, parse, generate, and describe definitions.
+
 ```ts
 import { createWorkflowContract } from '@orkestrel/workflow'
 
@@ -763,6 +769,8 @@ contract.schema // the emitted JSON Schema for the full definition
 ```
 
 ### Running a workflow
+
+The following runner resolves named behaviors and executes the definition.
 
 ```ts
 import { createWorkflowRunner } from '@orkestrel/workflow'
@@ -788,6 +796,8 @@ result.workflow.results() // every settled task's TaskResult, lineage-navigable
 `execute` is single-source — it builds the live tree from `definition` itself and returns it in `result.workflow`. Each task's `behavior` string is resolved once at construction against `options.functions`; an omitted `behavior` completes as a JSON `null` no-op, while a present but absent registry name is rejected before execution.
 
 ### The `bail` policy — graceful vs halt
+
+The following runs contrast graceful settlement with fail-fast handling.
 
 ```ts
 // bail: false (default) — failures are data. Every phase runs to the end; the workflow completes.
@@ -840,6 +850,8 @@ A per-attempt `timeout` is a retryable failure of that attempt, not a skip. The 
 
 ### Bounding a run (abort / timeout / budget)
 
+The following run composes cancellation, timeout, and budget bounds.
+
 ```ts
 import { createAbort } from '@orkestrel/abort'
 import { createBudget } from '@orkestrel/budget'
@@ -860,6 +872,8 @@ The definition stays plain data at every boundary. Validate untrusted authored i
 
 ### Driving the live entity tree directly
 
+The following calls drive a task through its guarded live transitions.
+
 ```ts
 import { createWorkflow, isWorkflowError } from '@orkestrel/workflow'
 
@@ -879,6 +893,8 @@ try {
 The cascade is reactive: a leaf transition recomputes its phase, which escalates to the workflow, each re-deriving its status (and emitting on a change). `skip` / `stop` on a phase or workflow force its status (an override).
 
 ### Forcing a terminal status — `skip` / `stop`
+
+The following calls apply terminal overrides at each entity level.
 
 ```ts
 import { createWorkflow } from '@orkestrel/workflow'
@@ -1061,6 +1077,8 @@ Provider-specific Claude/Cursor/Codex JSONL parsing, journals, raw-log retention
 
 ### Snapshot & restore (the durable payload)
 
+The following workflow round-trips its durable snapshot through restore and recovery.
+
 ```ts
 import {
 	createWorkflow,
@@ -1088,7 +1106,7 @@ The snapshot is an owned exact-JSON graph. It persists `bail`, overrides, normal
 
 ### Persisting & restoring (the durable store)
 
-The `WorkflowStoreInterface` seam (`get` / `set` / `delete`, async, keyed by a snapshot's own id) has a DUAL-store convention — pick the backend, the seam is identical. `createMemoryWorkflowStore` is the zero-plumbing default (a plain `Map`); `createDatabaseWorkflowStore` is the driver-pluggable twin over a `databases` table (the snapshot one opaque JSON column, driver defaulting to memory). Both persist the `WorkflowSnapshot` from the section above unchanged; reading one back and rebuilding the live tree is the shipped `createRestoredWorkflow`. A durable backend (JSON / SQLite / IndexedDB) swaps in by passing the driver to `createDatabaseWorkflowStore` — without touching the engine or the entity tree (the `SessionStore` / `QueueStore` driver-swap pattern).
+The `WorkflowStoreInterface` seam (`get` / `set` / `delete`, async, keyed by a snapshot's own id) has a dual-store convention — pick the backend, the seam is identical. `createMemoryWorkflowStore` is the zero-plumbing default (a plain `Map`); `createDatabaseWorkflowStore` is the driver-pluggable twin over a `databases` table (the snapshot one opaque JSON column, driver defaulting to memory). Both persist the `WorkflowSnapshot` from the section above unchanged; reading one back and rebuilding the live tree is the shipped `createRestoredWorkflow`. A durable backend (JSON / SQLite / IndexedDB) swaps in by passing the driver to `createDatabaseWorkflowStore` — without touching the engine or the entity tree (the `SessionStore` / `QueueStore` driver-swap pattern).
 
 ```ts
 import {
@@ -1286,6 +1304,8 @@ async function pump(work: () => void, signal: AbortSignal): Promise<void> {
 
 ### Driving a set of units with the `Runner`
 
+The following runner processes an ordered set of units.
+
 ```ts
 import { createRunner } from '@orkestrel/workflow'
 
@@ -1296,6 +1316,8 @@ const outputs = await runner.execute(jobs) // results in input order
 ```
 
 ### Bounded concurrency
+
+The following runner limits the work that may remain in flight.
 
 ```ts
 // Up to 5 units in flight at once; the rest wait for a slot (the Queue's backpressure).
@@ -1308,6 +1330,8 @@ const responses = await runner.execute(urls)
 ```
 
 ### Per-entry retries and timeout
+
+The following runner derives reliability options for each entry.
 
 ```ts
 // The runner-level retries / timeout are the defaults; `entries` overrides them per unit
@@ -1325,6 +1349,8 @@ integer, `retries` is a nonnegative safe integer, and `timeout` is an integer in
 applies to values returned by `entries`; invalid values throw rather than being floored or clamped.
 
 ### Fanning out with `spawn`
+
+The following handler discovers and schedules sibling work.
 
 ```ts
 // A handler discovers more work and fans it out as sibling units — they run through the
@@ -1369,6 +1395,8 @@ A handler observes its `controller.signal` (pass it to `fetch` / child aborts) a
 
 ### Fail-fast and abort
 
+The following runner propagates a unit failure or external abort across the run.
+
 ```ts
 const runner = createRunner<Job, Output>({
 	concurrency: 4,
@@ -1405,15 +1433,15 @@ runner.emitter.on('fail', (id, error) => log.warn(`unit ${id} failed`, error))
 
 The `RunnerEventMap<TResult>` vocabulary:
 
-| Event    | Payload         | Fires when                                                                      |
-| -------- | --------------- | ------------------------------------------------------------------------------- |
-| `start`  | `[]`            | Declared units are reserved and `execute` begins, before asynchronous dispatch. |
-| `unit`   | `[id]`          | A unit's handler begins running (declared or spawned).                          |
-| `spawn`  | `[id, parent?]` | A sub-unit is spawned — its id + the spawning parent's id.                      |
-| `settle` | `[id]`          | A unit completed successfully (its value recorded).                             |
-| `fail`   | `[id, error]`   | The FIRST unit failure (fail-fast) — its id + the error.                        |
-| `finish` | `[results]`     | The batch settled OK — the ordered results (the same array `execute` resolves). |
-| `abort`  | `[reason]`      | The run was aborted — fail-fast cascade, a user `abort`, or `destroy`.          |
+| Event    | Payload         | Fires when                                                                                |
+| -------- | --------------- | ----------------------------------------------------------------------------------------- |
+| `start`  | `[]`            | Declared units are reserved and `execute` begins, before asynchronous dispatch.           |
+| `unit`   | `[id]`          | A unit's handler begins running (declared or spawned).                                    |
+| `spawn`  | `[id, parent?]` | A sub-unit is spawned — its id + the spawning parent's id.                                |
+| `settle` | `[id]`          | A unit completed successfully (its value recorded).                                       |
+| `fail`   | `[id, error]`   | The first unit failure (fail-fast) — its id + the error.                                  |
+| `finish` | `[results]`     | The batch settled successfully — the ordered results (the same array `execute` resolves). |
+| `abort`  | `[reason]`      | The run was aborted — fail-fast cascade, a user `abort`, or `destroy`.                    |
 
 A successful run fires `start` → `unit`/`settle` per unit → `finish`. A failure fires `fail` (the first failure only — later failures are ignored) then the run-level `abort`, and `execute` rejects without a `finish`. A user `abort` fires `abort` (the units are cancelled, not failed, so no `fail`).
 

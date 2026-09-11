@@ -7,13 +7,13 @@ import { delayHost } from './helpers.js'
  * browser and Node.
  *
  * @remarks
- * - **Cross-environment.** Uses ONLY `setTimeout` / `clearTimeout` — universally
+ * - **Cross-environment.** Uses only `setTimeout` / `clearTimeout` — universally
  *   available. It deliberately avoids env-specific fast paths (`setImmediate`,
  *   `scheduler.yield`, `requestAnimationFrame`, `node:timers/promises`,
  *   `MessageChannel`); those belong to the environment backends, built with the
  *   agent loop that consumes them.
  * - **`yield` is a macrotask host-turn, not a microtask.** `yield()` waits on a
- *   `setTimeout(0)`, NOT `queueMicrotask`. A microtask drains before the host
+ *   `setTimeout(0)`, not `queueMicrotask`. A microtask drains before the host
  *   regains control, so it would not actually let pending I/O, timers, or
  *   rendering run — it only defers within the current task. A zero-delay timer is
  *   the correct cross-environment "give the host a turn".
@@ -38,7 +38,7 @@ import { delayHost } from './helpers.js'
 export class Scheduler implements SchedulerInterface {
 	/**
 	 * Yields control back to the host so other tasks (I/O, timers, rendering) can
-	 * run, then resumes — a macrotask turn through `setTimeout(0)` (NOT a microtask,
+	 * run, then resumes — a macrotask turn through `setTimeout(0)` (not a microtask,
 	 * which would resume before the host regains control).
 	 */
 	yield(options?: SchedulerOptions): Promise<void> {

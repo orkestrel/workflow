@@ -12,8 +12,7 @@ import type { WorkflowErrorCode } from './types.js'
  * beside an optional `context` naming the node or the parameter at fault.
  *
  * @remarks
- * The `context` bag names the offending node id, status, or parameter. Raised for an illegal
- * lifecycle transition
+ * Raised for an illegal lifecycle transition
  * (`TRANSITION`), a structurally invalid {@link import('./types.js').WorkflowSnapshot}
  * boundary (`RESTORE`), a refused structural/activity edit (`MUTATION`), a host
  * schedule refused before arming because the caller's `signal` is not a native

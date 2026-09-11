@@ -81,8 +81,8 @@ export function isTaskFailure(value: unknown): value is TaskFailure {
  * The discriminator behind the overloaded
  * {@link import('./types.js').WorkflowRunnerInterface.execute}: a
  * {@link import('./types.js').WorkflowInterface} is the only one of the two carrying `destroyed`
- * (RUNTIME-ONLY, never a field on the pure-JSON
- * {@link import('./types.js').WorkflowDefinition}) AND a callable `snapshot`. Requiring both is
+ * (runtime-only, never a field on the pure-JSON
+ * {@link import('./types.js').WorkflowDefinition}) and a callable `snapshot`. Requiring both is
  * sturdier than `destroyed` alone — a definition could coincidentally carry a `destroyed` field as
  * arbitrary data, and pairing it with a function-typed `snapshot` narrows to the actual entity
  * shape without an `as`. It reads a live class instance, so it tests object identity rather than a
@@ -425,7 +425,7 @@ export function isTaskActivityInput(value: unknown): value is TaskActivityInput 
  * Tests whether an unknown value is valid persisted task activity.
  *
  * @remarks
- * The persisted counterpart of {@link isTaskActivityInput}: the same frame plus the REQUIRED
+ * The persisted counterpart of {@link isTaskActivityInput}: the same frame plus the required
  * `operations`, `constraints`, and a finite non-negative `updated` stamp, because a stored frame
  * has already been accepted and normalized. Total — a hostile prototype or accessor answers
  * `false` rather than throwing.

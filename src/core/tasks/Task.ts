@@ -41,38 +41,38 @@ import {
  * - **Guarded transitions.** `start` (→ `running`), then `complete(value)`
  *   (→ `completed`, records a {@link import('@orkestrel/contract').Success}), `fail(error)`
  *   (→ `failed`, records a {@link import('@orkestrel/contract').Failure}), `skip` (→ `skipped`),
- *   `stop` (→ `stopped`). Each consults {@link canTransitionTask} FIRST and throws a
+ *   `stop` (→ `stopped`). Each consults {@link canTransitionTask} first and throws a
  *   `TRANSITION` {@link WorkflowError} on an illegal move (for example, completing a
  *   non-`running` task) — the legal graph is the single source of truth, so the leaf can never
  *   reach an impossible state.
  * - **Snapshot fidelity.** A leaf needs no override: `skipped` / `stopped` are explicit terminal
  *   statuses, and restore reinstates the leaf directly from {@link TaskSnapshot.status}.
  * - **The cascade.** Every status change records its boxed result (when any), fires the leaf's
- *   OWN event, THEN calls the parent phase's `#recompute` (injected at construction) so the
- *   transition propagates UP (Task → Phase → Workflow re-derive). The own-event-before-cascade
- *   order means an observer sees the CAUSE (this leaf changed) before the EFFECT (the parents
+ *   own event, then calls the parent phase's `#recompute` (injected at construction) so the
+ *   transition propagates up (Task → Phase → Workflow re-derive). The own-event-before-cascade
+ *   order means an observer sees the cause (this leaf changed) before the effect (the parents
  *   re-derive) — the project precedent (`Runner.#settle` emits its own `fail` before propagating).
  * - **Observable.** The owned {@link emitter} ({@link TaskEventMap}) fires the
- *   matching event strictly AFTER the state change, BEFORE the cascade; the emitter isolates
+ *   matching event strictly after the state change, before the cascade; the emitter isolates
  *   a listener throw and routes it to its `error` handler (the `error` option), so a buggy
  *   observer can never corrupt a transition.
- * - **Declarative config.** `behavior` / `retries` / `timeout` PERSIST in a
+ * - **Declarative config.** `behavior` / `retries` / `timeout` persist in a
  *   {@link TaskSnapshot} (like a phase's `bail` / `concurrency`), carried verbatim from the
  *   matching {@link import('../types.js').TaskDefinition} / {@link TaskSnapshot} field. `handler`
- *   is the RUNTIME-ONLY counterpart — `behavior` resolved ONCE at construction against the
+ *   is the runtime-only counterpart — `behavior` resolved once at construction against the
  *   workflow-level {@link import('../types.js').WorkflowOptions.functions} registry — and is
- *   NEVER persisted; `undefined` when `behavior` is omitted or unregistered. Only omission is a
+ *   never persisted; `undefined` when `behavior` is omitted or unregistered. Only omission is a
  *   deliberate no-op; unresolved named work is rejected before dispatch.
  */
 export class Task implements TaskInterface {
 	readonly #context: TaskContext
 	readonly #phase: PhaseInterface
 	readonly #workflow: WorkflowInterface
-	// Propagate a status change UP to the parent phase (which re-derives, then escalates to the
+	// Propagate a status change up to the parent phase (which re-derives, then escalates to the
 	// workflow) — injected by the parent so the leaf needs no back-reference plumbing of its own.
 	readonly #recompute: () => void
 	readonly #metadata: JSONRecord
-	// The PUSH observation surface — owned, never inherited. The emitter isolates a
+	// The push observation surface — owned, never inherited. The emitter isolates a
 	// listener throw (routing it to the `error` handler), so it can never escape into a
 	// transition or the cascade.
 	readonly #emitter: Emitter<TaskEventMap>
@@ -80,16 +80,16 @@ export class Task implements TaskInterface {
 	// The recorded outcome after the task settled with one (`completed` / `failed`), else undefined.
 	#result: TaskResult | undefined
 	// `name` / `description` seed from `#context` but live as independent fields so
-	// `patch` can rename SELF without mutating the immutable lineage `#context` a `TaskResult`
+	// `patch` can rename self without mutating the immutable lineage `#context` a `TaskResult`
 	// stamps.
 	#name: string
 	#description: string | undefined
-	// PERSISTED declarative config, carried verbatim from the TaskDefinition / TaskSnapshot.
+	// persisted declarative config, carried verbatim from the TaskDefinition / TaskSnapshot.
 	readonly #behavior: string | undefined
 	readonly #retries: number | undefined
 	readonly #timeout: number | undefined
 	#attempts: number
-	// RUNTIME-ONLY (never persisted): `behavior` resolved ONCE at construction against the
+	// runtime-only (never persisted): `behavior` resolved once at construction against the
 	// workflow-level functions registry; `undefined` when `behavior` is omitted or unregistered.
 	readonly #handler: WorkflowFunction | undefined
 	readonly #abort: AbortInterface
@@ -148,7 +148,7 @@ export class Task implements TaskInterface {
 		// A RESTORE seeds the recorded outcome (present for a `completed` / `failed` leaf), so
 		// the result tree round-trips; a fresh leaf starts with none. A leaf's terminal status
 		// (`skipped` / `stopped`) already encodes a forced state, so the leaf needs no separate
-		// override field — the override round-trip lives on the DERIVED Phase / Workflow nodes.
+		// override field — the override round-trip lives on the derived Phase / Workflow nodes.
 		this.#result = result
 		this.#name = context.name
 		this.#description = context.description
@@ -157,7 +157,7 @@ export class Task implements TaskInterface {
 		this.#retries = retries
 		this.#timeout = timeout
 		this.#attempts = attempts
-		// Resolved ONCE by the caller (Phase) against the functions registry; stored as-is.
+		// Resolved once by the caller (Phase) against the functions registry; stored as-is.
 		this.#handler = handler
 		this.#abort = createAbort()
 		this.#silence = resolveTaskSilence(silenceOption, silence)
@@ -262,7 +262,7 @@ export class Task implements TaskInterface {
 		this.#attempts += 1
 		this.#activity = cloneTaskActivity({}, this.#stamp())
 		this.#arm()
-		// Own event FIRST, THEN the cascade — an observer sees the cause (this task started) before
+		// Own event first, then the cascade — an observer sees the cause (this task started) before
 		// the effect (the phase / workflow re-derive), mirroring `Runner.#settle`.
 		this.#emitter.emit('start', this.id)
 		this.#recompute()
@@ -287,8 +287,8 @@ export class Task implements TaskInterface {
 		this.#transition('completed')
 		this.#finish()
 		// Box the produced value as a Success (an inline `Result` branch, the codebase idiom) and
-		// RECORD it BEFORE escalating, so the parents' `results()` already see it when the cascade
-		// re-derives. Then observe the leaf's own `complete` FIRST, and escalate the cascade LAST —
+		// record it before escalating, so the parents' `results()` already see it when the cascade
+		// re-derives. Then observe the leaf's own `complete` first, and escalate the cascade last —
 		// so the leaf's own event fires before any parent's cascade event (cause before effect).
 		const result = this.#record('completed', Object.freeze({ success: true, value: owned }))
 		this.#emitter.emit('complete', result)
@@ -322,7 +322,7 @@ export class Task implements TaskInterface {
 	skip(): void {
 		// `skip` moves a `pending` / `running` task to the terminal `skipped` state —
 		// the status itself records the forced terminal (no boxed outcome: a skip produced none).
-		// Own event FIRST, THEN the cascade (cause before effect).
+		// Own event first, then the cascade (cause before effect).
 		this.#transition('skipped')
 		this.#finish()
 		this.#abort.abort()
@@ -332,8 +332,8 @@ export class Task implements TaskInterface {
 
 	stop(): void {
 		// `stop` moves a `pending` / `running` task to the terminal `stopped` state —
-		// same discipline as `skip`; a stop likewise produced no boxed outcome. Own event FIRST,
-		// THEN the cascade.
+		// same discipline as `skip`; a stop likewise produced no boxed outcome. Own event first,
+		// then the cascade.
 		this.#transition('stopped')
 		this.#finish()
 		this.#abort.abort()
@@ -395,12 +395,12 @@ export class Task implements TaskInterface {
 	}
 
 	/**
-	 * Applies a validated declarative patch to SELF (`name` / `description`).
+	 * Applies a validated declarative patch to self (`name` / `description`).
 	 *
 	 * @remarks
 	 * Defense-in-depth: the owning
-	 * {@link import('../types.js').TaskManagerInterface.update} gates FIRST (target
-	 * exists + `pending`), so this is the second, redundant check — it THROWS a
+	 * {@link import('../types.js').TaskManagerInterface.update} gates first (target
+	 * exists + `pending`), so this is the second, redundant check — it throws a
 	 * `MUTATION` {@link WorkflowError} unless this task's own `status` is `pending`.
 	 *
 	 * @param value - The {@link TaskUpdate} fields to apply
@@ -424,7 +424,7 @@ export class Task implements TaskInterface {
 	snapshot(): TaskSnapshot {
 		// Pure JSON: identity + status + the recorded result + the open metadata bag + the
 		// declarative behavior/retries/timeout config (like a phase's bail/concurrency). The leaf's
-		// status IS its forced-terminal marker (`skipped` / `stopped`), so restore reinstates the
+		// status is its forced-terminal marker (`skipped` / `stopped`), so restore reinstates the
 		// leaf from `status` directly — no separate override field is needed at the leaf.
 		return {
 			id: this.id,
@@ -443,8 +443,8 @@ export class Task implements TaskInterface {
 
 	// Guard then apply one status move: reject an illegal transition with a `TRANSITION` error
 	// (naming the offending current status + requested target), else set the new status. The
-	// cascade is NOT run here — every caller records its boxed result (when any) FIRST, notifies
-	// its OWN event SECOND, then escalates LAST, so an observer sees cause (this leaf changed)
+	// cascade is not run here — every caller records its boxed result (when any) first, notifies
+	// its own event second, then escalates last, so an observer sees cause (this leaf changed)
 	// before effect (the parents re-derive). See `start` / `complete` / `fail` / `skip` / `stop`.
 	#transition(to: LifecycleStatus): void {
 		if (!canTransitionTask(this.#status, to)) {

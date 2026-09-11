@@ -39,10 +39,10 @@ import { Runner } from './Runner.js'
 //
 // The compiled `ContractInterface<Infer<typeof workflowShape>>` is structurally
 // identical to `ContractInterface<WorkflowDefinition>` — verified bidirectionally,
-// with ZERO TS2589 (the three-level nesting that tripped the databases module's
-// `objectShape` generics does NOT strike here, because the shapes are kept
+// with zero TS2589 (the three-level nesting that tripped the databases module's
+// `objectShape` generics does not strike here, because the shapes are kept
 // intersection-free per the shapers' design note). So the hand-written interface
-// stays the source of truth AND the contract's `is` / `generate` / `parse` narrow
+// stays the source of truth and the contract's `is` / `generate` / `parse` narrow
 // to it natively — no `as`. The round-trip parity test (generate → is → parse)
 // guards against any future drift between the two.
 //
@@ -92,17 +92,17 @@ export function createWorkflowContract(): ContractInterface<WorkflowDefinition> 
  * context, its emitter, and the cascade, and every node born `pending`.
  *
  * @remarks
- * The definition is the DECLARATIVE blueprint; this seeds an initial all-`pending`
+ * The definition is the declarative blueprint; this seeds an initial all-`pending`
  * {@link WorkflowSnapshot} from it ({@link definitionToSnapshot}) and constructs the live
  * tree over that one path. The `bail` failure policy resolves to `options.bail`, else the
  * definition's `bail`, else the graceful {@link import('./constants.js').DEFAULT_BAIL}; it
  * feeds {@link import('./helpers.js').deriveWorkflowStatus}. Per-phase / per-task initial
  * listeners + metadata travel through `options.phases[id].on` /
  * `options.phases[id].tasks[id]` (the nested-by-id bag). The W-b tree is the
- * state machine ONLY — it does not execute tasks (W-c drives the transitions).
+ * state machine only — it does not execute tasks (W-c drives the transitions).
  *
  * `options.functions` is the {@link import('./types.js').WorkflowRegistry} registry each live
- * task's `behavior` name resolves against ONCE at construction into its runtime
+ * task's `behavior` name resolves against once at construction into its runtime
  * {@link import('./types.js').TaskInterface.handler}. An omitted name is the deliberate no-op;
  * an unresolved present name remains inspectable but is rejected if execution is attempted.
  *
@@ -134,14 +134,14 @@ export function createWorkflow(
  * @remarks
  * Seeds an initial all-`pending` {@link WorkflowSnapshot} from the definition and constructs the
  * live {@link WorkflowInterface} over it. `bail` is the caller's own override, forwarded to
- * {@link definitionToSnapshot} so it reaches BOTH tiers: the workflow snapshot AND the inheritance
+ * {@link definitionToSnapshot} so it reaches both tiers: the workflow snapshot and the inheritance
  * default of every phase that declares no `bail` of its own, while a phase declaring one still
  * wins. Omitted, the definition's own `bail` governs, defaulting to the graceful
  * {@link import('./constants.js').DEFAULT_BAIL}.
  *
- * `captured` is forwarded to the entity UNCHANGED — its own `bail` is deliberately not replaced
+ * `captured` is forwarded to the entity unchanged — its own `bail` is deliberately not replaced
  * with the resolved policy, because the snapshot already carries the resolved value at both tiers
- * and an injected one would make `Workflow` read it as an EXPLICIT uniform override and clobber
+ * and an injected one would make `Workflow` read it as an explicit uniform override and clobber
  * the per-phase overrides. Each task's `behavior` / `retries` / `timeout` travel onto the snapshot
  * too, so `captured.functions` resolves every handler identically whether the tree is built fresh
  * or restored. Pass a bag {@link captureWorkflowOptions} already owns: this constructs over it
@@ -175,11 +175,11 @@ export function createWorkflowTree(
  *
  * @remarks
  * Round-trip fidelity is paramount: a `snapshot()` → `createRestoredWorkflow()` reproduces the
- * same status at every node (each `#override` restored DIRECTLY from the snapshot's own
+ * same status at every node (each `#override` restored directly from the snapshot's own
  * `override` field, not guessed from a status divergence), the same recorded
  * {@link import('./types.js').TaskResult}s, and the same positional order (an interior
- * `skip` / `remove` survives). The snapshot is SELF-CONTAINED — it persists the `bail`
- * policy it ran under, so the restore re-derives status IDENTICALLY without a silent
+ * `skip` / `remove` survives). The snapshot is self-contained — it persists the `bail`
+ * policy it ran under, so the restore re-derives status identically without a silent
  * default; the snapshot's `bail` is the source of truth, while an explicit `options.bail`
  * still wins when supplied (to deliberately re-run under a different policy). A structurally
  * invalid snapshot (a status — or override — outside the lifecycle vocabulary, or a
@@ -259,13 +259,11 @@ export function createRecoveredWorkflow(
  *
  * @remarks
  * The snapshot analogue of the server package's `createMemorySessionStore`
- * (and the `createMemoryQueueStore` family), but LEANER — there is no idle-TTL, so no
- * options bag (the smallest interface the capability requires): a persisted run-state lives until
- * an explicit `delete`. This is
- * the zero-plumbing DEFAULT (a plain `Map`); its driver-pluggable twin is
+ * (and the `createMemoryQueueStore` family) is the zero-plumbing default (a plain `Map`); its
+ * driver-pluggable twin is
  * {@link createDatabaseWorkflowStore} (the snapshot as one opaque JSON column over a `databases`
- * table) — for a DURABLE store (run-state surviving a restart) pass it a JSON / SQLite / IndexedDB
- * driver, and it swaps in WITHOUT touching the runner or the entity tree. Restore stays a caller
+ * table) — for a durable store (run-state surviving a restart) pass it a JSON / SQLite / IndexedDB
+ * driver, and it swaps in without touching the runner or the entity tree. Restore stays a caller
  * concern: read a snapshot back and rebuild the live tree with {@link createRestoredWorkflow}.
  *
  * @returns A memory-backed {@link WorkflowStoreInterface}
@@ -292,19 +290,18 @@ export function createMemoryWorkflowStore(): WorkflowStoreInterface {
  * `driver` defaults to memory, so it works before any durable driver is passed.
  *
  * @remarks
- * Builds a one-table database (`snapshots`, keyed by `id`) over the supplied driver, the snapshot
- * held as ONE OPAQUE JSON COLUMN — the column map is `{ id; snapshot }` where `snapshot` is a
+ * Builds a one-table database (`snapshots`, keyed by `id`) over the supplied driver. The column map
+ * is `{ id; snapshot }` where `snapshot` is a
  * `rawShape` (a JSON blob), exactly as `createDatabaseQueueStore` stores its `input`. The
- * snapshot is already a COMPLETE, self-contained, pure-JSON payload, so storing it whole is lossless
- * AND keeps the row type FLAT — a structured multi-column snapshot table would force the contract to
+ * snapshot is already a complete, self-contained, pure-JSON payload, so storing it whole is lossless
+ * and keeps the row type flat — a structured multi-column snapshot table would force the contract to
  * `Infer` the deeply-nested snapshot shape (workflow → phases → tasks → results) and trip TS2589;
  * the opaque column sidesteps it (the column reads back as `unknown`, owned and narrowed on `get` by
  * {@link cloneWorkflowSnapshot}, whose semantic pass is
- * {@link import('./validators.js').isOwnedWorkflowSnapshot}). The `driver` DEFAULTS to
- * {@link createMemoryDriver}, so the store ALSO works in memory out of the box; pass a server
- * `createJSONDriver` / `createSQLiteDriver` (or a browser IndexedDB driver) for a persistent one —
+ * {@link import('./validators.js').isOwnedWorkflowSnapshot}). Pass a server `createJSONDriver` /
+ * `createSQLiteDriver` (or a browser IndexedDB driver) for a persistent one —
  * the durability is the driver's job, the store engine is shared. It swaps in behind
- * {@link WorkflowStoreInterface} WITHOUT touching the runner or the entity tree.
+ * {@link WorkflowStoreInterface} without touching the runner or the entity tree.
  *
  * @param driver - The storage backend the snapshots persist to (defaults to {@link createMemoryDriver})
  * @returns A {@link WorkflowStoreInterface} over the driver
@@ -324,7 +321,7 @@ export function createMemoryWorkflowStore(): WorkflowStoreInterface {
 export function createDatabaseWorkflowStore(
 	driver: DriverInterface = createMemoryDriver(),
 ): WorkflowStoreInterface {
-	// The snapshot is stored as ONE OPAQUE JSON column (`rawShape`), so the row infers FLAT —
+	// The snapshot is stored as one opaque JSON column (`rawShape`), so the row infers flat —
 	// `{ id: string; snapshot: unknown }` = `WorkflowSnapshotRow` — and the deeply-nested snapshot
 	// shape never forces a contract `Infer` (the TS2589 trap a structured table would spring).
 	const columns = { id: stringShape(), snapshot: rawShape({}) }
@@ -341,17 +338,15 @@ export function createDatabaseWorkflowStore(
  * scheduler it paces phase boundaries with.
  *
  * @remarks
- * The runner is a PURE engine — it re-implements no concurrency / retry / abort logic, AND it
- * carries no behavior or provider registry of its own: each live task already
- * resolved its own {@link import('./types.js').WorkflowFunction} into
- * {@link import('./types.js').TaskInterface.handler} ONCE at construction, from the
+ * Each live task already resolved its own {@link import('./types.js').WorkflowFunction} into
+ * {@link import('./types.js').TaskInterface.handler} once at construction, from the
  * {@link WorkflowOptions.functions} registry supplied to `execute` / {@link createWorkflow}.
  * Per-phase bounded concurrency is one {@link createRunner} per phase; `bail` maps onto that
  * Runner's fail-fast (`true` — the first failure aborts the in-flight siblings + skips the
  * rest) vs settle-all (`false` — failures are recorded, the run finishes); the run-level abort
  * / timeout / budget ({@link import('./types.js').WorkflowRunOptions}) fold through
  * `AbortSignal.any` (the agent runtime's pattern); pacing is the shipped scheduler.
- * `execute(definition, options?)` BUILDS the live tree from the definition itself (through
+ * `execute(definition, options?)` builds the live tree from the definition itself (through
  * {@link createWorkflow} — one source of truth, returned in `WorkflowResult.workflow`), drives
  * the live entity (`start` → `complete` / `fail`), and resolves a
  * {@link import('./types.js').WorkflowResult}.
@@ -418,10 +413,10 @@ export function createWorkflowRunner(options?: WorkflowRunnerOptions): WorkflowR
  * @remarks
  * `options.functions` flows into every workflow the manager mints (`add`, through
  * {@link createWorkflow}) or hydrates (`open`'s registry-miss path, through
- * {@link createRestoredWorkflow}), so a hydrated workflow is RUNNABLE rather than a dead snapshot
- * mirror. `options.store` is the EXACT analogue of the twins' `store` seam — omitted ⇒ the
+ * {@link createRestoredWorkflow}), so a hydrated workflow is runnable rather than a dead snapshot
+ * mirror. `options.store` is the exact analogue of the twins' `store` seam — omitted ⇒ the
  * manager is registry-only (`open` resolves only what is registered, `save` is a no-op). This
- * is PURELY ADDITIVE: direct {@link WorkflowStoreInterface} use and
+ * is purely additive: direct {@link WorkflowStoreInterface} use and
  * {@link createRestoredWorkflow} remain valid — the manager is one more caller-driven persistence
  * seam, not a replacement.
  *
@@ -436,7 +431,7 @@ export function createWorkflowRunner(options?: WorkflowRunnerOptions): WorkflowR
  * 	store: createMemoryWorkflowStore(),
  * 	functions: { compile: async (controller) => `built ${controller.task.id}` },
  * })
- * const workflow = manager.add(definition) // minted, registered, RUNNABLE
+ * const workflow = manager.add(definition) // minted, registered, runnable
  * await manager.save(workflow.id)          // persisted to the store
  * const reopened = await manager.open(workflow.id) // already registered — no store hit
  * ```
@@ -500,7 +495,7 @@ export function createScheduler(): SchedulerInterface {
  * @remarks
  * The Runner composes the workers `Queue` for backpressure, FIFO ordering, bounded
  * concurrency, retries, and the per-attempt timeout — it adds only orchestration, not
- * a second concurrency engine. `execute(inputs)` runs the unit set ONCE (a second call
+ * a second concurrency engine. `execute(inputs)` runs the unit set once (a second call
  * throws) and resolves the units' results in order: the declared inputs first, then
  * any `spawn`ed siblings in spawn order. Each unit's handler gets a `Controller` — its
  * `id` / `input`, a `signal` that fires on the unit's `abort`, a runner-level `abort`,
@@ -510,8 +505,8 @@ export function createScheduler(): SchedulerInterface {
  * typed `emitter` surfaces `start` / `unit` / `spawn` / `settle` / `fail` / `finish` / `abort`.
  *
  * Because `spawn` is fire-and-track (the runner awaits the whole spawn closure through an
- * outstanding-unit count, not a one-time snapshot), a handler need NOT await its spawns
- * for them to run — and on a bounded runner do NOT `await` a spawn inline (a slot-holding
+ * outstanding-unit count, not a one-time snapshot), a handler need not await its spawns
+ * for them to run — and on a bounded runner do not `await` a spawn inline (a slot-holding
  * handler awaiting its own spawn can deadlock); fan out and return instead.
  *
  * @typeParam TInput - The work input each unit carries

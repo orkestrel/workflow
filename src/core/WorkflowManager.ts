@@ -25,14 +25,14 @@ import { Workflow } from './Workflow.js'
  *   mints a live {@link WorkflowInterface} through the same construction path
  *   {@link import('./factories.js').createWorkflow} takes (flowing the manager's
  *   `functions` registry in) and stores it under `definition.id` — an already-present id
- *   OVERWRITES (last write wins). `count` is the map size, `workflow(id)` looks one up,
+ *   overwrites (last write wins). `count` is the map size, `workflow(id)` looks one up,
  *   `workflows()` lists them in insertion order.
  * - **Durable open / save.** `open(id)` returns an already-registered workflow directly; same-id
  *   misses share one hydration. A concurrent `add` wins, while `remove` / `clear` invalidate
  *   earlier reads; wrong-key payloads reject with `RESTORE`. `save(id)` captures a registered
  *   workflow's snapshot at invocation and serializes same-id writes without coupling other ids.
  *   Both remain lenient without a store or registered id.
- * - **Removal.** `remove` drops one by id, or a batch (array overload FIRST) — `true` only when
+ * - **Removal.** `remove` drops one by id, or a batch (array overload first) — `true` only when
  *   every id was removed. `clear` empties the registry.
  * - **No active pointer.** Unlike its `ConversationManager` / `WorkspaceManager` twins, there is
  *   no `active` / `switch` — nothing in the workflow domain renders "the current workflow".
@@ -42,7 +42,7 @@ import { Workflow } from './Workflow.js'
  * const manager = new WorkflowManager({
  * 	functions: { compile: async (controller) => `built ${controller.task.id}` },
  * })
- * const workflow = manager.add(definition) // minted, registered, RUNNABLE
+ * const workflow = manager.add(definition) // minted, registered, runnable
  * manager.workflow(workflow.id) // the same workflow
  * manager.count // 1
  * ```
@@ -56,7 +56,7 @@ export class WorkflowManager implements WorkflowManagerInterface {
 	readonly #hydrations = new Map<string, Set<symbol>>()
 	#generation = Symbol()
 	// The functions registry flowed into every workflow this manager mints or hydrates, so
-	// each live task's `behavior` resolves to a real `handler` (RUNNABLE) rather than the
+	// each live task's `behavior` resolves to a real `handler` (runnable) rather than the
 	// inspectable unresolved state; the runner rejects it until matching functions are supplied.
 	readonly #functions: WorkflowRegistry | undefined
 	// The optional durable store backing `open` / `save`; `undefined` ⇒ registry-only (both lenient).
@@ -117,7 +117,7 @@ export class WorkflowManager implements WorkflowManagerInterface {
 	}
 
 	save(id: string): Promise<boolean> {
-		// Lenient: persist only when a store is set AND the id is registered; otherwise a no-op.
+		// Lenient: persist only when a store is set and the id is registered; otherwise a no-op.
 		const workflow = this.#workflows.get(id)
 		if (this.#store === undefined || workflow === undefined) return Promise.resolve(false)
 		const snapshot = workflow.snapshot()
@@ -137,12 +137,12 @@ export class WorkflowManager implements WorkflowManagerInterface {
 		return saving.then(() => true)
 	}
 
-	// The array overload FIRST, so a list resolves to the batch form.
+	// The array overload first, so a list resolves to the batch form.
 	remove(ids: readonly string[]): boolean
 	remove(id: string): boolean
 	remove(ids: string | readonly string[]): boolean {
 		if (isArray(ids)) {
-			// The batch reports true only when EVERY id was removed, so a caller can tell a full
+			// The batch reports true only when every id was removed, so a caller can tell a full
 			// removal from a partial one. Invalidation stays unconditional for every id whatever
 			// the delete reported, so the semantics of an absent id are unchanged. An empty list
 			// reports true vacuously — no id failed.

@@ -34,47 +34,47 @@ import { Task } from '../tasks/Task.js'
 import { TaskManager } from '../tasks/TaskManager.js'
 
 /**
- * Implements the live DERIVED state machine (W-b) for one phase — an observable whose
+ * Implements the live derived state machine (W-b) for one phase — an observable whose
  * {@link LifecycleStatus} is computed from its tasks (never set directly) and recomputed
  * reactively as a task transitions (the middle tier of the cascade).
  *
  * @remarks
  * - **Derived status.** `status` is `#override` when one is in force, else
  *   {@link derivePhaseStatus} over the live tasks' statuses. `#recompute` (passed to
- *   each child {@link Task}) re-derives on every child transition; a CHANGE emits the matching
- *   event AND escalates to the workflow (`#escalate`, the upward step of the cascade).
- * - **Override.** `skip` / `stop` FORCE the phase's status (for example, skipping a whole
- *   phase), overriding the derived value; the override is PERSISTED in the snapshot's own
- *   `override` field and restored DIRECTLY (no divergence guess), so a forced phase round-trips.
+ *   each child {@link Task}) re-derives on every child transition; a change emits the matching
+ *   event and escalates to the workflow (`#escalate`, the upward step of the cascade).
+ * - **Override.** `skip` / `stop` force the phase's status (for example, skipping a whole
+ *   phase), overriding the derived value; the override is persisted in the snapshot's own
+ *   `override` field and restored directly (no divergence guess), so a forced phase round-trips.
  * - **Children.** `tasks` is the lean {@link TaskManager} (an accessor + `count`,
  *   no batch matrix); built positionally from the snapshot so order survives an interior `skip`.
  *   `results()` collects the settled tasks' {@link TaskResult}s (the phase tier of the result
- *   tree); `workflow` navigates UP to the live parent.
+ *   tree); `workflow` navigates up to the live parent.
  * - **Observable.** The owned {@link emitter} ({@link PhaseEventMap}) fires
  *   `start` / `complete` / `fail` / `pause` / `resume` / `skip` / `stop` after the
  *   corresponding status or runtime-gate change. Status events fire after the phase recomputes
  *   and before it escalates to the workflow, preserving child/phase cause before parent effect.
  *   The emitter isolates a listener throw and routes it to its `error` handler (the `error`
  *   option); `fail` carries the failing task's {@link TaskResult}.
- * - **Structural API.** `add` / `remove` / `move` / `update` gate BEFORE
+ * - **Structural API.** `add` / `remove` / `move` / `update` gate before
  *   delegating to {@link tasks} (the manager gates the target's own existence/status/id/
- *   bounds), then emit the matching {@link PhaseEventMap} event on success only. NATIVE
+ *   bounds), then emit the matching {@link PhaseEventMap} event on success only. Native
  *   gating, purely from this phase's own derived `status` (no runner-installed hook): while
- *   `pending`, any valid `index` is accepted; while `running`, `add` accepts ONLY a pure
+ *   `pending`, any valid `index` is accepted; while `running`, `add` accepts only a pure
  *   append (a live runner subscribed to the `add` event picks it up), and `remove` / `move` /
  *   `update` always fail gracefully (the tasks are already handed to the execution
  *   substrate); while terminal, everything is refused.
- * - **Patch.** `patch` applies a validated {@link PhaseUpdate} to SELF
+ * - **Patch.** `patch` applies a validated {@link PhaseUpdate} to self
  *   (`name` / `description` / `concurrency` / `bail`) — defense-in-depth: it throws a
  *   `MUTATION` {@link WorkflowError} unless this phase's own `status` is `pending`, mirroring
  *   the owning {@link WorkflowInterface.update}'s gate.
- * - **Minting.** {@link add} MINTS a live {@link Task} from a {@link TaskDefinition}
- *   (converts it to a {@link TaskSnapshot}, builds the task wired to THIS phase) — the same
+ * - **Minting.** {@link add} mints a live {@link Task} from a {@link TaskDefinition}
+ *   (converts it to a {@link TaskSnapshot}, builds the task wired to this phase) — the same
  *   construction path {@link #append} uses at build time, so a live mint and a restored/built
- *   task are wired IDENTICALLY. At construction, the workflow-level
+ *   task are wired identically. At construction, the workflow-level
  *   {@link import('../types.js').WorkflowRegistry} registry (threaded from
  *   {@link import('../types.js').WorkflowOptions.functions}) resolves every unique initial `behavior`
- *   name ONCE before any task is built; siblings sharing a name receive the exact same captured
+ *   name once before any task is built; siblings sharing a name receive the exact same captured
  *   runtime {@link import('../types.js').TaskInterface.handler}. A later live {@link add} reads
  *   that name once from the retained registry at its own mint moment. An omitted or unregistered
  *   `behavior` resolves to no handler; only omission is a no-op, while an unresolved present name makes
@@ -82,7 +82,7 @@ import { TaskManager } from '../tasks/TaskManager.js'
  * - **Runtime lifecycle.** `pause` / `resume` / `wait` mirror the workflow's own
  *   quartet, scoped to this phase — a driving
  *   {@link import('../types.js').WorkflowRunnerInterface.execute} gates a task's own
- *   pre-dispatch on the workflow's gate FIRST, then this phase's gate, WITHOUT touching
+ *   pre-dispatch on the workflow's gate first, then this phase's gate, without touching
  *   {@link status} — `paused` is runtime-only, never persisted. `skip` / `stop` (this phase's
  *   own terminal forcing) always release a parked {@link wait} waiter, mirroring
  *   {@link import('../Workflow.js').Workflow.destroy}'s cascade — a permanently-ended phase
@@ -93,7 +93,7 @@ export class Phase implements PhaseInterface {
 	#name: string
 	#description: string | undefined
 	readonly #workflow: WorkflowInterface
-	// Escalate a derived-status change UP to the parent workflow (which re-derives under `bail`)
+	// Escalate a derived-status change up to the parent workflow (which re-derives under `bail`)
 	// — injected by the parent so the phase needs no back-reference plumbing of its own.
 	readonly #escalateUp: () => void
 	readonly #tasks: TaskManager = new TaskManager()
@@ -102,22 +102,22 @@ export class Phase implements PhaseInterface {
 	// binding from this retained registry; existing handlers never change when the registry does.
 	readonly #functions: WorkflowRegistry | undefined
 	readonly #silence: number | undefined
-	// The EFFECTIVE failure policy this phase runs under (`phase.bail ?? workflow.bail`, resolved
+	// The effective failure policy this phase runs under (`phase.bail ?? workflow.bail`, resolved
 	// at seed time and carried on the snapshot) — read by the runner to decide fail-fast vs
-	// settle-all for THIS phase, and by the workflow's per-phase-bail-aware status derivation.
+	// settle-all for this phase, and by the workflow's per-phase-bail-aware status derivation.
 	// Mutable: a `pending` phase's `patch` may override it before a run starts.
 	#bail: boolean
 	// Max tasks in flight at once (a resource throttle), seeded from the snapshot; mutable through a
 	// `pending` phase's `patch`. `undefined` ⇒ unbounded.
 	#concurrency: number | undefined
-	// The PUSH observation surface — owned, never inherited. The emitter isolates a
+	// The push observation surface — owned, never inherited. The emitter isolates a
 	// listener throw (routing it to the `error` handler), never the cascade.
 	readonly #emitter: Emitter<PhaseEventMap>
-	// The last computed status — the baseline a recompute diffs against to detect a CHANGE.
+	// The last computed status — the baseline a recompute diffs against to detect a change.
 	#status: LifecycleStatus
 	// The forced status of a `skip` / `stop`, overriding the derived value; `undefined` ⇒ derived.
 	#override: LifecycleStatus | undefined
-	// RUNTIME-ONLY (never persisted): whether the phase is paused.
+	// runtime-only (never persisted): whether the phase is paused.
 	#paused: boolean
 	// The parked `wait()` gate while paused; `undefined` when not paused — released (resolved) by
 	// `resume` / `stop` / `skip`.
@@ -148,10 +148,10 @@ export class Phase implements PhaseInterface {
 				handlers.set(task.behavior, functions?.[task.behavior])
 			}
 		}
-		// The effective per-phase policy: the explicit workflow `bail` OVERRIDE when supplied (a
-		// deliberate "re-run the whole tree under THIS uniform policy" knob — `createWorkflow` /
+		// The effective per-phase policy: the explicit workflow `bail` override when supplied (a
+		// deliberate "re-run the whole tree under this uniform policy" knob — `createWorkflow` /
 		// `createRestoredWorkflow` thread `options.bail` here), else the snapshot's persisted per-phase `bail`
-		// (so an option-less restore is IDENTICAL — each phase's own persisted policy governs). The
+		// (so an option-less restore is identical — each phase's own persisted policy governs). The
 		// snapshot already resolved `phase.bail ?? workflowBail` at seed time, mirroring how Workflow
 		// reads its own `#bail`.
 		this.#bail = bail ?? snapshot.bail
@@ -160,16 +160,16 @@ export class Phase implements PhaseInterface {
 			...(on === undefined ? {} : { on }),
 			...(error === undefined ? {} : { error }),
 		})
-		// Build the live tasks positionally from the snapshot — each wired to recompute THIS phase
+		// Build the live tasks positionally from the snapshot — each wired to recompute this phase
 		// on a transition, carrying its own restore state and the once-captured handler for its `behavior`.
 		for (const task of snapshot.tasks) {
 			const taskOptions = tasks?.[task.id]
 			const handler = task.behavior === undefined ? undefined : handlers.get(task.behavior)
 			this.#append(task, taskOptions, handler)
 		}
-		// Restore the override DIRECTLY from the snapshot's own field (present only when a whole-
+		// Restore the override directly from the snapshot's own field (present only when a whole-
 		// phase skip / stop forced it) — no fragile status-divergence guess. Then seed the baseline
-		// from the EFFECTIVE status so a recompute diffs against the right value.
+		// from the effective status so a recompute diffs against the right value.
 		this.#override = snapshot.override
 		this.#status = this.status
 		this.#paused = false
@@ -193,7 +193,7 @@ export class Phase implements PhaseInterface {
 	}
 
 	get context(): PhaseContext {
-		// Computed fresh so a renamed phase's context reflects its CURRENT identity — the phase's
+		// Computed fresh so a renamed phase's context reflects its current identity — the phase's
 		// own id/name/description plus the live parent workflow context.
 		return buildPhaseContext(this.#workflow.context, {
 			id: this.#id,
@@ -242,10 +242,10 @@ export class Phase implements PhaseInterface {
 	}
 
 	skip(): void {
-		// `skip` FORCES the phase to `skipped`, overriding the derived value — then
+		// `skip` forces the phase to `skipped`, overriding the derived value — then
 		// recompute so the change is detected, emitted, and escalated.
-		// IDEMPOTENT / NO-OP after `status` is already terminal (a settled phase cannot be
-		// re-forced) — but a parked `wait()` waiter is ALWAYS released regardless (a terminal
+		// idempotent / no-op after `status` is already terminal (a settled phase cannot be
+		// re-forced) — but a parked `wait()` waiter is always released regardless (a terminal
 		// phase must never hold one; kept unconditional for safety).
 		if (!isTerminalStatus(this.status)) this.#force('skipped')
 		this.#paused = false
@@ -253,8 +253,8 @@ export class Phase implements PhaseInterface {
 	}
 
 	stop(): void {
-		// `stop` FORCES the phase to `stopped` — same override discipline as `skip`;
-		// `stopped` IS a PhaseEventMap event, so this emit fires. NO-OP after `status` is already
+		// `stop` forces the phase to `stopped` — same override discipline as `skip`;
+		// `stopped` is a PhaseEventMap event, so this emit fires. No-op after `status` is already
 		// terminal (a settled phase cannot be re-forced). Always releases a parked `wait()`
 		// waiter (a permanently-ended phase has nothing left to pause for), even on
 		// the no-op branch, for safety.
@@ -358,8 +358,8 @@ export class Phase implements PhaseInterface {
 	}
 
 	patch(value: PhaseUpdate): void {
-		// Defense-in-depth: the owning WorkflowInterface.update gates FIRST, so a
-		// direct call here THROWS unless this phase is genuinely `pending`.
+		// Defense-in-depth: the owning WorkflowInterface.update gates first, so a
+		// direct call here throws unless this phase is genuinely `pending`.
 		if (this.status !== 'pending') {
 			throw new WorkflowError('MUTATION', `phase '${this.#id}' can only be patched while pending`, {
 				id: this.#id,
@@ -373,9 +373,9 @@ export class Phase implements PhaseInterface {
 	}
 
 	snapshot(): PhaseSnapshot {
-		// Pure JSON: identity + the EFFECTIVE status (override-or-derived) + the ACTUAL override
+		// Pure JSON: identity + the effective status (override-or-derived) + the actual override
 		// (emitted only when one is in force) + the effective `bail` this phase ran under (always —
-		// a REQUIRED field, like Workflow's) + the concurrency throttle (when set) + the tasks'
+		// a required field, like Workflow's) + the concurrency throttle (when set) + the tasks'
 		// snapshots in positional order. Persisting the override + bail + concurrency directly lets a
 		// restore reinstate them without guessing from a divergence.
 		return {
@@ -391,7 +391,7 @@ export class Phase implements PhaseInterface {
 	}
 
 	// Recompute the derived status after a child transition (the callback wired into each Task):
-	// diff the new effective status against the baseline; on a CHANGE, advance the baseline, emit
+	// diff the new effective status against the baseline; on a change, advance the baseline, emit
 	// the matching event, and escalate to the workflow. An override pins the status, so a forced
 	// phase ignores further child churn. The phase event precedes the parent effect.
 	#recompute(): void {
@@ -429,8 +429,8 @@ export class Phase implements PhaseInterface {
 		else if (status === 'stopped') this.#emitter.emit('stop')
 	}
 
-	// The failing task's REAL recorded {@link TaskResult} — the first task whose result is a
-	// Failure — so the `fail` event carries the true cause. A phase derives `failed` ONLY when a
+	// The failing task's real recorded {@link TaskResult} — the first task whose result is a
+	// Failure — so the `fail` event carries the true cause. A phase derives `failed` only when a
 	// child failed with a `Failure` result, so one always exists when `#emitFor('failed')` calls
 	// this: assert that invariant (a programmer-error guard, mirroring `Runner.#dispatch`) rather
 	// than fabricating a synthetic result — a fake, lineage-degenerate `TaskResult` would mask the
@@ -479,10 +479,10 @@ export class Phase implements PhaseInterface {
 		this.#tasks.append(created)
 	}
 
-	// Build one live task wired to THIS phase — the shared construction step behind both
+	// Build one live task wired to this phase — the shared construction step behind both
 	// `#append` (build-time wiring, from a TaskSnapshot's restore state) and `#mint` (a live
 	// `add`, from a freshly-converted TaskDefinition snapshot) — so a mint and a built/restored
-	// task are wired IDENTICALLY (recompute cascade, emitter hooks, context stamping). The caller
+	// task are wired identically (recompute cascade, emitter hooks, context stamping). The caller
 	// supplies the once-resolved runtime handler for the construction moment it owns.
 	#create(
 		snapshot: TaskSnapshot,
@@ -509,7 +509,7 @@ export class Phase implements PhaseInterface {
 		)
 	}
 
-	// MINT a live task from a TaskDefinition for a live `add` — converts it to an initial
+	// mint a live task from a TaskDefinition for a live `add` — converts it to an initial
 	// TaskSnapshot (definitionToSnapshot's per-task step, carrying its `behavior` / `retries` /
 	// `timeout`) then resolves its handler once against the retained registry for this live mint.
 	#mint(definition: TaskDefinition): Task {

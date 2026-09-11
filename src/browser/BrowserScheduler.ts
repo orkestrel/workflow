@@ -20,7 +20,7 @@ import { POST_TASK_PRIORITY } from './constants.js'
  *   priority. `delay(ms)` is always a real `setTimeout`.
  * - **Abort fidelity is verbatim.** The shared `scheduleHost` lifecycle links an owned
  *   settlement composite before scheduling, preserving the exact caller reason without
- *   invoking caller-owned signal methods. The caller signal is NOT handed to `postTask`;
+ *   invoking caller-owned signal methods. The caller signal is not handed to `postTask`;
  *   an internal controller cancels that native task. An unexpected native promise rejection
  *   is routed back as the exact host failure instead of being discarded.
  * - **Event-free.** A pure functional primitive — no Emitter, no events.
