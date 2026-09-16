@@ -1,4 +1,5 @@
 import type { WorkflowErrorCode } from './types.js'
+import { isInstance } from '@orkestrel/contract'
 
 // The fault kinds: an illegal state-machine transition, structurally invalid restore, refused
 // mutation, refused host schedule, or broken internal invariant carries a machine-readable
@@ -51,9 +52,5 @@ export class WorkflowError extends Error {
  * ```
  */
 export function isWorkflowError(value: unknown): value is WorkflowError {
-	try {
-		return value instanceof WorkflowError
-	} catch {
-		return false
-	}
+	return isInstance(value, WorkflowError)
 }

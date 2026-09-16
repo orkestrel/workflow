@@ -1,4 +1,5 @@
 import type { JSONValue } from '@orkestrel/contract'
+import { isBoolean, isFiniteNumber } from '@orkestrel/contract'
 import type { TimeoutInterface } from '@orkestrel/timeout'
 import type {
 	AttemptOutcome,
@@ -275,7 +276,7 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 		let onCancel: (() => void) | undefined
 		try {
 			timeout =
-				ms !== undefined && Number.isFinite(ms) && ms > 0 && ms <= MAX_TIMER_MS
+				ms !== undefined && isFiniteNumber(ms) && ms > 0 && ms <= MAX_TIMER_MS
 					? createTimeout({ ms })
 					: undefined
 			timeout?.start()
@@ -569,7 +570,7 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 		}
 		const ms = task.timeout
 		const deadline =
-			ms !== undefined && Number.isFinite(ms) && ms > 0 && ms <= MAX_TIMER_MS
+			ms !== undefined && isFiniteNumber(ms) && ms > 0 && ms <= MAX_TIMER_MS
 				? createTimeout({ ms })
 				: undefined
 		const signal = this.#taskSignal(task, controller.signal, runSignal, deadline)
@@ -912,7 +913,7 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 		try {
 			if (workflow !== undefined && isHalted(workflow, phase)) deferred.resolve(undefined)
 			const outcome = await Promise.race([wait, deferred.promise])
-			return typeof outcome === 'boolean' ? outcome : undefined
+			return isBoolean(outcome) ? outcome : undefined
 		} finally {
 			signal.removeEventListener('abort', onAbort)
 			workflow?.emitter.off('skip', onTerminal)

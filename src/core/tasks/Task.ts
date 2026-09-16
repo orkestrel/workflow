@@ -19,11 +19,11 @@ import type {
 	WorkflowInterface,
 } from '../types.js'
 import { createAbort } from '@orkestrel/abort'
-import { cloneJSONRecord, cloneJSONValue, isContractError } from '@orkestrel/contract'
+import { cloneJSONRecord, cloneJSONValue, isContractError, isString } from '@orkestrel/contract'
 import { Emitter } from '@orkestrel/emitter'
 import { createTimeout } from '@orkestrel/timeout'
 import { cloneTaskActivity } from '../cloners.js'
-import { WorkflowError } from '../errors.js'
+import { WorkflowError, isWorkflowError } from '../errors.js'
 import {
 	buildTaskContext,
 	canTransitionTask,
@@ -303,9 +303,7 @@ export class Task implements TaskInterface {
 				? error.origin
 				: 'handler'
 		const message =
-			typeof error.message === 'string' && error.message.length > 0
-				? error.message
-				: 'unknown failure'
+			isString(error.message) && error.message.length > 0 ? error.message : 'unknown failure'
 		this.#transition('failed')
 		this.#finish()
 		const result = this.#record(
@@ -358,7 +356,7 @@ export class Task implements TaskInterface {
 			return success(activity)
 		} catch (error) {
 			return failure(
-				error instanceof WorkflowError
+				isWorkflowError(error)
 					? error
 					: new WorkflowError('MUTATION', 'task activity report was refused', {
 							task: this.id,

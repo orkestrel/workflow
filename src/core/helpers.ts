@@ -27,6 +27,8 @@ import {
 	isJSONValue,
 	isNonEmptyString,
 	isRecord,
+	isError,
+	isString,
 } from '@orkestrel/contract'
 import { DEFAULT_BAIL, MAX_TIMER_MS, TASK_TRANSITIONS, TERMINAL_STATUSES } from './constants.js'
 import { WorkflowError } from './errors.js'
@@ -390,10 +392,10 @@ export function resolveTaskSilence(
 	fallback: number | undefined,
 ): number | undefined {
 	if (value !== undefined) {
-		return Number.isFinite(value) && value > 0 && value <= MAX_TIMER_MS ? value : undefined
+		return isFiniteNumber(value) && value > 0 && value <= MAX_TIMER_MS ? value : undefined
 	}
 	return fallback !== undefined &&
-		Number.isFinite(fallback) &&
+		isFiniteNumber(fallback) &&
 		fallback > 0 &&
 		fallback <= MAX_TIMER_MS
 		? fallback
@@ -445,8 +447,8 @@ export function failure<E>(error: E): Failure<E> {
  */
 export function errorToMessage(error: unknown): string {
 	try {
-		const message = error instanceof Error ? error.message : String(error)
-		return typeof message === 'string' && message.length > 0 ? message : 'unknown failure'
+		const message = isError(error) ? error.message : String(error)
+		return isString(message) && message.length > 0 ? message : 'unknown failure'
 	} catch {
 		return 'unknown failure'
 	}
@@ -726,7 +728,7 @@ export function recoverWorkflowSnapshot(snapshot: WorkflowSnapshot): WorkflowSna
  * ```
  */
 export function matchesDescription(left: unknown, right: unknown): boolean {
-	return left === right && (left === undefined || typeof left === 'string')
+	return left === right && (left === undefined || isString(left))
 }
 
 /**

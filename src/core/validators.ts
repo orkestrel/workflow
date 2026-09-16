@@ -19,6 +19,7 @@ import {
 	isNonEmptyString,
 	isObject,
 	isRecord,
+	isString,
 } from '@orkestrel/contract'
 import { LIFECYCLE_STATUSES, MAX_TIMER_MS } from './constants.js'
 import { derivePhaseStatus, deriveWorkflowStatus, isTaskResult } from './helpers.js'
@@ -140,7 +141,7 @@ export function isOwnedWorkflowSnapshot(value: unknown): value is WorkflowSnapsh
 			) ||
 			!isNonEmptyString(value.id) ||
 			!isNonEmptyString(value.name) ||
-			(value.description !== undefined && typeof value.description !== 'string') ||
+			(value.description !== undefined && !isString(value.description)) ||
 			!isLifecycleStatus(value.status) ||
 			(value.override !== undefined &&
 				value.override !== 'completed' &&
@@ -177,7 +178,7 @@ export function isOwnedWorkflowSnapshot(value: unknown): value is WorkflowSnapsh
 				!isNonEmptyString(phase.id) ||
 				phaseIds.has(phase.id) ||
 				!isNonEmptyString(phase.name) ||
-				(phase.description !== undefined && typeof phase.description !== 'string') ||
+				(phase.description !== undefined && !isString(phase.description)) ||
 				!isLifecycleStatus(phase.status) ||
 				(phase.override !== undefined &&
 					phase.override !== 'skipped' &&
@@ -228,7 +229,7 @@ export function isOwnedWorkflowSnapshot(value: unknown): value is WorkflowSnapsh
 					!isNonEmptyString(task.id) ||
 					taskIds.has(task.id) ||
 					!isNonEmptyString(task.name) ||
-					(task.description !== undefined && typeof task.description !== 'string') ||
+					(task.description !== undefined && !isString(task.description)) ||
 					!isLifecycleStatus(task.status) ||
 					!isRecord(task.metadata) ||
 					!isJSONValue(task.metadata) ||
