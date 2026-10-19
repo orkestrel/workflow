@@ -37,7 +37,8 @@ import {
 	taskDefinitionToSnapshot,
 } from '@src/core'
 import { describe, expect, it } from 'vitest'
-import { captureError, waitForDelay } from '@orkestrel/test'
+import { isAbortSignal, linkSignal } from '@orkestrel/abort'
+import { captureError, createRecorder, waitForDelay } from '@orkestrel/test'
 import { createErrorRecorder, createRecordingScheduler } from '../../setup.js'
 
 // The lifecycle logic core: the derivation truth tables under BOTH bail modes, the ONE
@@ -735,51 +736,34 @@ describe('scheduleHost — centralized host settlement lifecycle', () => {
 		expect(starts).toBe(0)
 	})
 
-	it('rejects rather than throwing when a proxied signal traps during linking', async () => {
-		// A Proxy over a NATIVE signal passes `isAbortSignal`, so the pre-guard cannot catch it, and
-		// the trap then fires inside linking. Without containment that escape is SYNCHRONOUS — the
-		// one shape no scheduler backend expects, because each returns the call directly to a caller
-		// that only awaits. Setup must present one failure shape regardless of how hostile the input.
-		//
-		// The trap is on `aborted` because that is a member linking actually reads. A
-		// `getPrototypeOf` trap also passes `isAbortSignal`, but nothing in linking asks for
-		// the prototype, so it never fires and this test measured a schedule that
-		// never settled rather than the containment it names.
-		let starts = 0
-		let sprung = 0
+	it('rejects rather than throwing when a proxied caller signal cannot be linked', async () => {
+		const starts = createRecorder()
 		const trap = new Error('proxy trap must not escape synchronously')
 		const hostile = new Proxy(new AbortController().signal, {
 			get(target, property) {
-				if (property === 'aborted') {
-					sprung += 1
-					throw trap
-				}
+				if (property === 'aborted') throw trap
 				const member: unknown = Reflect.get(target, property, target)
 				return typeof member === 'function' ? member.bind(target) : member
 			},
 		})
 
-		let pending: unknown
-		expect(() => {
-			pending = scheduleHost(() => {
-				starts += 1
-				return () => undefined
-			}, hostile)
-		}).not.toThrow()
-		if (!(pending instanceof Promise)) throw new Error('expected rejected scheduling promise')
+		// Prove this input reaches linking and linking throws on this host.
+		expect(isAbortSignal(hostile)).toBe(true)
+		expect(() => linkSignal(new AbortController().signal, hostile)).toThrow()
+		const pending = scheduleHost(() => {
+			starts.handler()
+			return () => undefined
+		}, hostile)
 
+		expect(pending).toBeInstanceOf(Promise)
 		await expect(pending).rejects.toBeInstanceOf(WorkflowError)
 		await expect(pending).rejects.toMatchObject({
 			code: 'SCHEDULE',
+			message: 'scheduleHost could not link the caller signal',
 			context: { signal: 'object' },
 		})
 		await expect(pending).rejects.not.toBe(trap)
-		expect(starts).toBe(0)
-		// The instrument reports on itself: a trap that never springs means linking
-		// stopped reading the member this vector attacks, and the assertions above
-		// would then be measuring a schedule that never settled rather than the
-		// containment they name.
-		expect(sprung).toBeGreaterThan(0)
+		expect(starts.calls).toEqual([])
 	})
 
 	it('schedules safely when the caller addEventListener method is patched to throw', async () => {
