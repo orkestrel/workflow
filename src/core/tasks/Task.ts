@@ -19,7 +19,13 @@ import type {
 	WorkflowInterface,
 } from '../types.js'
 import { createAbort } from '@orkestrel/abort'
-import { cloneJSONRecord, cloneJSONValue, isContractError, isString } from '@orkestrel/contract'
+import {
+	attempt,
+	cloneJSONRecord,
+	cloneJSONValue,
+	isContractError,
+	isString,
+} from '@orkestrel/contract'
 import { Emitter } from '@orkestrel/emitter'
 import { createTimeout } from '@orkestrel/timeout'
 import { cloneTaskActivity } from '../cloners.js'
@@ -269,10 +275,9 @@ export class Task implements TaskInterface {
 	}
 
 	complete(value: JSONValue): void {
-		let owned: JSONValue
-		try {
-			owned = cloneJSONValue(value)
-		} catch (error) {
+		const outcome = attempt(() => cloneJSONValue(value))
+		if (!outcome.success) {
+			const error = outcome.error
 			if (isContractError(error)) {
 				throw new WorkflowError(
 					'RESTORE',
@@ -290,7 +295,7 @@ export class Task implements TaskInterface {
 		// record it before escalating, so the parents' `results()` already see it when the cascade
 		// re-derives. Then observe the leaf's own `complete` first, and escalate the cascade last —
 		// so the leaf's own event fires before any parent's cascade event (cause before effect).
-		const result = this.#record('completed', Object.freeze({ success: true, value: owned }))
+		const result = this.#record('completed', Object.freeze({ success: true, value: outcome.value }))
 		this.#emitter.emit('complete', result)
 		this.#recompute()
 	}

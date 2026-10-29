@@ -2,7 +2,7 @@ import type { SchedulerPriority } from '@src/core'
 import { FrameScheduler } from '@src/browser'
 import { describe, expect, it } from 'vitest'
 import { waitForDelay } from '@orkestrel/test'
-import { instrumentSignal } from '../../setup.js'
+import { instrumentSignal, WorkflowObservation } from '../../setup.js'
 
 // FrameScheduler — the frame-aligned browser cooperative-yield backend, run in REAL headless
 // Chromium where `requestAnimationFrame` is driven by the engine (do not fake a
@@ -14,15 +14,15 @@ describe('FrameScheduler', () => {
 	describe('yield', () => {
 		it('resolves — the real requestAnimationFrame callback fires, after the current task', async () => {
 			const scheduler = new FrameScheduler()
-			let resumed = false
+			const resumed = new WorkflowObservation(false)
 
 			const pending = scheduler.yield().then(() => {
-				resumed = true
+				resumed.value = true
 			})
-			expect(resumed).toBe(false) // not synchronously — a frame must pass
+			expect(resumed.value).toBe(false) // not synchronously — a frame must pass
 
 			await pending
-			expect(resumed).toBe(true)
+			expect(resumed.value).toBe(true)
 		})
 
 		it('accepts every priority (a no-op) and resolves the same', async () => {
@@ -47,11 +47,11 @@ describe('FrameScheduler', () => {
 			const scheduler = new FrameScheduler()
 			const controller = new AbortController()
 			const reason = { code: 'CANCELLED' }
-			let resolved = false
+			const resolved = new WorkflowObservation(false)
 
 			const pending = scheduler.yield({ signal: controller.signal })
 			pending.then(
-				() => (resolved = true),
+				() => (resolved.value = true),
 				() => {},
 			)
 			controller.abort(reason)
@@ -59,7 +59,7 @@ describe('FrameScheduler', () => {
 
 			// The cancelled frame never resolves it, even after several frames pass.
 			await waitForDelay(50)
-			expect(resolved).toBe(false)
+			expect(resolved.value).toBe(false)
 		})
 
 		it('a bare abort() rejects with the platform AbortError DOMException', async () => {
@@ -95,18 +95,18 @@ describe('FrameScheduler', () => {
 			const scheduler = new FrameScheduler()
 			const controller = new AbortController()
 			const reason = new Error('aborted before deadline')
-			let resolved = false
+			const resolved = new WorkflowObservation(false)
 
 			const pending = scheduler.delay(40, { signal: controller.signal })
 			pending.then(
-				() => (resolved = true),
+				() => (resolved.value = true),
 				() => {},
 			)
 			controller.abort(reason)
 			await expect(pending).rejects.toBe(reason)
 
 			await waitForDelay(50)
-			expect(resolved).toBe(false)
+			expect(resolved.value).toBe(false)
 		})
 
 		it('a completed delay leaves caller-owned listener methods untouched', async () => {

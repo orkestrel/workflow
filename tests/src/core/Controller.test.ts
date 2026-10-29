@@ -1,21 +1,8 @@
-import type { ControllerInterface } from '@src/core'
 import { describe, expect, it } from 'vitest'
 import { createAbort } from '@orkestrel/abort'
 import { createRecorder, waitForDelay } from '@orkestrel/test'
 import { Controller } from '../../../src/core/Controller.js'
-
-// Build a Controller the way the Runner does — over a real `Abort` whose signal is
-// the unit's cancellation. `signal` is that abort's signal (in the Runner it is the
-// queue attempt's signal, which ANY-includes this abort), so `abort()` fires it.
-function buildController<TInput, TResult>(
-	input: TInput,
-	spawn: (input: TInput) => Promise<TResult> = () => Promise.reject(new Error('no spawn')),
-): { readonly controller: ControllerInterface<TInput, TResult>; readonly id: string } {
-	const id = crypto.randomUUID()
-	const abort = createAbort()
-	const controller = new Controller<TInput, TResult>(id, input, abort, abort.signal, spawn)
-	return { controller, id }
-}
+import { buildController } from '../../setup.js'
 
 describe('Controller', () => {
 	it('reflects the unit id, input, signal, and aborted state', () => {

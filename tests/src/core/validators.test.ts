@@ -1,3 +1,4 @@
+import { EVERY_STATUS, INVALID_LIFECYCLE_VALUES } from '../../setup.js'
 import type { WorkflowRegistry } from '@src/core'
 import {
 	createWorkflow,
@@ -13,7 +14,12 @@ import {
 	recoverWorkflowSnapshot,
 	scanSnapshotContext,
 } from '@src/core'
-import { INVALID_TASK_ACTIVITIES } from '../../setup.js'
+import {
+	INVALID_TASK_ACTIVITIES,
+	WorkflowObservation,
+	buildWorkflowClaim,
+	buildActivityStamp,
+} from '../../setup.js'
 import { describe, expect, it } from 'vitest'
 
 describe('task activity validators', () => {
@@ -64,29 +70,22 @@ describe('task activity validators', () => {
 	})
 
 	it('captures shifting getters once instead of validating one value and storing another', () => {
-		let reads = 0
-		const operation = {
-			get id() {
-				reads += 1
-				return reads === 1 ? 'stable' : ''
-			},
-			name: 'Operation',
-			started: 0,
-		}
+		const reads = new WorkflowObservation(0)
+		const operation = buildWorkflowClaim(reads)
 		expect(isTaskActivityInput({ operations: [operation] })).toBe(true)
-		expect(reads).toBe(1)
+		expect(reads.value).toBe(1)
 
-		let updatedReads = 0
-		const activity = {
-			operations: [],
-			constraints: [],
-			get updated() {
-				updatedReads += 1
-				return updatedReads === 1 ? 1 : Number.NaN
+		const updatedReads = new WorkflowObservation(0)
+		const activity = buildActivityStamp(
+			() => {
+				updatedReads.value += 1
+				return updatedReads.value === 1 ? 1 : Number.NaN
 			},
-		}
+			[],
+			[],
+		)
 		expect(isTaskActivity(activity)).toBe(true)
-		expect(updatedReads).toBe(1)
+		expect(updatedReads.value).toBe(1)
 	})
 })
 
@@ -127,19 +126,13 @@ describe('snapshot logical leaves', () => {
 		expect(isWorkflowSnapshot(withoutCreated)).toBe(false)
 	})
 
-	it.each(['pending', 'running', 'completed', 'failed', 'skipped', 'stopped'])(
-		'narrows lifecycle status %s',
-		(status) => {
-			expect(isLifecycleStatus(status)).toBe(true)
-		},
-	)
+	it.each(EVERY_STATUS)('narrows lifecycle status %s', (status) => {
+		expect(isLifecycleStatus(status)).toBe(true)
+	})
 
-	it.each([undefined, null, '', 'complete', 1, {}, []])(
-		'rejects non-lifecycle value %#',
-		(value) => {
-			expect(isLifecycleStatus(value)).toBe(false)
-		},
-	)
+	it.each(INVALID_LIFECYCLE_VALUES)('rejects non-lifecycle value %#', (value) => {
+		expect(isLifecycleStatus(value)).toBe(false)
+	})
 
 	it('validates exact normalized task failures', () => {
 		expect(isTaskFailure({ origin: 'handler', message: 'failed' })).toBe(true)
@@ -385,18 +378,18 @@ describe('snapshot logical leaves', () => {
 				},
 			],
 		}).snapshot()
-		let reads = 0
+		const reads = new WorkflowObservation(0)
 		const functions: WorkflowRegistry = {}
 		Object.defineProperty(functions, 'work', {
 			configurable: true,
 			get: () => {
-				reads += 1
+				reads.value += 1
 				return () => null
 			},
 		})
 
 		expect(hasWorkflowHandlers(named, functions)).toBe(true)
-		expect(reads).toBe(1)
+		expect(reads.value).toBe(1)
 
 		Object.defineProperty(functions, 'work', { configurable: true, value: 'not callable' })
 		expect(hasWorkflowHandlers(named, functions)).toBe(false)

@@ -1,5 +1,5 @@
 import type { SchedulerInterface, SchedulerOptions } from './types.js'
-import { delayHost } from './helpers.js'
+import { createHostDelay } from './factories.js'
 
 /**
  * Implements the safe cross-environment cooperative-yield default — a {@link SchedulerInterface}
@@ -18,7 +18,7 @@ import { delayHost } from './helpers.js'
  *   rendering run — it only defers within the current task. A zero-delay timer is
  *   the correct cross-environment "give the host a turn".
  * - **Abort-aware.** A pending `yield` / `delay` rejects with `signal.reason` exactly.
- *   {@link delayHost} links an owned settlement composite to the caller before arming
+ *   {@link createHostDelay} links an owned settlement composite to the caller before arming
  *   the timer, so pre-abort schedules nothing, caller signal method mutation is harmless,
  *   cancellation clears the handle, and native first-settlement wins exactly once.
  * - **Priority is accepted but uniform.** `options.priority` is part of the
@@ -42,7 +42,7 @@ export class Scheduler implements SchedulerInterface {
 	 * which would resume before the host regains control).
 	 */
 	yield(options?: SchedulerOptions): Promise<void> {
-		return delayHost(0, options?.signal)
+		return createHostDelay(0, options?.signal)
 	}
 
 	/**
@@ -55,6 +55,6 @@ export class Scheduler implements SchedulerInterface {
 	 * host turn rather than throwing.
 	 */
 	delay(ms: number, options?: SchedulerOptions): Promise<void> {
-		return delayHost(ms, options?.signal)
+		return createHostDelay(ms, options?.signal)
 	}
 }

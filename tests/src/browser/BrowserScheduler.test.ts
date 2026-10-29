@@ -2,7 +2,7 @@ import type { SchedulerPriority } from '@src/core'
 import { BrowserScheduler } from '@src/browser'
 import { describe, expect, it } from 'vitest'
 import { waitForDelay } from '@orkestrel/test'
-import { instrumentSignal } from '../../setup.js'
+import { instrumentSignal, WorkflowObservation } from '../../setup.js'
 
 // BrowserScheduler — the browser-native cooperative-yield backend, run in REAL headless
 // Chromium (do not mock a browser API the browser has). Chromium ships the
@@ -27,15 +27,15 @@ describe('BrowserScheduler', () => {
 	describe('yield', () => {
 		it('resolves — the real postTask callback fires and the continuation runs after the current task', async () => {
 			const scheduler = new BrowserScheduler()
-			let resumed = false
+			const resumed = new WorkflowObservation(false)
 
 			const pending = scheduler.yield().then(() => {
-				resumed = true
+				resumed.value = true
 			})
-			expect(resumed).toBe(false) // not synchronously
+			expect(resumed.value).toBe(false) // not synchronously
 
 			await pending
-			expect(resumed).toBe(true)
+			expect(resumed.value).toBe(true)
 		})
 
 		it('accepts every priority and resolves the same (the postTask priority mapping)', async () => {
@@ -90,19 +90,19 @@ describe('BrowserScheduler', () => {
 		it('aborting a pending yield cancels the task and is inert thereafter', async () => {
 			const scheduler = new BrowserScheduler()
 			const controller = new AbortController()
-			let settled = 0
+			const settled = new WorkflowObservation(0)
 
 			const pending = scheduler.yield({ signal: controller.signal }).then(
-				() => (settled += 1),
-				() => (settled += 1),
+				() => (settled.value += 1),
+				() => (settled.value += 1),
 			)
 			controller.abort(new Error('cut'))
 			await pending
-			expect(settled).toBe(1)
+			expect(settled.value).toBe(1)
 
 			// Wait well past when the (cancelled) task would have run — it settles only once.
 			await waitForDelay(20)
-			expect(settled).toBe(1)
+			expect(settled.value).toBe(1)
 		})
 	})
 
@@ -127,11 +127,11 @@ describe('BrowserScheduler', () => {
 			const scheduler = new BrowserScheduler()
 			const controller = new AbortController()
 			const reason = new Error('aborted before deadline')
-			let resolved = false
+			const resolved = new WorkflowObservation(false)
 
 			const pending = scheduler.delay(40, { signal: controller.signal })
 			pending.then(
-				() => (resolved = true),
+				() => (resolved.value = true),
 				() => {},
 			)
 			controller.abort(reason)
@@ -139,7 +139,7 @@ describe('BrowserScheduler', () => {
 
 			// Past the original deadline, the cleared timer never resolves it.
 			await waitForDelay(50)
-			expect(resolved).toBe(false)
+			expect(resolved.value).toBe(false)
 		})
 
 		it('a completed delay leaves caller-owned listener methods untouched', async () => {

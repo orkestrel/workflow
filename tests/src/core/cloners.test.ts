@@ -1,12 +1,33 @@
+import { FOREIGN_ACTIVITY_VALUES } from '../../setup.js'
 import {
+	cloneTaskProgress,
 	cloneTaskActivity,
 	cloneWorkflowSnapshot,
 	createWorkflow,
 	isWorkflowError,
 } from '@src/core'
 import { captureError } from '@orkestrel/test'
-import { INVALID_TASK_ACTIVITIES } from '../../setup.js'
+import {
+	INVALID_TASK_ACTIVITIES,
+	WorkflowObservation,
+	buildWorkflowClaim,
+	buildActivityStamp,
+} from '../../setup.js'
 import { describe, expect, it } from 'vitest'
+
+describe('cloneTaskProgress', () => {
+	it('copies and freezes a supplied progress frame and preserves absence', () => {
+		const input = { progress: 1, total: 2, message: 'Copy' }
+		const cloned = cloneTaskProgress(input)
+		expect(cloned).toEqual(input)
+		expect(cloned).not.toBe(input)
+		expect(Object.isFrozen(cloned)).toBe(true)
+		expect(cloneTaskProgress(undefined)).toBeUndefined()
+		expect(() => cloneTaskProgress({ progress: 1, extra: true })).toThrow(
+			'task activity contains invalid progress',
+		)
+	})
+})
 
 describe('cloneTaskActivity', () => {
 	it('clones and freezes a complete frame without retaining caller aliases', () => {
@@ -34,17 +55,7 @@ describe('cloneTaskActivity', () => {
 	})
 
 	it('rejects unknown keys and class instances at every activity level', () => {
-		class Activity {
-			readonly operations: readonly unknown[] = []
-		}
-
-		for (const input of [
-			{ operations: [], extra: true },
-			{ progress: { progress: 1, extra: true } },
-			{ operations: [{ id: 'op', name: 'Operation', started: 0, extra: true }] },
-			{ constraints: [{ id: 'constraint', name: 'Constraint', started: 0, extra: true }] },
-			new Activity(),
-		]) {
+		for (const input of FOREIGN_ACTIVITY_VALUES) {
 			expect(isWorkflowError(captureError(() => cloneTaskActivity(input, 0)))).toBe(true)
 		}
 	})
@@ -72,38 +83,28 @@ describe('cloneTaskActivity', () => {
 	})
 
 	it('captures shifting values once, rejects reporter stamps, and restores persisted stamps', () => {
-		let idReads = 0
-		const operation = {
-			get id() {
-				idReads += 1
-				return idReads === 1 ? 'stable' : ''
-			},
-			name: 'Operation',
-			started: 0,
-		}
-		let stampedReads = 0
-		const stamped = {
-			operations: [operation],
-			get updated() {
-				stampedReads += 1
-				throw new Error('updated must not be read')
-			},
-		}
+		const idReads = new WorkflowObservation(0)
+		const operation = buildWorkflowClaim(idReads)
+		const stampedReads = new WorkflowObservation(0)
+		const stamped = buildActivityStamp(() => {
+			stampedReads.value += 1
+			throw new Error('updated must not be read')
+		}, [operation])
 		expect(isWorkflowError(captureError(() => cloneTaskActivity(stamped, 5)))).toBe(true)
-		expect(idReads).toBe(0)
-		expect(stampedReads).toBe(0)
+		expect(idReads.value).toBe(0)
+		expect(stampedReads.value).toBe(0)
 
-		let restoredReads = 0
-		const restored = {
-			operations: [],
-			constraints: [],
-			get updated() {
-				restoredReads += 1
-				return restoredReads === 1 ? 7 : Number.NaN
+		const restoredReads = new WorkflowObservation(0)
+		const restored = buildActivityStamp(
+			() => {
+				restoredReads.value += 1
+				return restoredReads.value === 1 ? 7 : Number.NaN
 			},
-		}
+			[],
+			[],
+		)
 		expect(cloneTaskActivity(restored).updated).toBe(7)
-		expect(restoredReads).toBe(1)
+		expect(restoredReads.value).toBe(1)
 	})
 })
 

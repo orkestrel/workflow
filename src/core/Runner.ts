@@ -4,6 +4,7 @@ import type { EmitterInterface } from '@orkestrel/emitter'
 import type { QueueContext, QueueInterface } from '@orkestrel/queue'
 import type { RunnerEventMap, RunnerInterface, RunnerOptions, RunnerUnit } from './types.js'
 import { createAbort } from '@orkestrel/abort'
+import { attempt } from '@orkestrel/contract'
 import { createQueue } from '@orkestrel/queue'
 import { Emitter } from '@orkestrel/emitter'
 import { WorkflowError } from './errors.js'
@@ -314,8 +315,7 @@ export class Runner<TInput, TResult> implements RunnerInterface<TInput, TResult>
 		this.#order.push(id)
 		this.#count += 1
 		if (announce) this.#emitter.emit('spawn', id, parent)
-		let promise: Promise<TResult>
-		try {
+		const queued = attempt(() => {
 			const entry = this.#entries?.(input)
 			const retries = entry?.retries
 			const timeout = entry?.timeout
@@ -323,7 +323,7 @@ export class Runner<TInput, TResult> implements RunnerInterface<TInput, TResult>
 			// a resolver-triggered graceful stop remains never-dispatched stop work; a resolver or
 			// property failure never enters this set and remains a genuine unit failure.
 			this.#queued.add(id)
-			promise = this.#queue.enqueue(
+			return this.#queue.enqueue(
 				{ id, input },
 				{
 					id,
@@ -332,9 +332,8 @@ export class Runner<TInput, TResult> implements RunnerInterface<TInput, TResult>
 					...(timeout === undefined ? {} : { timeout }),
 				},
 			)
-		} catch (error) {
-			promise = Promise.reject(error)
-		}
+		})
+		const promise = queued.success ? queued.value : Promise.reject<TResult>(queued.error)
 		void promise.then(
 			(value) => this.#settle(id, success(value)),
 			(error: unknown) => this.#settle(id, failure(error)),
@@ -459,12 +458,10 @@ export class Runner<TInput, TResult> implements RunnerInterface<TInput, TResult>
 		cleanup: Promise<void>,
 		teardown: boolean,
 	): Promise<void> {
-		let cleanupFailure: Failure<unknown> | undefined
-		try {
-			await cleanup
-		} catch (error) {
-			cleanupFailure = failure(error)
-		}
+		const cleanupFailure = await cleanup.then(
+			() => undefined,
+			(error: unknown) => failure(error),
+		)
 		await this.#waitDrain()
 		if (teardown) this.#emitter.destroy()
 		if (cleanupFailure === undefined) barrier.resolve()

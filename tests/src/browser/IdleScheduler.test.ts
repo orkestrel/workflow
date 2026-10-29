@@ -2,7 +2,7 @@ import type { SchedulerPriority } from '@src/core'
 import { IdleScheduler } from '@src/browser'
 import { describe, expect, it } from 'vitest'
 import { waitForDelay } from '@orkestrel/test'
-import { instrumentSignal } from '../../setup.js'
+import { instrumentSignal, WorkflowObservation } from '../../setup.js'
 
 // IdleScheduler — the idle-time browser cooperative-yield backend, run in REAL headless
 // Chromium where `requestIdleCallback` exists, so `yield` exercises the NATIVE idle path here
@@ -20,15 +20,15 @@ describe('IdleScheduler', () => {
 	describe('yield', () => {
 		it('resolves — the real requestIdleCallback fires, after the current task', async () => {
 			const scheduler = new IdleScheduler()
-			let resumed = false
+			const resumed = new WorkflowObservation(false)
 
 			const pending = scheduler.yield().then(() => {
-				resumed = true
+				resumed.value = true
 			})
-			expect(resumed).toBe(false) // not synchronously
+			expect(resumed.value).toBe(false) // not synchronously
 
 			await pending
-			expect(resumed).toBe(true)
+			expect(resumed.value).toBe(true)
 		})
 
 		it('accepts every priority (a no-op) and resolves the same', async () => {
@@ -53,18 +53,18 @@ describe('IdleScheduler', () => {
 			const scheduler = new IdleScheduler()
 			const controller = new AbortController()
 			const reason = { code: 'CANCELLED' }
-			let resolved = false
+			const resolved = new WorkflowObservation(false)
 
 			const pending = scheduler.yield({ signal: controller.signal })
 			pending.then(
-				() => (resolved = true),
+				() => (resolved.value = true),
 				() => {},
 			)
 			controller.abort(reason)
 			await expect(pending).rejects.toBe(reason)
 
 			await waitForDelay(50)
-			expect(resolved).toBe(false)
+			expect(resolved.value).toBe(false)
 		})
 
 		it('a bare abort() rejects with the platform AbortError DOMException', async () => {
@@ -100,18 +100,18 @@ describe('IdleScheduler', () => {
 			const scheduler = new IdleScheduler()
 			const controller = new AbortController()
 			const reason = new Error('aborted before deadline')
-			let resolved = false
+			const resolved = new WorkflowObservation(false)
 
 			const pending = scheduler.delay(40, { signal: controller.signal })
 			pending.then(
-				() => (resolved = true),
+				() => (resolved.value = true),
 				() => {},
 			)
 			controller.abort(reason)
 			await expect(pending).rejects.toBe(reason)
 
 			await waitForDelay(50)
-			expect(resolved).toBe(false)
+			expect(resolved.value).toBe(false)
 		})
 
 		it('a completed delay leaves caller-owned listener methods untouched', async () => {

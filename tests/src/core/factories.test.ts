@@ -1,10 +1,4 @@
-import type {
-	TaskEventMap,
-	WorkflowDefinition,
-	WorkflowFunction,
-	WorkflowOptions,
-	WorkflowSnapshot,
-} from '@src/core'
+import type { TaskEventMap, WorkflowDefinition, WorkflowOptions, WorkflowSnapshot } from '@src/core'
 import type { TaskEvent } from '../../setup.js'
 import {
 	cloneWorkflowSnapshot,
@@ -23,57 +17,26 @@ import {
 } from '@src/core'
 import { describe, expect, it } from 'vitest'
 import { captureError, createRecorder, createRecorders, waitForDelay } from '@orkestrel/test'
-import { createRecordingScheduler, omitTaskActivity, TASK_EVENTS } from '../../setup.js'
+import {
+	createRecordingScheduler,
+	omitTaskActivity,
+	TASK_EVENTS,
+	createDurabilityRunner,
+	buildFactoryDefinition,
+	FACTORY_RESTORE_FUNCTIONS,
+	FACTORY_SHIFTED_FUNCTIONS,
+	ROUND_TRIP_TIMEOUT_MS,
+	returnWorkflowSeed,
+	WorkflowObservation,
+} from '../../setup.js'
 
 // A workflow runner paced by an INJECTED `createRecordingScheduler` (deterministic,
 // not a mock of the runner — the unit under test runs in full). Per the redesign, the runner
 // itself carries NO `functions` registry — behavior resolution rides `execute`'s options.
-function runner(): ReturnType<typeof createWorkflowRunner> {
-	return createWorkflowRunner({ scheduler: createRecordingScheduler() })
-}
-
-const ROUND_TRIP_TIMEOUT_MS = 30_000
 
 // A fuller definition (two phases, three tasks, a concurrency throttle, an explicit bail) used by
 // the createWorkflow / createRestoredWorkflow / snapshot-trio tests. Every `behavior` is a plain registry-name
 // string resolved through the construction-time registry.
-function localDefinition(overrides: Partial<WorkflowDefinition> = {}): WorkflowDefinition {
-	return {
-		id: 'wf-1',
-		name: 'Release',
-		description: 'Ship a release',
-		bail: false,
-		phases: [
-			{
-				id: 'phase-build',
-				name: 'Build',
-				concurrency: 2,
-				tasks: [
-					{ id: 'task-compile', name: 'Compile', behavior: 'compile', retries: 2, timeout: 500 },
-					{ id: 'task-scan', name: 'Scan', description: 'Security scan', behavior: 'scan' },
-				],
-			},
-			{
-				id: 'phase-review',
-				name: 'Review',
-				tasks: [{ id: 'task-audit', name: 'Audit', behavior: 'audit' }],
-			},
-		],
-		...overrides,
-	}
-}
-
-const RESTORE_FUNCTIONS = {
-	compile: () => null,
-	scan: () => null,
-	audit: () => null,
-}
-
-const SHIFTED_FUNCTIONS = {
-	compile: () => 'shifted compile',
-	scan: () => 'shifted scan',
-	audit: () => 'shifted audit',
-}
 
 // ── createWorkflowContract — the anti-drift spine (four-way parity) ──
 
@@ -93,7 +56,7 @@ describe('createWorkflowContract — accepts valid definitions', () => {
 	const contract = createWorkflowContract()
 
 	it('is() accepts a full valid definition', () => {
-		expect(contract.is(localDefinition())).toBe(true)
+		expect(contract.is(buildFactoryDefinition())).toBe(true)
 	})
 
 	it('is() accepts a minimal definition (optionals omitted)', () => {
@@ -106,19 +69,21 @@ describe('createWorkflowContract — accepts valid definitions', () => {
 	})
 
 	it('is() accepts an empty-phase and empty-task workflow', () => {
-		expect(contract.is(localDefinition({ phases: [] }))).toBe(true)
-		expect(contract.is(localDefinition({ phases: [{ id: 'p', name: 'P', tasks: [] }] }))).toBe(true)
+		expect(contract.is(buildFactoryDefinition({ phases: [] }))).toBe(true)
+		expect(
+			contract.is(buildFactoryDefinition({ phases: [{ id: 'p', name: 'P', tasks: [] }] })),
+		).toBe(true)
 	})
 
 	it('is() accepts a task with an omitted `behavior` (no behavior reference)', () => {
-		const definition = localDefinition({
+		const definition = buildFactoryDefinition({
 			phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T' }] }],
 		})
 		expect(contract.is(definition)).toBe(true)
 	})
 
 	it('parse() returns the value unchanged for a valid definition', () => {
-		const definition = localDefinition()
+		const definition = buildFactoryDefinition()
 		expect(contract.parse(definition)).toEqual(definition)
 	})
 })
@@ -198,12 +163,12 @@ describe('createWorkflowContract — generate / round-trip parity', () => {
 	})
 
 	it('generate() is deterministic for a fixed seed', () => {
-		const seed = () => 0.42
+		const seed = returnWorkflowSeed
 		expect(contract.generate(seed)).toEqual(contract.generate(seed))
 	})
 
 	it('a guard-valid input is never rejected by the parser (soundness)', () => {
-		const definition = localDefinition()
+		const definition = buildFactoryDefinition()
 		expect(contract.is(definition)).toBe(true)
 		expect(contract.parse(definition)).toEqual(definition)
 	})
@@ -213,11 +178,11 @@ describe('createWorkflowContract — generate / round-trip parity', () => {
 
 describe('createWorkflowTree — the shared construction path', () => {
 	it('builds the same tree createWorkflow builds from the same definition and bag', () => {
-		const definition = localDefinition()
-		const captured = captureWorkflowOptions({ functions: RESTORE_FUNCTIONS })
+		const definition = buildFactoryDefinition()
+		const captured = captureWorkflowOptions({ functions: FACTORY_RESTORE_FUNCTIONS })
 
 		const direct = createWorkflowTree(definition, captured)
-		const through = createWorkflow(definition, { functions: RESTORE_FUNCTIONS })
+		const through = createWorkflow(definition, { functions: FACTORY_RESTORE_FUNCTIONS })
 
 		// The `created` / `updated` stamps are wall-clock, so the structural payload is what the two
 		// paths must agree on.
@@ -233,8 +198,8 @@ describe('createWorkflowTree — the shared construction path', () => {
 	it('takes the definition policy when the override is undefined', () => {
 		const captured = captureWorkflowOptions({})
 
-		const graceful = createWorkflowTree(localDefinition({ bail: false }), captured)
-		const halting = createWorkflowTree(localDefinition({ bail: true }), captured)
+		const graceful = createWorkflowTree(buildFactoryDefinition({ bail: false }), captured)
+		const halting = createWorkflowTree(buildFactoryDefinition({ bail: true }), captured)
 
 		expect(graceful.bail).toBe(false)
 		expect(halting.bail).toBe(true)
@@ -243,7 +208,7 @@ describe('createWorkflowTree — the shared construction path', () => {
 	it('seeds the override onto the workflow and every inheriting phase', () => {
 		const captured = captureWorkflowOptions({ bail: true })
 
-		const workflow = createWorkflowTree(localDefinition({ bail: false }), captured)
+		const workflow = createWorkflowTree(buildFactoryDefinition({ bail: false }), captured)
 
 		expect(workflow.bail).toBe(true)
 		expect(workflow.phases.phases().map((phase) => phase.bail)).toEqual([true, true])
@@ -251,7 +216,7 @@ describe('createWorkflowTree — the shared construction path', () => {
 
 	it('leaves a phase declaring its own policy alone', () => {
 		const captured = captureWorkflowOptions({})
-		const definition = localDefinition({
+		const definition = buildFactoryDefinition({
 			bail: false,
 			phases: [
 				{ id: 'strict', name: 'Strict', bail: true, tasks: [] },
@@ -265,19 +230,19 @@ describe('createWorkflowTree — the shared construction path', () => {
 	})
 
 	it('resolves each task handler from the bag it is handed', () => {
-		const captured = captureWorkflowOptions({ functions: RESTORE_FUNCTIONS })
+		const captured = captureWorkflowOptions({ functions: FACTORY_RESTORE_FUNCTIONS })
 
-		const workflow = createWorkflowTree(localDefinition(), captured)
+		const workflow = createWorkflowTree(buildFactoryDefinition(), captured)
 
 		expect(workflow.phase('phase-build')?.task('task-compile')?.handler).toBe(
-			RESTORE_FUNCTIONS.compile,
+			FACTORY_RESTORE_FUNCTIONS.compile,
 		)
 	})
 })
 
 describe('createWorkflow — builds the live tree (the W-b factory)', () => {
 	it('brings the definition to life with lineage + the definition bail', () => {
-		const workflow = createWorkflow(localDefinition())
+		const workflow = createWorkflow(buildFactoryDefinition())
 		expect(workflow.id).toBe('wf-1')
 		expect(workflow.bail).toBe(false)
 		expect(workflow.phases.phases().map((phase) => phase.id)).toEqual([
@@ -294,48 +259,50 @@ describe('createWorkflow — builds the live tree (the W-b factory)', () => {
 	})
 
 	it('resolves bail from options, then the definition, then the graceful default', () => {
-		expect(createWorkflow(localDefinition({ bail: true })).bail).toBe(true)
-		expect(createWorkflow(localDefinition({ bail: true }), { bail: false }).bail).toBe(false)
+		expect(createWorkflow(buildFactoryDefinition({ bail: true })).bail).toBe(true)
+		expect(createWorkflow(buildFactoryDefinition({ bail: true }), { bail: false }).bail).toBe(false)
 		const noBail: WorkflowDefinition = { id: 'w', name: 'W', phases: [] }
 		expect(createWorkflow(noBail).bail).toBe(false)
 	})
 
 	it('captures a shifting bail accessor once so root and inherited phase policy agree', () => {
-		let reads = 0
+		const reads = new WorkflowObservation(0)
 		const options: WorkflowOptions = {}
 		Object.defineProperty(options, 'bail', {
 			get: () => {
-				reads += 1
-				return reads === 1
+				reads.value += 1
+				return reads.value === 1
 			},
 		})
 
-		const workflow = createWorkflow(localDefinition({ bail: false }), options)
+		const workflow = createWorkflow(buildFactoryDefinition({ bail: false }), options)
 
-		expect(reads).toBe(1)
+		expect(reads.value).toBe(1)
 		expect(workflow.bail).toBe(true)
 		expect(workflow.phases.phases().map((phase) => phase.bail)).toEqual([true, true])
 	})
 
 	it('captures a shifting functions registry once and resolves every fresh handler from it', () => {
-		let reads = 0
+		const reads = new WorkflowObservation(0)
 		const options: WorkflowOptions = {}
 		Object.defineProperty(options, 'functions', {
 			get: () => {
-				reads += 1
-				return reads === 1 ? RESTORE_FUNCTIONS : SHIFTED_FUNCTIONS
+				reads.value += 1
+				return reads.value === 1 ? FACTORY_RESTORE_FUNCTIONS : FACTORY_SHIFTED_FUNCTIONS
 			},
 		})
 
-		const workflow = createWorkflow(localDefinition(), options)
+		const workflow = createWorkflow(buildFactoryDefinition(), options)
 
-		expect(reads).toBe(1)
+		expect(reads.value).toBe(1)
 		expect(workflow.phase('phase-build')?.task('task-compile')?.handler).toBe(
-			RESTORE_FUNCTIONS.compile,
+			FACTORY_RESTORE_FUNCTIONS.compile,
 		)
-		expect(workflow.phase('phase-build')?.task('task-scan')?.handler).toBe(RESTORE_FUNCTIONS.scan)
+		expect(workflow.phase('phase-build')?.task('task-scan')?.handler).toBe(
+			FACTORY_RESTORE_FUNCTIONS.scan,
+		)
 		expect(workflow.phase('phase-review')?.task('task-audit')?.handler).toBe(
-			RESTORE_FUNCTIONS.audit,
+			FACTORY_RESTORE_FUNCTIONS.audit,
 		)
 	})
 
@@ -343,18 +310,22 @@ describe('createWorkflow — builds the live tree (the W-b factory)', () => {
 		'PROGRAMMATIC-FIRST: a task whose `behavior` resolves against `options.functions` runs the real handler at construction time (through a live runner)',
 		async () => {
 			const seen = createRecorder<readonly [string]>()
-			const compile: WorkflowFunction = (controller) => {
-				seen.handler(controller.task.id)
-				return 'built'
-			}
-			const workflow = createWorkflow(localDefinition(), {
-				functions: { compile, scan: () => 's', audit: () => 'a' },
+
+			const workflow = createWorkflow(buildFactoryDefinition(), {
+				functions: {
+					compile: (controller) => {
+						seen.handler(controller.task.id)
+						return 'built'
+					},
+					scan: () => 's',
+					audit: () => 'a',
+				},
 			})
 			expect(workflow.phase('phase-build')?.task('task-compile')?.handler).toBeDefined()
 			// The retries/timeout definition fields carried onto the live leaf (V3/V4 persisted fields).
 			expect(workflow.phase('phase-build')?.task('task-compile')?.retries).toBe(2)
 			expect(workflow.phase('phase-build')?.task('task-compile')?.timeout).toBe(500)
-			const result = await runner().execute(workflow)
+			const result = await createDurabilityRunner().execute(workflow)
 			expect(result.status).toBe('completed')
 			expect([...seen.calls].map((c) => c[0])).toEqual(['task-compile'])
 		},
@@ -362,7 +333,7 @@ describe('createWorkflow — builds the live tree (the W-b factory)', () => {
 	)
 
 	it('an absent or unresolved `behavior` has no handler, with execution distinguishing the two', () => {
-		const workflow = createWorkflow(localDefinition(), { functions: {} })
+		const workflow = createWorkflow(buildFactoryDefinition(), { functions: {} })
 		expect(workflow.phase('phase-build')?.task('task-compile')?.handler).toBeUndefined()
 	})
 })
@@ -371,36 +342,38 @@ describe('createWorkflow — builds the live tree (the W-b factory)', () => {
 
 describe('createRestoredWorkflow / cloneWorkflowSnapshot — the round-trip inverse', () => {
 	it('captures a shifting functions registry once for every restored handler', () => {
-		let reads = 0
+		const reads = new WorkflowObservation(0)
 		const options: WorkflowOptions = {}
 		Object.defineProperty(options, 'functions', {
 			get: () => {
-				reads += 1
-				return reads === 1 ? RESTORE_FUNCTIONS : SHIFTED_FUNCTIONS
+				reads.value += 1
+				return reads.value === 1 ? FACTORY_RESTORE_FUNCTIONS : FACTORY_SHIFTED_FUNCTIONS
 			},
 		})
-		const snapshot = createWorkflow(localDefinition()).snapshot()
+		const snapshot = createWorkflow(buildFactoryDefinition()).snapshot()
 
 		const restored = createRestoredWorkflow(snapshot, options)
 
-		expect(reads).toBe(1)
+		expect(reads.value).toBe(1)
 		expect(restored.phase('phase-build')?.task('task-compile')?.handler).toBe(
-			RESTORE_FUNCTIONS.compile,
+			FACTORY_RESTORE_FUNCTIONS.compile,
 		)
-		expect(restored.phase('phase-build')?.task('task-scan')?.handler).toBe(RESTORE_FUNCTIONS.scan)
+		expect(restored.phase('phase-build')?.task('task-scan')?.handler).toBe(
+			FACTORY_RESTORE_FUNCTIONS.scan,
+		)
 		expect(restored.phase('phase-review')?.task('task-audit')?.handler).toBe(
-			RESTORE_FUNCTIONS.audit,
+			FACTORY_RESTORE_FUNCTIONS.audit,
 		)
 	})
 
 	it('createRestoredWorkflow rebuilds an equivalent tree from a snapshot', () => {
-		const workflow = createWorkflow(localDefinition({ bail: true }))
+		const workflow = createWorkflow(buildFactoryDefinition({ bail: true }))
 		const compile = workflow.phase('phase-build')?.task('task-compile')
 		compile?.start()
 		compile?.complete('built')
 		const restored = createRestoredWorkflow(workflow.snapshot(), {
 			bail: true,
-			functions: RESTORE_FUNCTIONS,
+			functions: FACTORY_RESTORE_FUNCTIONS,
 		})
 		expect(restored.snapshot()).toEqual(workflow.snapshot())
 		expect(restored.phase('phase-build')?.task('task-compile')?.status).toBe('completed')
@@ -411,18 +384,23 @@ describe('createRestoredWorkflow / cloneWorkflowSnapshot — the round-trip inve
 		async () => {
 			const ran = createRecorder<readonly [string]>()
 			const workflow = createWorkflow(
-				localDefinition({
-					phases: [localDefinition().phases[0] ?? { id: 'p', name: 'P', tasks: [] }],
+				buildFactoryDefinition({
+					phases: [buildFactoryDefinition().phases[0] ?? { id: 'p', name: 'P', tasks: [] }],
 				}),
 			)
 			const snapshot = workflow.snapshot()
-			const compile: WorkflowFunction = (controller) => {
-				ran.handler(controller.task.id)
-				return 'built-again'
-			}
-			const restored = createRestoredWorkflow(snapshot, { functions: { compile, scan: () => 's' } })
+
+			const restored = createRestoredWorkflow(snapshot, {
+				functions: {
+					compile: (controller) => {
+						ran.handler(controller.task.id)
+						return 'built-again'
+					},
+					scan: () => 's',
+				},
+			})
 			expect(restored.phase('phase-build')?.task('task-compile')?.handler).toBeDefined()
-			const result = await runner().execute(restored)
+			const result = await createDurabilityRunner().execute(restored)
 			expect(result.status).toBe('completed')
 			expect([...ran.calls].map((c) => c[0])).toEqual(['task-compile'])
 			expect(restored.phase('phase-build')?.task('task-compile')?.result?.result).toEqual({
@@ -434,15 +412,15 @@ describe('createRestoredWorkflow / cloneWorkflowSnapshot — the round-trip inve
 	)
 
 	it('createRestoredWorkflow preserves an unresolved behavior reference for inspection', () => {
-		const snapshot = createWorkflow(localDefinition()).snapshot()
+		const snapshot = createWorkflow(buildFactoryDefinition()).snapshot()
 		const restored = createRestoredWorkflow(snapshot)
 		expect(restored.phase('phase-build')?.task('task-compile')?.behavior).toBe('compile')
 		expect(restored.phase('phase-build')?.task('task-compile')?.handler).toBeUndefined()
-		expect(() => runner().execute(restored)).toThrow(/not drivable/)
+		expect(() => createDurabilityRunner().execute(restored)).toThrow(/not drivable/)
 	})
 
 	it("SNAPSHOT TRIO round-trip: a definition's behavior/retries/timeout survive definitionToSnapshot → live tree → snapshot() → restore", () => {
-		const definition = localDefinition()
+		const definition = buildFactoryDefinition()
 		const snapshot = definitionToSnapshot(definition, false)
 		const compileSnap = snapshot.phases[0]?.tasks[0]
 		expect(compileSnap?.behavior).toBe('compile')
@@ -456,7 +434,7 @@ describe('createRestoredWorkflow / cloneWorkflowSnapshot — the round-trip inve
 		expect(liveCompile?.retries).toBe(2)
 		expect(liveCompile?.timeout).toBe(500)
 
-		const restored = createRestoredWorkflow(liveSnapshot, { functions: RESTORE_FUNCTIONS })
+		const restored = createRestoredWorkflow(liveSnapshot, { functions: FACTORY_RESTORE_FUNCTIONS })
 		const restoredCompile = restored.phase('phase-build')?.task('task-compile')
 		expect(restoredCompile?.behavior).toBe('compile')
 		expect(restoredCompile?.retries).toBe(2)
@@ -464,7 +442,7 @@ describe('createRestoredWorkflow / cloneWorkflowSnapshot — the round-trip inve
 	})
 
 	it('cloneWorkflowSnapshot passes a valid snapshot and rejects an invalid status', () => {
-		const snapshot = createWorkflow(localDefinition()).snapshot()
+		const snapshot = createWorkflow(buildFactoryDefinition()).snapshot()
 		expect(captureError(() => cloneWorkflowSnapshot(snapshot))).toBeUndefined()
 		const broken = { ...snapshot, status: 'bogus' }
 		const error = captureError(() => cloneWorkflowSnapshot(JSON.parse(JSON.stringify(broken))))
@@ -522,7 +500,7 @@ describe('createRestoredWorkflow / cloneWorkflowSnapshot — the round-trip inve
 
 	it('round-trips the completed override used by an executed no-op workflow', async () => {
 		const store = createMemoryWorkflowStore()
-		const result = await runner().execute(
+		const result = await createDurabilityRunner().execute(
 			{
 				id: 'empty',
 				name: 'Empty',
@@ -540,7 +518,7 @@ describe('createRestoredWorkflow / cloneWorkflowSnapshot — the round-trip inve
 	})
 
 	it('rejects a hostile completed override on work or a non-pending derived tree', () => {
-		const pending = createWorkflow(localDefinition()).snapshot()
+		const pending = createWorkflow(buildFactoryDefinition()).snapshot()
 		expect(
 			isWorkflowError(
 				captureError(() =>
@@ -570,7 +548,7 @@ describe('createRestoredWorkflow / cloneWorkflowSnapshot — the round-trip inve
 	})
 
 	it('enforces pending/running/terminal activity consistency and restores without an armed silence timer', async () => {
-		const workflow = createWorkflow(localDefinition())
+		const workflow = createWorkflow(buildFactoryDefinition())
 		const pending = workflow.snapshot()
 		const pendingPhase = pending.phases[0]
 		if (pendingPhase === undefined) throw new Error('expected pending phase snapshot')
@@ -614,7 +592,7 @@ describe('createRestoredWorkflow / cloneWorkflowSnapshot — the round-trip inve
 
 		const restored = createRestoredWorkflow(running, {
 			silence: 10,
-			functions: RESTORE_FUNCTIONS,
+			functions: FACTORY_RESTORE_FUNCTIONS,
 		})
 		const restoredTask = restored.phase('phase-build')?.task('task-compile')
 		if (restoredTask === undefined) throw new Error('expected restored task')
@@ -643,7 +621,7 @@ describe('createRestoredWorkflow / cloneWorkflowSnapshot — the round-trip inve
 			isWorkflowError(captureError(() => cloneWorkflowSnapshot(terminalWithoutActivity))),
 		).toBe(true)
 
-		const failedWorkflow = createWorkflow(localDefinition())
+		const failedWorkflow = createWorkflow(buildFactoryDefinition())
 		const failedTask = failedWorkflow.phase('phase-build')?.task('task-compile')
 		if (failedTask === undefined) throw new Error('expected failed task')
 		failedTask.start()
@@ -669,7 +647,7 @@ describe('createRestoredWorkflow / cloneWorkflowSnapshot — the round-trip inve
 	})
 
 	it('cloneWorkflowSnapshot rejects a PhaseSnapshot with a non-boolean bail (naming the phase)', () => {
-		const snapshot = createWorkflow(localDefinition()).snapshot()
+		const snapshot = createWorkflow(buildFactoryDefinition()).snapshot()
 		const firstPhase = snapshot.phases[0]
 		if (firstPhase === undefined) throw new Error('expected at least one phase')
 		const broken = {
@@ -682,7 +660,7 @@ describe('createRestoredWorkflow / cloneWorkflowSnapshot — the round-trip inve
 	})
 
 	it('cloneWorkflowSnapshot rejects a TaskSnapshot with an empty `behavior`, a negative `retries`, or a fractional `timeout` (naming the task)', () => {
-		const snapshot = createWorkflow(localDefinition()).snapshot()
+		const snapshot = createWorkflow(buildFactoryDefinition()).snapshot()
 		const firstPhase = snapshot.phases[0]
 		if (firstPhase === undefined) throw new Error('expected at least one phase')
 		const firstTask = firstPhase.tasks[0]
@@ -832,19 +810,19 @@ describe('createRunner', () => {
 	})
 
 	it('honours concurrency / retries options end to end', async () => {
-		let attempts = 0
+		const attempts = new WorkflowObservation(0)
 		const created = createRunner<string, string>({
 			concurrency: 2,
 			retries: 1,
 			handler: (controller) => {
 				if (controller.input === 'flaky') {
-					attempts += 1
-					if (attempts < 2) throw new Error('once')
+					attempts.value += 1
+					if (attempts.value < 2) throw new Error('once')
 				}
 				return controller.input.toUpperCase()
 			},
 		})
 		expect(await created.execute(['a', 'flaky', 'b'])).toEqual(['A', 'FLAKY', 'B'])
-		expect(attempts).toBe(2)
+		expect(attempts.value).toBe(2)
 	})
 })

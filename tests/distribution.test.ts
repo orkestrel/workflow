@@ -8,9 +8,10 @@ import type { PlaywrightProviderOptions } from '@vitest/browser-playwright'
 import type { Browser } from 'playwright'
 import type { SpawnSyncReturns } from 'node:child_process'
 import type { TestContext } from 'vitest'
-import { isArray, isObject, isString } from '@orkestrel/contract'
+import { attempt, isArray, isObject, isString } from '@orkestrel/contract'
 import { spawnSync } from 'node:child_process'
 import {
+	cpSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
@@ -37,7 +38,10 @@ const NPM = process.platform === 'win32' ? 'npm.cmd' : 'npm'
 // compiler majors this toolchain supports, and its in-process API is not. It is
 // resolved from the workspace under proof, so a consumer of the packed artifact is
 // checked by the same compiler that workspace's own `check` script runs.
-const TSC = createRequire(join(ROOT, 'package.json')).resolve('typescript/bin/tsc')
+const TSC = join(
+	dirname(createRequire(join(ROOT, 'package.json')).resolve('typescript/package.json')),
+	'bin/tsc',
+)
 // Windows needs a shell to launch a `.cmd`: Node refuses one directly since the
 // batch-argument hardening, and `spawnSync` returns `EINVAL` with a null status
 // rather than an exit code a caller can read. Every following argument is a literal or
@@ -199,10 +203,8 @@ function isNames(value: unknown): value is readonly string[] {
 function isPackageTarget(target: string): boolean {
 	if (!target.startsWith('./')) return false
 	for (const segment of target.slice(2).split(/[\\/]/u)) {
-		let decoded = segment
-		try {
-			decoded = decodeURIComponent(segment)
-		} catch {}
+		const outcome = attempt(() => decodeURIComponent(segment))
+		const decoded = outcome.success ? outcome.value : segment
 		const normalized = decoded.toLowerCase()
 		if (normalized === '.' || normalized === '..' || normalized === 'node_modules') return false
 	}
@@ -290,11 +292,16 @@ function matchesFile(path: string): boolean {
 // the containing condition or fallback list unresolved, so the walk continues.
 function targetToDeclaration(target: string, installed: string): string | undefined {
 	if (!isPackageTarget(target)) return undefined
-	let declaration = target
-	if (target.endsWith('.cjs')) declaration = `${target.slice(0, -4)}.d.cts`
-	else if (target.endsWith('.mjs')) declaration = `${target.slice(0, -4)}.d.mts`
-	else if (target.endsWith('.js')) declaration = `${target.slice(0, -3)}.d.ts`
-	else if (!isDeclaration(target)) return undefined
+	const declaration = target.endsWith('.cjs')
+		? `${target.slice(0, -4)}.d.cts`
+		: target.endsWith('.mjs')
+			? `${target.slice(0, -4)}.d.mts`
+			: target.endsWith('.js')
+				? `${target.slice(0, -3)}.d.ts`
+				: isDeclaration(target)
+					? target
+					: undefined
+	if (declaration === undefined) return undefined
 	return matchesFile(join(installed, declaration)) ? declaration : undefined
 }
 
@@ -326,22 +333,23 @@ function resolveDeclaration(
 // physical nested manifest starts a scope even when it omits `type` or cannot be
 // parsed. A directory at that spelling is not a manifest, so the walk continues.
 function readPackageType(installed: string, target: string): unknown {
-	let directory = dirname(join(installed, target))
-	while (true) {
-		const path = join(directory, 'package.json')
-		if (matchesFile(path)) {
-			try {
-				const manifest = readJson(path)
-				return isRecord(manifest) ? manifest.type : undefined
-			} catch {
-				return undefined
-			}
+	return readDirectoryType(installed, dirname(join(installed, target)))
+}
+
+function readDirectoryType(installed: string, directory: string): unknown {
+	const path = join(directory, 'package.json')
+	if (matchesFile(path)) {
+		try {
+			const manifest = readJson(path)
+			return isRecord(manifest) ? manifest.type : undefined
+		} catch {
+			return undefined
 		}
-		if (directory === installed) return undefined
-		const parent = dirname(directory)
-		if (parent === directory) return undefined
-		directory = parent
 	}
+	if (directory === installed) return undefined
+	const parent = dirname(directory)
+	if (parent === directory) return undefined
+	return readDirectoryType(installed, parent)
 }
 
 function resolvesBrowser(entry: unknown): boolean {
@@ -873,6 +881,54 @@ function requireStage(context: TestContext): Stage {
 }
 
 describe('installed package consumer', () => {
+	it('recognizes branded errors across distinct installed module copies', (context) => {
+		const stage = requireStage(context)
+		const copied = `${stage.installed}-copy`
+		cpSync(stage.installed, copied, { recursive: true })
+		const driver = join(stage.consumer, 'errors.mjs')
+		writeFile(
+			driver,
+			`import assert from 'node:assert/strict'
+import { createRequire } from 'node:module'
+import { pathToFileURL } from 'node:url'
+import { join } from 'node:path'
+const require = createRequire(import.meta.url)
+const copies = [
+	await import(pathToFileURL(join(process.argv[2], 'dist/src/core/index.js')).href),
+	require(join(process.argv[2], 'dist/src/core/index.cjs')),
+	await import(pathToFileURL(join(process.argv[3], 'dist/src/core/index.js')).href),
+]
+assert.equal(new Set(copies.map((copy) => copy.WorkflowError)).size, copies.length)
+for (const source of copies) {
+	const error = new source.WorkflowError('RESTORE', 'fixture', { phase: 'build' })
+	const subclass = new (class extends source.WorkflowError {
+		constructor() {
+			super('RESTORE', 'subclass')
+			this.name = 'DerivedWorkflowError'
+		}
+	})()
+	const brand = Symbol.for('@orkestrel/workflow.WorkflowError')
+	const plain = {}
+	Object.defineProperty(plain, brand, { value: plain })
+	assert.deepEqual(Object.getOwnPropertyDescriptor(error, brand), {
+		value: error, writable: false, enumerable: false, configurable: false,
+	})
+	for (const target of copies) {
+		assert.equal(target.isWorkflowError(error), true)
+		assert.equal(target.isWorkflowError(subclass), true)
+		assert.equal(target.isWorkflowError(Object.assign(new Error('look-alike'), { code: 'RESTORE' })), false)
+		assert.equal(target.isWorkflowError(new Proxy(error, {})), false)
+		assert.equal(target.isWorkflowError(plain), false)
+		assert.equal(target.isWorkflowError(new source.WorkflowError('RESTORE', 'class', new (class {})())), true)
+		assert.equal(target.isWorkflowError(new source.WorkflowError('RESTORE', 'callable', () => {})), true)
+	}
+}
+`,
+		)
+		const result = runNode([driver, stage.installed, copied], stage.consumer)
+		expect({ status: result.status, output: readOutput(result) }).toEqual({ status: 0, output: '' })
+	})
+
 	it('packs one archive and installs it in isolation [requires the registry]', (context) => {
 		const stage = requireStage(context)
 		expect(stage.archives).toHaveLength(1)

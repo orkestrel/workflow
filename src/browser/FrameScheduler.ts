@@ -1,5 +1,5 @@
 import type { SchedulerInterface, SchedulerOptions } from '@src/core'
-import { delayHost, scheduleHost } from '@src/core'
+import { createHostDelay, createHostSchedule } from '@src/core'
 
 /**
  * Implements the frame-aligned {@link SchedulerInterface} — a browser cooperative-yield backend
@@ -13,7 +13,7 @@ import { delayHost, scheduleHost } from '@src/core'
  *   hidden (the host throttles rAF). `delay(ms)` is a real `setTimeout`, unaligned to
  *   frames. `options.priority` is accepted for contract compliance but a no-op — a frame
  *   callback has no priority dimension.
- * - **Abort fidelity is verbatim, with cleanup.** The shared `scheduleHost` lifecycle links
+ * - **Abort fidelity is verbatim, with cleanup.** The shared `createHostSchedule` lifecycle links
  *   an owned settlement composite before requesting a frame, never invokes caller-owned
  *   signal methods, and cancels the native handle when abort wins.
  * - **Event-free.** A pure functional primitive — no Emitter, no events.
@@ -50,14 +50,14 @@ export class FrameScheduler implements SchedulerInterface {
 	 * out-of-domain `ms` resolves on the next host turn rather than throwing.
 	 */
 	delay(ms: number, options?: SchedulerOptions): Promise<void> {
-		return delayHost(ms, options?.signal)
+		return createHostDelay(ms, options?.signal)
 	}
 
 	// === Private
 
-	// The frame request boundary; `scheduleHost` owns cancellation lifecycle.
+	// The frame request boundary; `createHostSchedule` owns cancellation lifecycle.
 	#frame(signal?: AbortSignal): Promise<void> {
-		return scheduleHost((complete) => {
+		return createHostSchedule((complete) => {
 			const handle = requestAnimationFrame(complete)
 			return () => cancelAnimationFrame(handle)
 		}, signal)

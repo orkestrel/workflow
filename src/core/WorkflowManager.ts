@@ -8,7 +8,7 @@ import type {
 	WorkflowSnapshot,
 	WorkflowStoreInterface,
 } from './types.js'
-import { isArray } from '@orkestrel/contract'
+import { attempt, isArray } from '@orkestrel/contract'
 import { cloneWorkflowSnapshot } from './cloners.js'
 import { createWorkflowTree } from './factories.js'
 import { captureWorkflowOptions } from './helpers.js'
@@ -146,13 +146,11 @@ export class WorkflowManager implements WorkflowManagerInterface {
 			// removal from a partial one. Invalidation stays unconditional for every id whatever
 			// the delete reported, so the semantics of an absent id are unchanged. An empty list
 			// reports true vacuously — no id failed.
-			let removed = true
-			for (const id of ids) {
+			return Iterator.from(ids).reduce((removed, id) => {
 				this.#invalidate(id)
 				this.#additions.delete(id)
-				if (!this.#workflows.delete(id)) removed = false
-			}
-			return removed
+				return this.#workflows.delete(id) && removed
+			}, true)
 		}
 		this.#invalidate(ids)
 		this.#additions.delete(ids)
@@ -178,23 +176,19 @@ export class WorkflowManager implements WorkflowManagerInterface {
 			const snapshot = await store.get(id)
 			if (!this.#owns(id, mutation, generation)) return this.#resolve(id, generation)
 			if (snapshot === undefined) return undefined
-			let owned: WorkflowSnapshot
-			try {
-				owned = cloneWorkflowSnapshot(snapshot, id)
-			} catch (error) {
+			const owned = attempt(() => cloneWorkflowSnapshot(snapshot, id))
+			if (!owned.success) {
 				if (!this.#owns(id, mutation, generation)) return this.#resolve(id, generation)
-				throw error
+				throw owned.error
 			}
 			if (!this.#owns(id, mutation, generation)) return this.#resolve(id, generation)
-			let workflow: WorkflowInterface
-			try {
-				workflow = this.#restore(owned)
-			} catch (error) {
+			const workflow = attempt(() => this.#restore(owned.value))
+			if (!workflow.success) {
 				if (!this.#owns(id, mutation, generation)) return this.#resolve(id, generation)
-				throw error
+				throw workflow.error
 			}
 			if (!this.#owns(id, mutation, generation)) return this.#resolve(id, generation)
-			return this.#register(id, workflow, mutation, generation)
+			return this.#register(id, workflow.value, mutation, generation)
 		} finally {
 			this.#releaseHydration(id, lease)
 		}

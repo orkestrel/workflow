@@ -1,6 +1,7 @@
 import type { ContractInterface } from '@orkestrel/contract'
 import type { DriverInterface, TableInterface } from '@orkestrel/database'
 import type {
+	HostScheduleFunction,
 	RunnerInterface,
 	RunnerOptions,
 	SchedulerInterface,
@@ -32,6 +33,72 @@ import { Workflow } from './Workflow.js'
 import { WorkflowManager } from './WorkflowManager.js'
 import { WorkflowRunner } from './WorkflowRunner.js'
 import { Runner } from './Runner.js'
+import { HostSchedule } from './HostSchedule.js'
+
+/**
+ * Schedules one cancellable host operation behind an owned settlement signal.
+ *
+ * @remarks
+ * A defined `signal` that is not a native `AbortSignal` is refused before anything is armed, as a
+ * rejected promise carrying a {@link import('./errors.js').WorkflowError} with the `SCHEDULE` code.
+ * Rejecting rather than throwing keeps every caller on one settlement path, so a backend never has
+ * to guard the call itself.
+ *
+ * The guard is necessary but not sufficient, so linking stays contained. A `Proxy` over a native
+ * signal passes the guard and can still make linking throw from a trap, and that escape would be
+ * synchronous — the one shape every caller here is built not to expect. Containment turns it into
+ * the same `SCHEDULE` rejection, so setup has exactly one failure shape however hostile the input.
+ *
+ * The completion and failure paths each own an {@link AbortController}; their native composite is
+ * linked to the optional caller signal before `start` can arm host work. Scheduler backends attach
+ * only to that safe composite, so caller mutation of `addEventListener` or `removeEventListener`
+ * cannot strand the operation. The first completion resolves, the first host failure rejects with
+ * its exact value, and caller abort rejects with its exact linked reason. Caller abort and host
+ * failure cancel an armed handle; synchronous settlement also cancels the handle immediately after
+ * `start` returns it. Cancellation is secondary cleanup: if its closure throws, the already-winning
+ * completion, exact host failure, or exact caller reason still settles without escape or replacement.
+ *
+ * @param start - Arm host work and return its cancellation closure
+ * @param signal - Optional caller cancellation signal
+ * @returns A promise settled exactly once by an invalid-signal refusal, completion, host failure,
+ *   or caller abort
+ */
+export function createHostSchedule(
+	start: HostScheduleFunction,
+	signal?: AbortSignal,
+): Promise<void> {
+	return new HostSchedule(start, signal).promise
+}
+
+/**
+ * Schedules the shared host timer boundary every scheduler backend resumes from.
+ *
+ * @remarks
+ * The one `setTimeout` / `clearTimeout` boundary in the package: the cross-environment
+ * {@link import('./Scheduler.js').Scheduler}, both Node primitives, and every browser backend's
+ * `delay` and macrotask fallback route here, so the timer is armed and cleared in one place. It
+ * composes {@link createHostSchedule}, which owns listener safety, the cancellation race, the exact
+ * caller reason, and once-only settlement. It does not validate `ms`: the value passes straight to
+ * the host `setTimeout`, which clamps a negative value or `NaN` to about zero, so an
+ * out-of-domain `ms` resumes on the next host turn rather than throwing. Pass a non-negative
+ * finite `ms`.
+ *
+ * @param ms - The milliseconds to wait before resuming
+ * @param signal - Optional caller cancellation signal
+ * @returns A promise that resolves after `ms`, or rejects with the caller's exact abort reason
+ *
+ * @example
+ * ```ts
+ * const controller = new AbortController()
+ * await createHostDelay(0, controller.signal) // a real macrotask host turn
+ * ```
+ */
+export function createHostDelay(ms: number, signal?: AbortSignal): Promise<void> {
+	return createHostSchedule((complete) => {
+		const handle = setTimeout(complete, ms)
+		return () => clearTimeout(handle)
+	}, signal)
+}
 
 // Workflow contract factory — compiles the workflow shape (shapers.ts) into the
 // four lockstep outputs (JSON Schema + guard + parser + generator) and types the

@@ -1,21 +1,15 @@
-import type {
-	WorkflowFunction,
-	WorkflowInterface,
-	WorkflowManagerInterface,
-	WorkflowRegistry,
-	WorkflowSnapshot,
-	WorkflowStoreInterface,
-} from '@src/core'
-import { createMemoryDriver } from '@orkestrel/database'
 import {
-	Workflow,
-	createDatabaseWorkflowStore,
-	createMemoryWorkflowStore,
-	createWorkflowManager,
-	createWorkflowRunner,
-} from '@src/core'
+	WORKFLOW_STORE_CASES,
+	RELEASE_FUNCTIONS,
+	WorkflowStoreBoundary,
+	buildReleaseDefinition,
+	WorkflowObservation,
+	buildCompileRegistry,
+	buildWorkflowStore,
+} from '../../setup.js'
+import type { WorkflowInterface, WorkflowManagerInterface, WorkflowSnapshot } from '@src/core'
+import { Workflow, createWorkflowManager, createWorkflowRunner } from '@src/core'
 import { describe, expect, it } from 'vitest'
-import { RELEASE_FUNCTIONS, WorkflowStoreBoundary, buildReleaseDefinition } from '../../setup.js'
 
 // WorkflowManager (`createWorkflowManager`) is the additive registry over the workflow
 // layer mirroring the `@orkestrel/agent` line's ConversationManager / WorkspaceManager: an
@@ -177,28 +171,29 @@ describe('WorkflowManager — coordinated durable access', () => {
 
 	it('reserves a same-id open before a synchronous store read can reenter', async () => {
 		const snapshot = createWorkflowManager().add(buildReleaseDefinition('sync-open')).snapshot()
-		const managers: WorkflowManagerInterface[] = []
-		let reentrant: Promise<WorkflowInterface | undefined> | undefined
-		let reads = 0
-		const store: WorkflowStoreInterface = {
+		const managers = new WorkflowObservation<WorkflowManagerInterface | undefined>(undefined)
+		const reentrant = new WorkflowObservation<Promise<WorkflowInterface | undefined> | undefined>(
+			undefined,
+		)
+		const reads = new WorkflowObservation(0)
+		const store = buildWorkflowStore({
 			get: (id) => {
-				reads += 1
-				const current = managers[0]
+				reads.value += 1
+				const current = managers.value
 				if (current === undefined) throw new Error('expected manager fixture')
-				reentrant = current.open(id)
+				reentrant.value = current.open(id)
 				return Promise.resolve(snapshot)
 			},
-			set: () => Promise.resolve(),
 			delete: () => Promise.resolve(),
-		}
+		})
 		const manager = createWorkflowManager({ store })
-		managers.push(manager)
+		managers.value = manager
 
 		const opening = manager.open('sync-open')
 		await Promise.resolve()
 
-		expect(reentrant).toBe(opening)
-		expect(reads).toBe(1)
+		expect(reentrant.value).toBe(opening)
+		expect(reads.value).toBe(1)
 		expect(await opening).toBe(manager.workflow('sync-open'))
 	})
 
@@ -223,11 +218,11 @@ describe('WorkflowManager — coordinated durable access', () => {
 		const store = new WorkflowStoreBoundary([read])
 		const manager = createWorkflowManager({ store })
 		const snapshot = createWorkflowManager().add(buildReleaseDefinition('clone-add')).snapshot()
-		let added: WorkflowInterface | undefined
+		const added = new WorkflowObservation<WorkflowInterface | undefined>(undefined)
 		const hostile = new Proxy(snapshot, {
 			getOwnPropertyDescriptor: (target, property) => {
 				if (property === 'id') {
-					added = manager.add({ id: 'clone-add', name: 'Added', phases: [] })
+					added.value = manager.add({ id: 'clone-add', name: 'Added', phases: [] })
 				}
 				return Reflect.getOwnPropertyDescriptor(target, property)
 			},
@@ -236,8 +231,8 @@ describe('WorkflowManager — coordinated durable access', () => {
 		const opening = manager.open('clone-add')
 		read.resolve(hostile)
 
-		expect(await opening).toBe(added)
-		expect(manager.workflow('clone-add')).toBe(added)
+		expect(await opening).toBe(added.value)
+		expect(manager.workflow('clone-add')).toBe(added.value)
 	})
 
 	it('lets a reentrant clear outrank a hostile snapshot traversal failure', async () => {
@@ -263,39 +258,35 @@ describe('WorkflowManager — coordinated durable access', () => {
 	it('keeps a concurrent add when a function entry reenters during restoration', async () => {
 		const read = Promise.withResolvers<WorkflowSnapshot | undefined>()
 		const store = new WorkflowStoreBoundary([read])
-		const managers: WorkflowManagerInterface[] = []
-		let added: WorkflowInterface | undefined
-		const functions: WorkflowRegistry = {
-			get compile(): WorkflowFunction {
-				const manager = managers[0]
-				if (manager === undefined) throw new Error('expected manager fixture')
-				added = manager.add({ id: 'restore-add', name: 'Added', phases: [] })
-				return () => 'built'
-			},
-		}
+		const managers = new WorkflowObservation<WorkflowManagerInterface | undefined>(undefined)
+		const added = new WorkflowObservation<WorkflowInterface | undefined>(undefined)
+		const functions = buildCompileRegistry(() => {
+			const manager = managers.value
+			if (manager === undefined) throw new Error('expected manager fixture')
+			added.value = manager.add({ id: 'restore-add', name: 'Added', phases: [] })
+			return () => 'built'
+		})
 		const manager = createWorkflowManager({ store, functions })
-		managers.push(manager)
+		managers.value = manager
 		const opening = manager.open('restore-add')
 		read.resolve(createWorkflowManager().add(buildReleaseDefinition('restore-add')).snapshot())
 
-		expect(await opening).toBe(added)
-		expect(manager.workflow('restore-add')).toBe(added)
+		expect(await opening).toBe(added.value)
+		expect(manager.workflow('restore-add')).toBe(added.value)
 	})
 
 	it('does not register a restoration whose function entry reenters remove', async () => {
 		const read = Promise.withResolvers<WorkflowSnapshot | undefined>()
 		const store = new WorkflowStoreBoundary([read])
-		const managers: WorkflowManagerInterface[] = []
-		const functions: WorkflowRegistry = {
-			get compile(): WorkflowFunction {
-				const manager = managers[0]
-				if (manager === undefined) throw new Error('expected manager fixture')
-				manager.remove('restore-remove')
-				return () => 'built'
-			},
-		}
+		const managers = new WorkflowObservation<WorkflowManagerInterface | undefined>(undefined)
+		const functions = buildCompileRegistry(() => {
+			const manager = managers.value
+			if (manager === undefined) throw new Error('expected manager fixture')
+			manager.remove('restore-remove')
+			return () => 'built'
+		})
 		const manager = createWorkflowManager({ store, functions })
-		managers.push(manager)
+		managers.value = manager
 		const opening = manager.open('restore-remove')
 		read.resolve(createWorkflowManager().add(buildReleaseDefinition('restore-remove')).snapshot())
 
@@ -307,17 +298,15 @@ describe('WorkflowManager — coordinated durable access', () => {
 		const read = Promise.withResolvers<WorkflowSnapshot | undefined>()
 		const store = new WorkflowStoreBoundary([read])
 		const fault = new Error('function resolution failed')
-		const managers: WorkflowManagerInterface[] = []
-		const functions: WorkflowRegistry = {
-			get compile(): WorkflowFunction {
-				const manager = managers[0]
-				if (manager === undefined) throw new Error('expected manager fixture')
-				manager.clear()
-				throw fault
-			},
-		}
+		const managers = new WorkflowObservation<WorkflowManagerInterface | undefined>(undefined)
+		const functions = buildCompileRegistry(() => {
+			const manager = managers.value
+			if (manager === undefined) throw new Error('expected manager fixture')
+			manager.clear()
+			throw fault
+		})
 		const manager = createWorkflowManager({ store, functions })
-		managers.push(manager)
+		managers.value = manager
 		const opening = manager.open('restore-clear')
 		read.resolve(createWorkflowManager().add(buildReleaseDefinition('restore-clear')).snapshot())
 
@@ -329,11 +318,9 @@ describe('WorkflowManager — coordinated durable access', () => {
 		const read = Promise.withResolvers<WorkflowSnapshot | undefined>()
 		const store = new WorkflowStoreBoundary([read])
 		const fault = new Error('current function resolution failed')
-		const functions: WorkflowRegistry = {
-			get compile(): WorkflowFunction {
-				throw fault
-			},
-		}
+		const functions = buildCompileRegistry(() => {
+			throw fault
+		})
 		const manager = createWorkflowManager({ store, functions })
 		const opening = manager.open('restore-failure')
 		read.resolve(createWorkflowManager().add(buildReleaseDefinition('restore-failure')).snapshot())
@@ -486,39 +473,37 @@ describe('WorkflowManager — coordinated durable access', () => {
 	})
 
 	it('reserves a same-id save before a synchronous store write can reenter', async () => {
-		const managers: WorkflowManagerInterface[] = []
-		let reentrant: Promise<boolean> | undefined
-		let active = 0
-		let maximum = 0
+		const managers = new WorkflowObservation<WorkflowManagerInterface | undefined>(undefined)
+		const reentrant = new WorkflowObservation<Promise<boolean> | undefined>(undefined)
+		const active = new WorkflowObservation(0)
+		const maximum = new WorkflowObservation(0)
 		const names: string[] = []
-		const store: WorkflowStoreInterface = {
-			get: () => Promise.resolve(undefined),
-			delete: () => Promise.resolve(),
+		const store = buildWorkflowStore({
 			set: (snapshot) => {
-				active += 1
-				maximum = Math.max(maximum, active)
+				active.value += 1
+				maximum.value = Math.max(maximum.value, active.value)
 				names.push(snapshot.name)
 				if (names.length === 1) {
-					const current = managers[0]
+					const current = managers.value
 					if (current === undefined) throw new Error('expected manager fixture')
 					current.add({ ...buildReleaseDefinition('sync-save'), name: 'Second' })
-					reentrant = current.save('sync-save')
+					reentrant.value = current.save('sync-save')
 				}
 				return Promise.resolve().then(() => {
-					active -= 1
+					active.value -= 1
 				})
 			},
-		}
+		})
 		const manager = createWorkflowManager({ store })
-		managers.push(manager)
+		managers.value = manager
 		manager.add({ ...buildReleaseDefinition('sync-save'), name: 'First' })
 
 		const saving = manager.save('sync-save')
 		await expect(saving).resolves.toBe(true)
-		if (reentrant === undefined) throw new Error('expected reentrant save')
-		await expect(reentrant).resolves.toBe(true)
+		if (reentrant.value === undefined) throw new Error('expected reentrant save')
+		await expect(reentrant.value).resolves.toBe(true)
 
-		expect(maximum).toBe(1)
+		expect(maximum.value).toBe(1)
 		expect(names).toEqual(['First', 'Second'])
 	})
 
@@ -543,13 +528,8 @@ describe('WorkflowManager — coordinated durable access', () => {
 
 // The open/save store seam, parametrized over BOTH the Memory and the Database twins (AGENTS
 // one shared assertion suite driven over each real backend, no mocks).
-const stores: ReadonlyArray<readonly [string, () => ReturnType<typeof createMemoryWorkflowStore>]> =
-	[
-		['MemoryWorkflowStore', () => createMemoryWorkflowStore()],
-		['DatabaseWorkflowStore', () => createDatabaseWorkflowStore(createMemoryDriver())],
-	]
 
-for (const [label, makeStore] of stores) {
+for (const [label, makeStore] of WORKFLOW_STORE_CASES) {
 	describe(`WorkflowManager — durable open / save over ${label}`, () => {
 		it('open(id) resolves an ALREADY-registered workflow directly, WITHOUT a store hit', async () => {
 			const store = makeStore()

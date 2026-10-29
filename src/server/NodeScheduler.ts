@@ -1,5 +1,5 @@
 import type { SchedulerInterface, SchedulerOptions } from '@src/core'
-import { delayHost, scheduleHost } from '@src/core'
+import { createHostDelay, createHostSchedule } from '@src/core'
 
 /**
  * Implements the Node {@link SchedulerInterface} — the server-native cooperative-yield backend
@@ -13,7 +13,7 @@ import { delayHost, scheduleHost } from '@src/core'
  *   resuming (unlike a microtask, which drains within the current task). `delay(ms)`
  *   waits on a real `setTimeout`.
  * - **Abort fidelity is verbatim.** A pending `yield` / `delay` rejects with
- *   `signal.reason` exactly. The shared `scheduleHost` lifecycle links an owned composite
+ *   `signal.reason` exactly. The shared `createHostSchedule` lifecycle links an owned composite
  *   before arming either Node handle, so caller signal method mutation is harmless and the
  *   first completion, abort, or setup failure owns settlement and cleanup. It deliberately
  *   does not use `node:timers/promises`, whose `{ signal }` option replaces the caller reason
@@ -55,14 +55,14 @@ export class NodeScheduler implements SchedulerInterface {
 	 * out-of-domain `ms` resolves on the next host turn rather than throwing.
 	 */
 	delay(ms: number, options?: SchedulerOptions): Promise<void> {
-		return delayHost(ms, options?.signal)
+		return createHostDelay(ms, options?.signal)
 	}
 
 	// === Private
 
-	// The Node-native immediate boundary; `scheduleHost` owns cancellation lifecycle.
+	// The Node-native immediate boundary; `createHostSchedule` owns cancellation lifecycle.
 	#immediate(signal?: AbortSignal): Promise<void> {
-		return scheduleHost((complete) => {
+		return createHostSchedule((complete) => {
 			const handle = setImmediate(complete)
 			return () => clearImmediate(handle)
 		}, signal)

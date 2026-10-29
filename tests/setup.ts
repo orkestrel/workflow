@@ -1,6 +1,17 @@
+import { createMemoryDriver } from '@orkestrel/database'
 import type { BudgetInterface, TokenUsage } from '@orkestrel/budget'
 import type { RecorderInterface } from '@orkestrel/test'
 import type {
+	LifecycleStatus,
+	PhaseDerivation,
+	TaskControllerInterface,
+	TaskDefinition,
+	WorkflowRunnerInterface,
+	WorkflowRunnerOptions,
+	WorkflowRegistry,
+	PhaseInterface,
+	ControllerInterface,
+	RunnerInterface,
 	SchedulerInterface,
 	SchedulerOptions,
 	TaskInterface,
@@ -14,15 +25,500 @@ import type {
 	WorkflowStoreInterface,
 } from '@src/core'
 import { compileGuard } from '@orkestrel/contract'
+import { createAbort } from '@orkestrel/abort'
 import { createRecorder, requireValue } from '@orkestrel/test'
 import {
 	Collection,
+	success,
+	failure,
+	createRunner,
+	createMemoryWorkflowStore,
+	createDatabaseWorkflowStore,
 	createScheduler,
 	createWorkflow,
 	createWorkflowRunner,
+	isWorkflowError,
 	taskUpdateShape,
 } from '@src/core'
+import { Controller } from '../src/core/Controller.js'
 import { TaskController } from '../src/core/tasks/TaskController.js'
+
+/** Builds an activity fixture with an own enumerable timestamp getter. */
+export function buildActivityStamp(
+	read: () => number,
+	operations: readonly unknown[] = [],
+	constraints?: readonly unknown[],
+): WorkflowActivityStamp {
+	return {
+		operations,
+		...(constraints === undefined ? {} : { constraints }),
+		get updated() {
+			return read()
+		},
+	}
+}
+
+/** Builds a registry whose own enumerable compile getter resolves lazily. */
+export function buildCompileRegistry(read: () => WorkflowFunction): WorkflowRegistry {
+	return {
+		get compile(): WorkflowFunction {
+			return read()
+		},
+	}
+}
+
+/** Returns a JSON null task outcome. */
+export function returnWorkflowNull(): null {
+	return null
+}
+
+/** Rejects the scripted workflow task with its fixed handler fault. */
+export function throwWorkflowFault(): never {
+	throw new Error('boom')
+}
+
+/** Returns the live task identifier as its handler outcome. */
+export function readWorkflowTaskId(controller: TaskControllerInterface): string {
+	return controller.task.id
+}
+
+/** Builds the phase-inheritance fixture under the supplied workflow bail policy. */
+export function buildBailDefinition(bail: boolean): WorkflowDefinition {
+	return buildRunnerDefinition(
+		[
+			{ id: 'a', tasks: [buildFunctionTask('t0', 'fail')] },
+			{ id: 'b', tasks: [buildFunctionTask('t1', 'ok')] },
+		],
+		bail,
+	)
+}
+
+/** Builds a task handler that records its eventual abort and optional start. */
+export function createParkedTask(
+	aborted: RecorderInterface<readonly [string]>,
+	started?: RecorderInterface<readonly [string]>,
+): WorkflowFunction {
+	return (controller) =>
+		new Promise<string>((resolve) => {
+			started?.handler(controller.task.id)
+			controller.signal.addEventListener(
+				'abort',
+				() => {
+					aborted.handler(controller.task.id)
+					resolve('aborted')
+				},
+				{ once: true },
+			)
+		})
+}
+
+/** Rejects a running task when its real attempt signal aborts. */
+export function rejectTaskAbort(controller: TaskControllerInterface): Promise<null> {
+	return new Promise<null>((_resolve, reject) => {
+		controller.signal.addEventListener('abort', () => reject(new Error('handler observed abort')), {
+			once: true,
+		})
+	})
+}
+
+/** Builds a work registry that records and returns each task identifier. */
+export function buildRecordedFunctions(
+	recorder: RecorderInterface<readonly [string]>,
+): WorkflowRegistry {
+	return {
+		work: (controller) => {
+			recorder.handler(controller.task.id)
+			return controller.task.id
+		},
+	}
+}
+
+/** Implements the scheduler's scripted infrastructure-failure boundary. */
+export class FaultScheduler implements SchedulerInterface {
+	readonly #failure: unknown
+
+	constructor(fault: unknown) {
+		this.#failure = fault
+	}
+
+	yield(): Promise<void> {
+		return Promise.reject(this.#failure)
+	}
+
+	delay(): Promise<void> {
+		return Promise.resolve()
+	}
+}
+
+/** Builds a workflow execution fixture with the supplied scenario values. */
+export function createPacedRunner(options?: WorkflowRunnerOptions): WorkflowRunnerInterface {
+	return createWorkflowRunner({
+		...options,
+		scheduler: options?.scheduler ?? createRecordingScheduler(),
+	})
+}
+
+/** Builds a workflow execution fixture with the supplied scenario values. */
+export function buildFunctionTask(id: string, fn: string): TaskDefinition {
+	return { id, name: id, behavior: fn }
+}
+
+/** Builds a workflow execution fixture with the supplied scenario values. */
+export function buildRunnerDefinition(
+	phases: ReadonlyArray<{
+		readonly id: string
+		readonly tasks: readonly TaskDefinition[]
+		readonly concurrency?: number
+		readonly bail?: boolean
+	}>,
+	bail = false,
+): WorkflowDefinition {
+	return {
+		id: 'wf',
+		name: 'WF',
+		bail,
+		phases: phases.map((phase) => ({
+			id: phase.id,
+			name: phase.id,
+			...(phase.concurrency === undefined ? {} : { concurrency: phase.concurrency }),
+			...(phase.bail === undefined ? {} : { bail: phase.bail }),
+			tasks: phase.tasks,
+		})),
+	}
+}
+
+/** Builds a workflow execution fixture with the supplied scenario values. */
+export function createOrderFunction(order: string[]): WorkflowFunction {
+	return (controller) => {
+		order.push(controller.task.id)
+		return controller.task.id
+	}
+}
+
+/** Builds a workflow execution fixture with the supplied scenario values. */
+export function buildReliableTask(
+	id: string,
+	fn: string,
+	reliability: { readonly retries?: number; readonly timeout?: number },
+): TaskDefinition {
+	return {
+		id,
+		name: id,
+		behavior: fn,
+		...(reliability.retries === undefined ? {} : { retries: reliability.retries }),
+		...(reliability.timeout === undefined ? {} : { timeout: reliability.timeout }),
+	}
+}
+
+/** Builds a workflow execution fixture with the supplied scenario values. */
+export function createAbortSibling(aborted: WorkflowAbortRecorder): WorkflowFunction {
+	return (controller: TaskControllerInterface) =>
+		new Promise<string>((resolve) => {
+			if (controller.signal.aborted) {
+				aborted.handler(controller.task.id)
+				resolve('aborted')
+				return
+			}
+			controller.signal.addEventListener(
+				'abort',
+				() => {
+					aborted.handler(controller.task.id)
+					resolve('aborted')
+				},
+				{ once: true },
+			)
+		})
+}
+
+/** Builds a workflow execution fixture with the supplied scenario values. */
+export function buildParkedPhases(): WorkflowDefinition {
+	return buildRunnerDefinition([
+		{ id: 'a', tasks: [buildFunctionTask('t0', 'a')] },
+		{ id: 'b', tasks: [buildFunctionTask('t1', 'rec')] },
+		{ id: 'c', tasks: [buildFunctionTask('t2', 'rec')] },
+	])
+}
+
+/** Parks a task fixture until its real attempt deadline aborts. */
+export const parkUntilDeadline: WorkflowFunction = (controller: TaskControllerInterface) =>
+	new Promise<string>((resolve) => {
+		if (controller.signal.aborted) {
+			resolve('timed-out')
+			return
+		}
+		controller.signal.addEventListener('abort', () => resolve('timed-out'), { once: true })
+	})
+
+/** Returns the initial inert runner option value. */
+export function returnWorkflowZero(): number {
+	return 0
+}
+
+/** Builds the live manager fixture in declared positional order. */
+export function buildPhaseTasks() {
+	const workflow = createWorkflow({
+		id: 'wf',
+		name: 'WF',
+		phases: [
+			{
+				id: 'p',
+				name: 'P',
+				tasks: [
+					{ id: 't0', name: 'T0', behavior: 'f' },
+					{ id: 't1', name: 'T1', behavior: 'f' },
+					{ id: 't2', name: 'T2', behavior: 'f' },
+				],
+			},
+		],
+	})
+	const phase = workflow.phase('p')
+	if (phase === undefined) throw new Error('expected the phase to exist')
+	return phase
+}
+
+/** Builds the live manager fixture in declared positional order. */
+export function buildWorkflowPhases() {
+	return createWorkflow({
+		id: 'wf',
+		name: 'WF',
+		phases: [
+			{ id: 'a', name: 'A', tasks: [{ id: 't', name: 'T', behavior: 'f' }] },
+			{ id: 'b', name: 'B', tasks: [{ id: 't', name: 'T', behavior: 'f' }] },
+			{ id: 'c', name: 'C', tasks: [{ id: 't', name: 'T', behavior: 'f' }] },
+		],
+	})
+}
+
+/** Drives each forced terminal task status. */
+export const TASK_FORCED_DRIVERS = Object.freeze([
+	(task: TaskInterface) => task.skip(),
+	(task: TaskInterface) => task.stop(),
+])
+
+/** Drives each terminal task status through its legal transitions. */
+export const TASK_TERMINAL_DRIVERS = Object.freeze([
+	(task: TaskInterface) => {
+		task.start()
+		task.complete('v')
+	},
+	(task: TaskInterface) => {
+		task.start()
+		task.fail({ origin: 'handler', message: 'e' })
+	},
+	...TASK_FORCED_DRIVERS,
+])
+
+/** Builds or reads a task fixture through the workflow contract. */
+export function buildSingleTaskWorkflow(): WorkflowDefinition {
+	return {
+		id: 'wf',
+		name: 'WF',
+		phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', behavior: 'f' }] }],
+	}
+}
+
+/** Builds or reads a task fixture through the workflow contract. */
+export function requireWorkflowTask(workflow: WorkflowInterface): TaskInterface {
+	const task = workflow.phase('p')?.task('t')
+	if (task === undefined) throw new Error('expected the lone task to exist')
+	return task
+}
+
+/** Builds or reads a task fixture through the workflow contract. */
+export function readWorkflowCode(error: unknown): string | undefined {
+	return isWorkflowError(error) ? error.code : undefined
+}
+
+/** Builds an own enumerable claim getter whose later read changes its identifier. */
+export function buildWorkflowClaim(reads: WorkflowObservation<number>): WorkflowClaimFixture {
+	return {
+		get id() {
+			reads.value += 1
+			return reads.value === 1 ? 'stable' : ''
+		},
+		name: 'Operation',
+		started: 0,
+	}
+}
+
+/** Builds or drives the workflow fixture through its public lifecycle. */
+export function buildTwoPhaseWorkflow(bail: boolean): WorkflowDefinition {
+	return {
+		id: 'wf',
+		name: 'WF',
+		bail,
+		phases: [
+			{
+				id: 'a',
+				name: 'A',
+				tasks: [
+					{ id: 't0', name: 'T0', behavior: 'f' },
+					{ id: 't1', name: 'T1', behavior: 'f' },
+				],
+			},
+			{
+				id: 'b',
+				name: 'B',
+				tasks: [{ id: 't2', name: 'T2', behavior: 'f' }],
+			},
+		],
+	}
+}
+
+/** Builds or drives the workflow fixture through its public lifecycle. */
+export function completeTask(workflow: WorkflowInterface, phase: string, task: string): void {
+	const leaf = workflow.phase(phase)?.task(task)
+	leaf?.start()
+	leaf?.complete('ok')
+}
+
+/** Builds or drives the workflow fixture through its public lifecycle. */
+export function buildEmptyWorkflow(bail: boolean): WorkflowDefinition {
+	return { id: 'wf', name: 'WF', bail, phases: [] }
+}
+
+/** Builds or drives the workflow fixture through its public lifecycle. */
+export function buildMultiPhaseWorkflow(count: number): WorkflowDefinition {
+	return {
+		id: 'wf',
+		name: 'WF',
+		bail: false,
+		phases: Array.from({ length: count }, (_unused, index) => ({
+			id: `p${index}`,
+			name: `P${index}`,
+			tasks: [{ id: `t${index}`, name: `T${index}`, behavior: 'f' }],
+		})),
+	}
+}
+
+/** Returns the fixed handler result used to compare registry identity. */
+export function returnWorkflowValue(): string {
+	return 'value'
+}
+
+/** Builds or resolves a phase fixture through the real workflow tree. */
+export function buildPhaseWorkflow(count: number): WorkflowDefinition {
+	return {
+		id: 'wf',
+		name: 'WF',
+		phases: [
+			{
+				id: 'p',
+				name: 'P',
+				tasks: Array.from({ length: count }, (_unused, index) => ({
+					id: `t${index}`,
+					name: `T${index}`,
+					behavior: 'f',
+				})),
+			},
+		],
+	}
+}
+
+/** Builds or resolves a phase fixture through the real workflow tree. */
+export function requireWorkflowPhase(workflow: WorkflowInterface): PhaseInterface {
+	const phase = workflow.phase('p')
+	if (phase === undefined) throw new Error('expected the lone phase to exist')
+	return phase
+}
+
+/** Builds or resolves a phase fixture through the real workflow tree. */
+export function buildMixedBailWorkflow(): WorkflowDefinition {
+	return {
+		id: 'wf',
+		name: 'WF',
+		bail: false,
+		phases: [
+			{
+				id: 'strict',
+				name: 'Strict',
+				bail: true,
+				tasks: [{ id: 't', name: 'T', behavior: 'f' }],
+			},
+			{
+				id: 'inherit',
+				name: 'Inherit',
+				tasks: [{ id: 't', name: 'T', behavior: 'f' }],
+			},
+		],
+	}
+}
+
+/** Builds a unit controller over its real abort boundary and supplied spawn callback. */
+export function buildController<TInput, TResult>(
+	input: TInput,
+	spawn: (input: TInput) => Promise<TResult> = rejectWorkflowSpawn,
+): WorkflowControllerFixture<TInput, TResult> {
+	const id = crypto.randomUUID()
+	const abort = createAbort()
+	const controller = new Controller<TInput, TResult>(id, input, abort, abort.signal, spawn)
+	return { controller, id }
+}
+
+/** Rejects an unconfigured fixture spawn. */
+export function rejectWorkflowSpawn(): Promise<never> {
+	return Promise.reject(new Error('no spawn'))
+}
+
+/** Builds a substrate runner over live task fixtures. */
+export function buildPhaseRunner(): RunnerInterface<TaskInterface, void> {
+	return createRunner<TaskInterface, void>({ handler: () => undefined })
+}
+
+/** Builds a scripted storage boundary with absent reads and inert deletes by default. */
+export function buildWorkflowStore(store: Partial<WorkflowStoreInterface>): WorkflowStoreInterface {
+	return {
+		get: () => Promise.resolve(undefined),
+		set: () => Promise.resolve(),
+		delete: () => Promise.resolve(),
+		...store,
+	}
+}
+
+/** Supplies the durability workflow fixture. */
+export const DEFINITION: WorkflowDefinition = {
+	id: 'durable',
+	name: 'Durable',
+	bail: false,
+	phases: [
+		{
+			id: 'phase',
+			name: 'Phase',
+			tasks: [{ id: 'task', name: 'Task', behavior: 'work', retries: 1 }],
+		},
+	],
+}
+
+/** Creates a runner paced by the real scheduler fixture. */
+export function createDurabilityRunner(): ReturnType<typeof createWorkflowRunner> {
+	return createWorkflowRunner({ scheduler: createRecordingScheduler() })
+}
+
+/** Returns the durability fixture's required leaf snapshot. */
+export function readDurabilityTask(
+	snapshot: WorkflowSnapshot,
+): WorkflowSnapshot['phases'][number]['tasks'][number] {
+	const task = snapshot.phases[0]?.tasks[0]
+	if (task === undefined) throw new Error('expected task snapshot')
+	return task
+}
+
+/** Holds the value observed by callbacks during one workflow test. */
+export class WorkflowObservation<T> {
+	#value: T
+
+	constructor(value: T) {
+		this.#value = value
+	}
+
+	get value(): T {
+		return this.#value
+	}
+
+	set value(value: T) {
+		this.#value = value
+	}
+}
 
 /** Lists the invalid task activity frames the cloner and guard boundary tests share. */
 export const INVALID_TASK_ACTIVITIES: ReadonlyArray<readonly [input: unknown]> = Object.freeze([
@@ -231,8 +727,8 @@ export class FaultBudget implements BudgetInterface<TokenUsage> {
 	#starts = 0
 	#clears = 0
 
-	constructor(failure: unknown) {
-		this.#failure = failure
+	constructor(fault: unknown) {
+		this.#failure = fault
 	}
 
 	get signal(): AbortSignal {
@@ -316,23 +812,21 @@ export function instrumentSignal(signal: AbortSignal): SignalListenerCountsInter
 	const removed = createRecorder<readonly [string]>()
 	const realAdd = signal.addEventListener.bind(signal)
 	const realRemove = signal.removeEventListener.bind(signal)
-	signal.addEventListener = (
-		type: string,
-		listener: EventListenerOrEventListenerObject,
-		options?: boolean | AddEventListenerOptions,
-	): void => {
-		if (type === 'abort') added.handler(type)
-		realAdd(type, listener, options)
-	}
-	signal.removeEventListener = (
-		type: string,
-		listener: EventListenerOrEventListenerObject,
-		options?: boolean | EventListenerOptions,
-	): void => {
-		if (type === 'abort') removed.handler(type)
-		realRemove(type, listener, options)
-	}
+	signal.addEventListener = recordWorkflowListener.bind(undefined, added, realAdd)
+	signal.removeEventListener = recordWorkflowListener.bind(undefined, removed, realRemove)
 	return { added, removed }
+}
+
+/** Records an abort-listener operation before invoking its bound native method. */
+export function recordWorkflowListener(
+	recorder: RecorderInterface<readonly [string]>,
+	operation: AbortSignal['addEventListener'],
+	type: string,
+	listener: EventListenerOrEventListenerObject,
+	options?: boolean | AddEventListenerOptions,
+): void {
+	if (type === 'abort') recorder.handler(type)
+	operation(type, listener, options)
 }
 
 // ── Recording scheduler (a real SchedulerInterface, wrapped) ────────────────────
@@ -527,3 +1021,460 @@ export function isBrowserVuePath(path: string): boolean {
 	const normalized = path.replaceAll('\\', '/')
 	return normalized.startsWith('app/browser/')
 }
+
+/** Builds the lifecycle derivation fixture. */
+export function buildPhaseDerivations(
+	statuses: readonly LifecycleStatus[],
+	bail: boolean,
+): readonly PhaseDerivation[] {
+	return statuses.map((status) => ({ status, bail }))
+}
+
+/** Builds the lifecycle derivation fixture. */
+export function enumerateStatusOrders<T>(items: readonly T[]): ReadonlyArray<readonly T[]> {
+	if (items.length <= 1) return [items]
+	const out: T[][] = []
+	for (const [index, item] of items.entries()) {
+		const rest = [...items.slice(0, index), ...items.slice(index + 1)]
+		for (const permutation of enumerateStatusOrders(rest)) out.push([item, ...permutation])
+	}
+	return out
+}
+
+/** Builds a positional task-result fixture. */
+export function buildCompletedResult(id: string): TaskResult {
+	return {
+		task: { id, name: id, phase: { id: 'p', name: 'P', workflow: { id: 'w', name: 'W' } } },
+		phase: { id: 'p', name: 'P', workflow: { id: 'w', name: 'W' } },
+		workflow: { id: 'w', name: 'W' },
+		status: 'completed',
+		timestamp: 0,
+	}
+}
+
+/** Builds a positional task-result fixture. */
+export function buildOutcomeResult(id: string, ok: boolean): TaskResult {
+	return {
+		task: { id, name: id, phase: { id: 'p', name: 'P', workflow: { id: 'w', name: 'W' } } },
+		phase: { id: 'p', name: 'P', workflow: { id: 'w', name: 'W' } },
+		workflow: { id: 'w', name: 'W' },
+		status: ok ? 'completed' : 'failed',
+		result: ok ? success('v') : failure({ origin: 'handler', message: `${id} failed` }),
+		timestamp: 0,
+	}
+}
+
+/** Supplies the lifecycle recovery fixture. */
+export const EVERY_STATUS: readonly LifecycleStatus[] = [
+	'pending',
+	'running',
+	'completed',
+	'failed',
+	'skipped',
+	'stopped',
+]
+
+/** Supplies the lifecycle recovery fixture. */
+export const RECOVERY_DEFINITION: WorkflowDefinition = {
+	id: 'durable',
+	name: 'Durable',
+	bail: false,
+	phases: [
+		{
+			id: 'phase',
+			name: 'Phase',
+			tasks: [{ id: 'task', name: 'Task', behavior: 'work', retries: 1 }],
+		},
+	],
+}
+
+/** Supplies the lifecycle recovery fixture. */
+export const VALIDATED_FUNCTIONS = { work: () => 'validated' }
+
+/** Supplies the lifecycle recovery fixture. */
+export const RECOVERY_SHIFTED_FUNCTIONS = { work: () => 'shifted' }
+
+/** Lists lifecycle derivation cases. */
+export const PHASE_STATUS_CASES: readonly WorkflowLifecycleCase[] = [
+	// — empty + all-pending (→ pending)
+	[[], 'pending', 'no tasks'],
+	[['pending'], 'pending', 'single pending'],
+	[['pending', 'pending'], 'pending', 'all pending'],
+	// — any non-terminal among the set (→ running): a started-but-unsettled phase
+	[['running'], 'running', 'single running'],
+	[['running', 'pending'], 'running', 'running + pending'],
+	[['running', 'running'], 'running', 'all running'],
+	[['completed', 'pending'], 'running', 'terminal + pending (not all settled)'],
+	[['failed', 'pending'], 'running', 'failed + pending (still not all settled)'],
+	[['skipped', 'pending'], 'running', 'skipped + pending'],
+	[['stopped', 'pending'], 'running', 'stopped + pending'],
+	[['completed', 'running'], 'running', 'completed + running'],
+	[['failed', 'running'], 'running', 'failed + running (failed does NOT settle the phase)'],
+	[['failed', 'completed', 'pending'], 'running', 'two terminals + a straggler pending'],
+	// — all-terminal: single child of each terminal kind
+	[['completed'], 'completed', 'single completed'],
+	[['failed'], 'failed', 'single failed'],
+	[['skipped'], 'skipped', 'single skipped'],
+	[['stopped'], 'stopped', 'single stopped'],
+	// — all-terminal severity ordering, discriminating ADJACENT pairs
+	[['failed', 'stopped'], 'failed', 'failed > stopped'],
+	[['stopped', 'completed'], 'stopped', 'stopped > completed'],
+	[['completed', 'skipped'], 'completed', 'completed > skipped (skips never fail a phase)'],
+	// — all-terminal severity ordering, NON-adjacent pairs (the relation is transitive)
+	[['failed', 'completed'], 'failed', 'failed > completed'],
+	[['failed', 'skipped'], 'failed', 'failed > skipped'],
+	[['stopped', 'skipped'], 'stopped', 'stopped > skipped'],
+	// — all-terminal homogeneous (the lowest-severity all-same cases)
+	[['completed', 'completed'], 'completed', 'all completed'],
+	[['skipped', 'skipped'], 'skipped', 'all skipped'],
+	[['stopped', 'stopped'], 'stopped', 'all stopped'],
+	[['failed', 'failed'], 'failed', 'all failed'],
+	// — the full mix (every terminal present → the most severe, failed)
+	[['failed', 'skipped', 'stopped', 'completed'], 'failed', 'all four terminals'],
+	[['stopped', 'completed', 'skipped'], 'stopped', 'three terminals, no failure → stopped'],
+	[['completed', 'skipped', 'completed'], 'completed', 'completes + skips → completed'],
+]
+
+/** Lists lifecycle derivation cases. */
+export const WORKFLOW_STATUS_CASES: ReadonlyArray<{
+	readonly input: readonly LifecycleStatus[]
+	readonly bail: boolean
+	readonly expected: LifecycleStatus
+	readonly label: string
+}> = [
+	// ── bail: true (halt) — a failed phase short-circuits to `failed`, even mid-flight ──
+	{ input: ['failed'], bail: true, expected: 'failed', label: 'single failed halts' },
+	{
+		input: ['completed', 'failed'],
+		bail: true,
+		expected: 'failed',
+		label: 'a failure among completes halts',
+	},
+	{
+		input: ['failed', 'pending'],
+		bail: true,
+		expected: 'failed',
+		label: 'failed + pending: halts BEFORE the all-pending check',
+	},
+	{
+		input: ['failed', 'running'],
+		bail: true,
+		expected: 'failed',
+		label: 'failed + running: the failed short-circuit fires BEFORE the running check',
+	},
+	{
+		input: ['failed', 'stopped'],
+		bail: true,
+		expected: 'failed',
+		label: 'failed beats stopped under halt',
+	},
+	{ input: ['failed', 'failed'], bail: true, expected: 'failed', label: 'all failed halts' },
+	{
+		input: ['failed', 'skipped'],
+		bail: true,
+		expected: 'failed',
+		label: 'failed beats skipped under halt',
+	},
+	// ── bail: false (graceful) — a failed phase is DATA; the workflow NEVER derives `failed` ──
+	{
+		input: ['failed'],
+		bail: false,
+		expected: 'completed',
+		label: 'single failed folds into completed',
+	},
+	{
+		input: ['completed', 'failed'],
+		bail: false,
+		expected: 'completed',
+		label: 'failure folded into completion',
+	},
+	{
+		input: ['failed', 'pending'],
+		bail: false,
+		expected: 'running',
+		label: 'failed + pending: NOT all terminal ⇒ running (failed does not short-circuit)',
+	},
+	{
+		input: ['failed', 'running'],
+		bail: false,
+		expected: 'running',
+		label: 'failed + running: NOT all terminal ⇒ running (THE graceful→running case)',
+	},
+	{
+		input: ['failed', 'stopped'],
+		bail: false,
+		expected: 'stopped',
+		label: 'a stop still beats a folded failure',
+	},
+	{
+		input: ['failed', 'failed'],
+		bail: false,
+		expected: 'completed',
+		label: 'all failed still completes gracefully',
+	},
+	{
+		input: ['failed', 'skipped'],
+		bail: false,
+		expected: 'completed',
+		label: 'failed folds to completed even with only skips beside it',
+	},
+]
+
+/** Lists lifecycle derivation cases. */
+export const WORKFLOW_AGNOSTIC_CASES: readonly WorkflowLifecycleCase[] = [
+	[[], 'pending', 'no phases'],
+	[['pending'], 'pending', 'single pending'],
+	[['pending', 'pending'], 'pending', 'all pending'],
+	[['running'], 'running', 'single running'],
+	[['running', 'pending'], 'running', 'running + pending'],
+	[['completed', 'pending'], 'running', 'terminal + pending (started, not all settled)'],
+	[['completed', 'running'], 'running', 'terminal + running (started, not all settled)'],
+	[['completed'], 'completed', 'single completed'],
+	[['completed', 'completed'], 'completed', 'all completed'],
+	[['completed', 'skipped'], 'completed', 'completes + skips → completed'],
+	[['skipped'], 'skipped', 'single skipped'],
+	[['skipped', 'skipped'], 'skipped', 'all skipped'],
+	[['stopped'], 'stopped', 'single stopped'],
+	[['stopped', 'stopped'], 'stopped', 'all stopped'],
+	[['stopped', 'completed'], 'stopped', 'stopped beats completed'],
+	[['stopped', 'skipped'], 'stopped', 'stopped beats skipped'],
+]
+
+/** Builds a value whose string conversion throws. */
+export function buildHostileString(): { readonly toString: () => string } {
+	return {
+		toString: () => {
+			throw new Error('hostile string')
+		},
+	}
+}
+
+/** Builds a snapshot candidate with an own enumerable hostile identifier accessor. */
+export function buildHostileWorkflow(): { readonly id: string } {
+	return {
+		get id(): string {
+			throw new Error('accessor must not run')
+		},
+	}
+}
+
+/** Supplies independently resolved recovery behaviors. */
+export const RECOVERY_MIXED_FUNCTIONS = {
+	first: () => 'first',
+	done: () => 'done',
+	interrupted: () => 'interrupted',
+}
+
+/** Counts invocation of the restored work behavior. */
+export function buildCountedRegistry(calls: WorkflowObservation<number>): WorkflowRegistry {
+	return {
+		work: () => {
+			calls.value += 1
+			return null
+		},
+	}
+}
+
+/** Builds the definition used by factory restoration proofs. */
+export function buildFactoryDefinition(
+	overrides: Partial<WorkflowDefinition> = {},
+): WorkflowDefinition {
+	return {
+		id: 'wf-1',
+		name: 'Release',
+		description: 'Ship a release',
+		bail: false,
+		phases: [
+			{
+				id: 'phase-build',
+				name: 'Build',
+				concurrency: 2,
+				tasks: [
+					{ id: 'task-compile', name: 'Compile', behavior: 'compile', retries: 2, timeout: 500 },
+					{ id: 'task-scan', name: 'Scan', description: 'Security scan', behavior: 'scan' },
+				],
+			},
+			{
+				id: 'phase-review',
+				name: 'Review',
+				tasks: [{ id: 'task-audit', name: 'Audit', behavior: 'audit' }],
+			},
+		],
+		...overrides,
+	}
+}
+
+/** Supplies the factory behavior registry. */
+export const FACTORY_RESTORE_FUNCTIONS = {
+	compile: () => null,
+	scan: () => null,
+	audit: () => null,
+}
+
+/** Supplies the factory behavior registry. */
+export const FACTORY_SHIFTED_FUNCTIONS = {
+	compile: () => 'shifted compile',
+	scan: () => 'shifted scan',
+	audit: () => 'shifted audit',
+}
+
+/** Returns the deterministic seed used by contract generation. */
+export function returnWorkflowSeed(): number {
+	return 0.42
+}
+
+/** Bounds real asynchronous workflow round trips. */
+export const ROUND_TRIP_TIMEOUT_MS = 30_000
+
+/** Supplies store restoration behaviors. */
+export const STORE_RESTORE_FUNCTIONS = {
+	...RELEASE_FUNCTIONS,
+	scanner: () => null,
+	auditor: () => null,
+	f: () => null,
+}
+
+/** Lists pending and settled store round-trip cases. */
+export const STORE_SNAPSHOT_CASES: readonly WorkflowSnapshotCase[] = [
+	['all-pending (createWorkflow)', async () => createWorkflow(buildReleaseDefinition()).snapshot()],
+	['settled (runner.execute)', () => settleSnapshot(buildReleaseDefinition())],
+]
+
+/** Builds a definition with the requested optional phase and task fields. */
+export function buildFieldDefinition(overrides: {
+	readonly bail?: boolean
+	readonly retries?: number
+	readonly timeout?: number
+}): WorkflowDefinition {
+	return {
+		id: 'w',
+		name: 'W',
+		phases: [
+			{
+				id: 'p',
+				name: 'P',
+				...(overrides.bail === undefined ? {} : { bail: overrides.bail }),
+				tasks: [
+					{
+						id: 't',
+						name: 'T',
+						behavior: 'f',
+						...(overrides.retries === undefined ? {} : { retries: overrides.retries }),
+						...(overrides.timeout === undefined ? {} : { timeout: overrides.timeout }),
+					},
+				],
+			},
+		],
+	}
+}
+
+/** Supplies the workflow restoration behavior. */
+export const WORKFLOW_RESTORE_FUNCTIONS = { f: () => null }
+
+/** Supplies real memory and database storage implementations. */
+export const WORKFLOW_STORE_CASES: readonly WorkflowStoreCase[] = [
+	['MemoryWorkflowStore', () => createMemoryWorkflowStore()],
+	['DatabaseWorkflowStore', () => createDatabaseWorkflowStore(createMemoryDriver())],
+]
+
+/** Describes a pending or settled snapshot fixture. */
+export type WorkflowSnapshotCase = readonly [string, () => Promise<WorkflowSnapshot>]
+
+/** Describes a lifecycle truth-table row. */
+export type WorkflowLifecycleCase = readonly [readonly LifecycleStatus[], LifecycleStatus, string]
+
+/** Describes a real storage implementation factory. */
+export type WorkflowStoreCase = readonly [
+	string,
+	() => ReturnType<typeof createMemoryWorkflowStore>,
+]
+
+/** Describes an activity timestamp accessor fixture. */
+export interface WorkflowActivityStamp {
+	readonly operations: readonly unknown[]
+	readonly constraints?: readonly unknown[]
+	readonly updated: number
+}
+
+/** Describes a claim with a shifting identifier accessor. */
+export interface WorkflowClaimFixture {
+	readonly id: string
+	readonly name: string
+	readonly started: number
+}
+
+/** Describes the abort callback a parked task fixture records. */
+export interface WorkflowAbortRecorder {
+	readonly handler: (id: string) => void
+}
+
+/** Describes a controller fixture with its generated identifier. */
+export interface WorkflowControllerFixture<TInput, TResult> {
+	readonly controller: ControllerInterface<TInput, TResult>
+	readonly id: string
+}
+
+/** Lists the durability failure cases. */
+export const PERSISTENCE_FAILURE_CASES = [
+	{ call: 1, checkpoint: 'initial', dispatched: false, status: 'stopped', durable: true },
+	{ call: 3, checkpoint: 'attempt', dispatched: false, status: 'stopped', durable: true },
+	{ call: 5, checkpoint: 'settlement', dispatched: true, status: 'completed', durable: true },
+	{ call: 6, checkpoint: 'final', dispatched: true, status: 'completed', durable: false },
+]
+
+/** Lists the recovery policy cases. */
+export const RECOVERY_POLICY_CASES = [
+	{
+		bail: true,
+		expected: ['skipped', 'failed', 'skipped', 'skipped'],
+		later: 'skipped',
+	},
+	{
+		bail: false,
+		expected: ['pending', 'failed', 'pending', 'pending'],
+		later: 'pending',
+	},
+]
+
+/** Lists the hierarchy tiers observed by durability. */
+export const PERSISTENCE_TIER_CASES = ['workflow', 'phase']
+
+/** Lists the workflow bail policies. */
+export const WORKFLOW_BAIL_CASES = [false, true]
+
+/** Lists commands that force a future phase to terminate. */
+export const WORKFLOW_TERMINAL_COMMANDS = ['skip', 'stop']
+
+/** Lists values outside the lifecycle vocabulary. */
+export const INVALID_LIFECYCLE_VALUES: readonly unknown[] = [
+	undefined,
+	null,
+	'',
+	'complete',
+	1,
+	{},
+	[],
+]
+
+/** Lists malformed task failures for normalization. */
+export const INVALID_TASK_FAILURES = [
+	{ origin: 'other', message: '' },
+	{ origin: 'handler', message: 1 },
+]
+
+/** Lists falsy JSON values that remain present task results. */
+export const FALSY_TASK_VALUES = [null, 0, '', false]
+
+/** Supplies a non-plain activity object for the cloner boundary. */
+export class WorkflowActivityFixture {
+	readonly operations: readonly unknown[] = []
+}
+
+/** Lists unknown-key and class-instance activity refusals. */
+export const FOREIGN_ACTIVITY_VALUES = [
+	{ operations: [], extra: true },
+	{ progress: { progress: 1, extra: true } },
+	{ operations: [{ id: 'op', name: 'Operation', started: 0, extra: true }] },
+	{ constraints: [{ id: 'constraint', name: 'Constraint', started: 0, extra: true }] },
+	new WorkflowActivityFixture(),
+]

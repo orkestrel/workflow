@@ -1,36 +1,25 @@
-import { createWorkflow } from '@src/core'
+import { buildWorkflowPhases } from '../../../setup.js'
 import { describe, expect, it } from 'vitest'
 
 // The lean phase child manager: a positional accessor + count, order preserved
 // across an interior skip. Exercised through a live tree — real data, no mocks.
 
 /** A live workflow whose `phases` manager holds `a, b, c`. */
-function workflowWithPhases() {
-	return createWorkflow({
-		id: 'wf',
-		name: 'WF',
-		phases: [
-			{ id: 'a', name: 'A', tasks: [{ id: 't', name: 'T', behavior: 'f' }] },
-			{ id: 'b', name: 'B', tasks: [{ id: 't', name: 'T', behavior: 'f' }] },
-			{ id: 'c', name: 'C', tasks: [{ id: 't', name: 'T', behavior: 'f' }] },
-		],
-	})
-}
 
 describe('PhaseManager — accessors', () => {
 	it('count reflects the appended phases', () => {
-		expect(workflowWithPhases().phases.count).toBe(3)
+		expect(buildWorkflowPhases().phases.count).toBe(3)
 	})
 
 	it('phase(id) looks one up, undefined for an unknown id', () => {
-		const phases = workflowWithPhases().phases
+		const phases = buildWorkflowPhases().phases
 		expect(phases.phase('b')?.id).toBe('b')
 		expect(phases.phase('missing')).toBeUndefined()
 	})
 
 	it('phases() lists in positional (append) order', () => {
 		expect(
-			workflowWithPhases()
+			buildWorkflowPhases()
 				.phases.phases()
 				.map((phase) => phase.id),
 		).toEqual(['a', 'b', 'c'])
@@ -39,7 +28,7 @@ describe('PhaseManager — accessors', () => {
 
 describe('PhaseManager — positional order survives an interior skip', () => {
 	it('a skipped interior phase keeps its slot', () => {
-		const workflow = workflowWithPhases()
+		const workflow = buildWorkflowPhases()
 		// Skip the MIDDLE phase — a status change, not a removal.
 		workflow.phase('b')?.skip()
 		expect(workflow.phases.phases().map((phase) => phase.id)).toEqual(['a', 'b', 'c'])
@@ -50,7 +39,7 @@ describe('PhaseManager — positional order survives an interior skip', () => {
 
 describe('PhaseManager — add/remove/move/update Result matrix, through Workflow', () => {
 	it('add succeeds with the minted phase as the success value, appended at the end by default', () => {
-		const workflow = workflowWithPhases()
+		const workflow = buildWorkflowPhases()
 		const result = workflow.add({
 			id: 'd',
 			name: 'D',
@@ -63,7 +52,7 @@ describe('PhaseManager — add/remove/move/update Result matrix, through Workflo
 	})
 
 	it('add at an explicit (in-bounds, suffix) index inserts there, shifting the pending suffix', () => {
-		const workflow = workflowWithPhases()
+		const workflow = buildWorkflowPhases()
 		const result = workflow.add(
 			{
 				id: 'mid',
@@ -77,7 +66,7 @@ describe('PhaseManager — add/remove/move/update Result matrix, through Workflo
 	})
 
 	it('add fails MUTATION on a duplicate id, leaving the workflow unchanged', () => {
-		const workflow = workflowWithPhases()
+		const workflow = buildWorkflowPhases()
 		const result = workflow.add({ id: 'b', name: 'Dup', tasks: [] })
 		expect(result.success).toBe(false)
 		if (result.success) return
@@ -86,7 +75,7 @@ describe('PhaseManager — add/remove/move/update Result matrix, through Workflo
 	})
 
 	it('add fails MUTATION for an index BEFORE the boundary (an already-started prefix)', () => {
-		const workflow = workflowWithPhases()
+		const workflow = buildWorkflowPhases()
 		workflow.phase('a')?.skip() // 'a' is non-pending → boundary is 1
 		const result = workflow.add({ id: 'x', name: 'X', tasks: [] }, 0)
 		expect(result.success).toBe(false)
@@ -96,7 +85,7 @@ describe('PhaseManager — add/remove/move/update Result matrix, through Workflo
 	})
 
 	it('add fails MUTATION when the workflow is terminal', () => {
-		const workflow = workflowWithPhases()
+		const workflow = buildWorkflowPhases()
 		workflow.stop()
 		const result = workflow.add({ id: 'x', name: 'X', tasks: [] })
 		expect(result.success).toBe(false)
@@ -105,7 +94,7 @@ describe('PhaseManager — add/remove/move/update Result matrix, through Workflo
 	})
 
 	it('remove succeeds on a pending suffix phase and returns it as the success value', () => {
-		const workflow = workflowWithPhases()
+		const workflow = buildWorkflowPhases()
 		const result = workflow.remove('c')
 		expect(result.success).toBe(true)
 		if (!result.success) return
@@ -114,7 +103,7 @@ describe('PhaseManager — add/remove/move/update Result matrix, through Workflo
 	})
 
 	it('remove fails MUTATION on a missing id', () => {
-		const workflow = workflowWithPhases()
+		const workflow = buildWorkflowPhases()
 		const result = workflow.remove('missing')
 		expect(result.success).toBe(false)
 		if (result.success) return
@@ -122,7 +111,7 @@ describe('PhaseManager — add/remove/move/update Result matrix, through Workflo
 	})
 
 	it('remove fails MUTATION on a phase before the boundary', () => {
-		const workflow = workflowWithPhases()
+		const workflow = buildWorkflowPhases()
 		workflow.phase('a')?.skip() // boundary is 1
 		const result = workflow.remove('a')
 		expect(result.success).toBe(false)
@@ -132,7 +121,7 @@ describe('PhaseManager — add/remove/move/update Result matrix, through Workflo
 	})
 
 	it('move repositions a suffix phase within the suffix, order asserted through phases()', () => {
-		const workflow = workflowWithPhases()
+		const workflow = buildWorkflowPhases()
 		const result = workflow.move('a', 2)
 		expect(result.success).toBe(true)
 		if (!result.success) return
@@ -141,17 +130,17 @@ describe('PhaseManager — add/remove/move/update Result matrix, through Workflo
 	})
 
 	it('move fails MUTATION on a missing id / a source before the boundary / a destination before the boundary', () => {
-		const missing = workflowWithPhases()
+		const missing = buildWorkflowPhases()
 		expect(missing.move('nope', 0).success).toBe(false)
 
-		const sourceBeforeBoundary = workflowWithPhases()
+		const sourceBeforeBoundary = buildWorkflowPhases()
 		sourceBeforeBoundary.phase('a')?.skip() // boundary is 1
 		const sourceResult = sourceBeforeBoundary.move('a', 2)
 		expect(sourceResult.success).toBe(false)
 		if (sourceResult.success) return
 		expect(sourceResult.error.code).toBe('MUTATION')
 
-		const destBeforeBoundary = workflowWithPhases()
+		const destBeforeBoundary = buildWorkflowPhases()
 		destBeforeBoundary.phase('a')?.skip() // boundary is 1
 		const destResult = destBeforeBoundary.move('c', 0)
 		expect(destResult.success).toBe(false)
@@ -160,7 +149,7 @@ describe('PhaseManager — add/remove/move/update Result matrix, through Workflo
 	})
 
 	it('update applies a valid patch to a suffix phase and returns it', () => {
-		const workflow = workflowWithPhases()
+		const workflow = buildWorkflowPhases()
 		const result = workflow.update('a', { name: 'Renamed', concurrency: 2 })
 		expect(result.success).toBe(true)
 		if (!result.success) return
@@ -169,17 +158,17 @@ describe('PhaseManager — add/remove/move/update Result matrix, through Workflo
 	})
 
 	it('update fails MUTATION on a missing id / a phase before the boundary / a terminal workflow', () => {
-		const missing = workflowWithPhases()
+		const missing = buildWorkflowPhases()
 		expect(missing.update('nope', { name: 'x' }).success).toBe(false)
 
-		const beforeBoundary = workflowWithPhases()
+		const beforeBoundary = buildWorkflowPhases()
 		beforeBoundary.phase('a')?.skip() // boundary is 1
 		const boundaryResult = beforeBoundary.update('a', { name: 'x' })
 		expect(boundaryResult.success).toBe(false)
 		if (boundaryResult.success) return
 		expect(boundaryResult.error.code).toBe('MUTATION')
 
-		const terminal = workflowWithPhases()
+		const terminal = buildWorkflowPhases()
 		terminal.stop()
 		const terminalResult = terminal.update('b', { name: 'x' })
 		expect(terminalResult.success).toBe(false)
@@ -188,7 +177,7 @@ describe('PhaseManager — add/remove/move/update Result matrix, through Workflo
 	})
 
 	it('emits add/move/remove/update only on success', () => {
-		const workflow = workflowWithPhases()
+		const workflow = buildWorkflowPhases()
 		const events: string[] = []
 		workflow.emitter.on('add', () => events.push('add'))
 		workflow.emitter.on('move', () => events.push('move'))

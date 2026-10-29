@@ -1,3 +1,4 @@
+import { buildPhaseTasks } from '../../../setup.js'
 import { createWorkflow } from '@src/core'
 import { describe, expect, it } from 'vitest'
 
@@ -6,41 +7,21 @@ import { describe, expect, it } from 'vitest'
 // factory build) — real data, no mocks.
 
 /** A live phase whose `tasks` manager holds `t0, t1, t2`. */
-function phaseWithTasks() {
-	const workflow = createWorkflow({
-		id: 'wf',
-		name: 'WF',
-		phases: [
-			{
-				id: 'p',
-				name: 'P',
-				tasks: [
-					{ id: 't0', name: 'T0', behavior: 'f' },
-					{ id: 't1', name: 'T1', behavior: 'f' },
-					{ id: 't2', name: 'T2', behavior: 'f' },
-				],
-			},
-		],
-	})
-	const phase = workflow.phase('p')
-	if (phase === undefined) throw new Error('expected the phase to exist')
-	return phase
-}
 
 describe('TaskManager — accessors', () => {
 	it('count reflects the appended tasks', () => {
-		expect(phaseWithTasks().tasks.count).toBe(3)
+		expect(buildPhaseTasks().tasks.count).toBe(3)
 	})
 
 	it('task(id) looks one up, undefined for an unknown id', () => {
-		const tasks = phaseWithTasks().tasks
+		const tasks = buildPhaseTasks().tasks
 		expect(tasks.task('t1')?.id).toBe('t1')
 		expect(tasks.task('missing')).toBeUndefined()
 	})
 
 	it('tasks() lists in positional (append) order', () => {
 		expect(
-			phaseWithTasks()
+			buildPhaseTasks()
 				.tasks.tasks()
 				.map((task) => task.id),
 		).toEqual(['t0', 't1', 't2'])
@@ -49,7 +30,7 @@ describe('TaskManager — accessors', () => {
 
 describe('TaskManager — positional order survives an interior skip', () => {
 	it('a skipped interior task keeps its slot', () => {
-		const phase = phaseWithTasks()
+		const phase = buildPhaseTasks()
 		// Skip the MIDDLE task — a status change, not a removal, so order is unchanged.
 		phase.task('t1')?.skip()
 		expect(phase.tasks.tasks().map((task) => task.id)).toEqual(['t0', 't1', 't2'])
@@ -60,7 +41,7 @@ describe('TaskManager — positional order survives an interior skip', () => {
 
 describe('TaskManager — add/remove/move/update Result matrix, through Phase', () => {
 	it('add succeeds with the minted task as the success value, appended at the end by default', () => {
-		const phase = phaseWithTasks()
+		const phase = buildPhaseTasks()
 		const result = phase.add({ id: 't3', name: 'T3', behavior: 'f' })
 		expect(result.success).toBe(true)
 		if (!result.success) return
@@ -69,14 +50,14 @@ describe('TaskManager — add/remove/move/update Result matrix, through Phase', 
 	})
 
 	it('add at an explicit index inserts there, shifting the suffix (order asserted through tasks())', () => {
-		const phase = phaseWithTasks()
+		const phase = buildPhaseTasks()
 		const result = phase.add({ id: 't-mid', name: 'Mid', behavior: 'f' }, 1)
 		expect(result.success).toBe(true)
 		expect(phase.tasks.tasks().map((task) => task.id)).toEqual(['t0', 't-mid', 't1', 't2'])
 	})
 
 	it('add fails MUTATION on a duplicate id, leaving the manager unchanged', () => {
-		const phase = phaseWithTasks()
+		const phase = buildPhaseTasks()
 		const result = phase.add({ id: 't1', name: 'Dup', behavior: 'f' })
 		expect(result.success).toBe(false)
 		if (result.success) return
@@ -85,7 +66,7 @@ describe('TaskManager — add/remove/move/update Result matrix, through Phase', 
 	})
 
 	it('add fails MUTATION on an out-of-bounds index', () => {
-		const phase = phaseWithTasks()
+		const phase = buildPhaseTasks()
 		for (const index of [-1, 4]) {
 			const result = phase.add({ id: 't-oob', name: 'OOB', behavior: 'f' }, index)
 			expect(result.success).toBe(false)
@@ -96,7 +77,7 @@ describe('TaskManager — add/remove/move/update Result matrix, through Phase', 
 	})
 
 	it('remove succeeds on a pending task and returns it as the success value', () => {
-		const phase = phaseWithTasks()
+		const phase = buildPhaseTasks()
 		const result = phase.remove('t1')
 		expect(result.success).toBe(true)
 		if (!result.success) return
@@ -106,7 +87,7 @@ describe('TaskManager — add/remove/move/update Result matrix, through Phase', 
 	})
 
 	it('remove fails MUTATION on a missing id', () => {
-		const phase = phaseWithTasks()
+		const phase = buildPhaseTasks()
 		const result = phase.remove('missing')
 		expect(result.success).toBe(false)
 		if (result.success) return
@@ -114,7 +95,7 @@ describe('TaskManager — add/remove/move/update Result matrix, through Phase', 
 	})
 
 	it('remove fails MUTATION on a non-pending (running) task', () => {
-		const phase = phaseWithTasks()
+		const phase = buildPhaseTasks()
 		phase.task('t0')?.start()
 		const result = phase.remove('t0')
 		expect(result.success).toBe(false)
@@ -124,7 +105,7 @@ describe('TaskManager — add/remove/move/update Result matrix, through Phase', 
 	})
 
 	it('move repositions a pending task, order asserted through tasks()', () => {
-		const phase = phaseWithTasks()
+		const phase = buildPhaseTasks()
 		const result = phase.move('t0', 2)
 		expect(result.success).toBe(true)
 		if (!result.success) return
@@ -133,14 +114,14 @@ describe('TaskManager — add/remove/move/update Result matrix, through Phase', 
 	})
 
 	it('move fails MUTATION on a missing id / non-pending task / out-of-bounds destination', () => {
-		const missing = phaseWithTasks()
+		const missing = buildPhaseTasks()
 		expect(missing.move('nope', 0).success).toBe(false)
 
-		const running = phaseWithTasks()
+		const running = buildPhaseTasks()
 		running.task('t0')?.start()
 		expect(running.move('t0', 1).success).toBe(false)
 
-		const oob = phaseWithTasks()
+		const oob = buildPhaseTasks()
 		for (const index of [-1, 3]) {
 			const result = oob.move('t0', index)
 			expect(result.success).toBe(false)
@@ -150,7 +131,7 @@ describe('TaskManager — add/remove/move/update Result matrix, through Phase', 
 	})
 
 	it('update applies a valid patch to a pending task and returns it', () => {
-		const phase = phaseWithTasks()
+		const phase = buildPhaseTasks()
 		const result = phase.update('t0', { name: 'Renamed' })
 		expect(result.success).toBe(true)
 		if (!result.success) return
@@ -159,10 +140,10 @@ describe('TaskManager — add/remove/move/update Result matrix, through Phase', 
 	})
 
 	it('update fails MUTATION on a missing id / non-pending task', () => {
-		const missing = phaseWithTasks()
+		const missing = buildPhaseTasks()
 		expect(missing.update('nope', { name: 'x' }).success).toBe(false)
 
-		const running = phaseWithTasks()
+		const running = buildPhaseTasks()
 		running.task('t0')?.start()
 		const result = running.update('t0', { name: 'x' })
 		expect(result.success).toBe(false)

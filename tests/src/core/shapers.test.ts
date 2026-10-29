@@ -1,3 +1,4 @@
+import { buildFieldDefinition } from '../../setup.js'
 import type { WorkflowDefinition } from '@src/core'
 import { literalShape } from '@orkestrel/contract'
 import {
@@ -133,57 +134,33 @@ describe('per-field descriptions (Rank 1)', () => {
 // and reject a NEGATIVE retries/timeout (the `min: 0` refinement). Real contract, no mocks.
 describe('the added optional fields flow through the compiled contract', () => {
 	const contract = createWorkflowContract()
-	const withFields = (overrides: {
-		readonly bail?: boolean
-		readonly retries?: number
-		readonly timeout?: number
-	}): WorkflowDefinition => ({
-		id: 'w',
-		name: 'W',
-		phases: [
-			{
-				id: 'p',
-				name: 'P',
-				...(overrides.bail === undefined ? {} : { bail: overrides.bail }),
-				tasks: [
-					{
-						id: 't',
-						name: 'T',
-						behavior: 'f',
-						...(overrides.retries === undefined ? {} : { retries: overrides.retries }),
-						...(overrides.timeout === undefined ? {} : { timeout: overrides.timeout }),
-					},
-				],
-			},
-		],
-	})
 
 	it('accepts a per-phase bail + per-task retries / timeout (and parses unchanged)', () => {
-		const definition = withFields({ bail: true, retries: 2, timeout: 5000 })
+		const definition = buildFieldDefinition({ bail: true, retries: 2, timeout: 5000 })
 		expect(contract.is(definition)).toBe(true)
 		expect(contract.parse(definition)).toEqual(definition)
 	})
 
 	it('accepts retries / timeout of 0 (the min:0 boundary is inclusive)', () => {
-		const definition = withFields({ retries: 0, timeout: 0 })
+		const definition = buildFieldDefinition({ retries: 0, timeout: 0 })
 		expect(contract.is(definition)).toBe(true)
 	})
 
 	it('rejects a NEGATIVE retries (the min:0 refinement)', () => {
-		const definition = withFields({ retries: -1 })
+		const definition = buildFieldDefinition({ retries: -1 })
 		expect(contract.is(definition)).toBe(false)
 		expect(contract.parse(definition)).toBeUndefined()
 	})
 
 	it('rejects a NEGATIVE timeout (the min:0 refinement)', () => {
-		const definition = withFields({ timeout: -1 })
+		const definition = buildFieldDefinition({ timeout: -1 })
 		expect(contract.is(definition)).toBe(false)
 		expect(contract.parse(definition)).toBeUndefined()
 	})
 
 	it('accepts BOTH bail literals on a phase', () => {
-		expect(contract.is(withFields({ bail: true }))).toBe(true)
-		expect(contract.is(withFields({ bail: false }))).toBe(true)
+		expect(contract.is(buildFieldDefinition({ bail: true }))).toBe(true)
+		expect(contract.is(buildFieldDefinition({ bail: false }))).toBe(true)
 	})
 
 	it('accepts an omitted run (no handler), and rejects an empty-string run', () => {

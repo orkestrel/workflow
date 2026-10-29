@@ -3,7 +3,12 @@ import type { RunnerEvent } from '../../setup.js'
 import { describe, expect, it } from 'vitest'
 import { createRunner } from '@src/core'
 import { createRecorder, createRecorders, waitForDelay } from '@orkestrel/test'
-import { createErrorRecorder, RUNNER_EVENTS } from '../../setup.js'
+import {
+	createErrorRecorder,
+	RUNNER_EVENTS,
+	WorkflowObservation,
+	returnWorkflowZero,
+} from '../../setup.js'
 
 describe('Runner', () => {
 	it('execute runs every input and returns results in declared order', async () => {
@@ -62,39 +67,39 @@ describe('Runner', () => {
 
 	it('bounded concurrency limits handlers in flight', async () => {
 		const gate = Promise.withResolvers<void>()
-		let inFlight = 0
-		let peak = 0
+		const inFlight = new WorkflowObservation(0)
+		const peak = new WorkflowObservation(0)
 		const runner = createRunner<number, number>({
 			concurrency: 2,
 			handler: async (controller) => {
-				inFlight += 1
-				peak = Math.max(peak, inFlight)
+				inFlight.value += 1
+				peak.value = Math.max(peak.value, inFlight.value)
 				await gate.promise
-				inFlight -= 1
+				inFlight.value -= 1
 				return controller.input
 			},
 		})
 		const run = runner.execute([1, 2, 3, 4, 5])
 		// Let the queue saturate its two slots before releasing the gate.
 		await waitForDelay(10)
-		expect(peak).toBe(2)
+		expect(peak.value).toBe(2)
 		gate.resolve()
 		expect(await run).toEqual([1, 2, 3, 4, 5])
-		expect(peak).toBe(2)
+		expect(peak.value).toBe(2)
 	})
 
 	it('retries re-run a flaky unit until it succeeds', async () => {
-		let attempts = 0
+		const attempts = new WorkflowObservation(0)
 		const runner = createRunner<number, number>({
 			retries: 2,
 			handler: (controller) => {
-				attempts += 1
-				if (attempts < 3) throw new Error('flaky')
+				attempts.value += 1
+				if (attempts.value < 3) throw new Error('flaky')
 				return controller.input
 			},
 		})
 		expect(await runner.execute([7])).toEqual([7])
-		expect(attempts).toBe(3) // two retries after the first attempt
+		expect(attempts.value).toBe(3) // two retries after the first attempt
 	})
 
 	it('entries overrides retries PER ENTRY — a retried input recovers while a no-retry sibling fails', async () => {
@@ -176,17 +181,19 @@ describe('Runner', () => {
 	})
 
 	it('spawn outside an active run throws', async () => {
-		let escaped: ((input: number) => Promise<number>) | undefined
+		const escaped = new WorkflowObservation<((input: number) => Promise<number>) | undefined>(
+			undefined,
+		)
 		const runner = createRunner<number, number>({
 			handler: (controller) => {
-				escaped = (input) => controller.spawn(input)
+				escaped.value = controller.spawn.bind(controller)
 				return controller.input
 			},
 		})
 		await runner.execute([1])
 		// The captured spawn is invalid after the run settles (throws synchronously).
-		expect(escaped).toBeDefined()
-		expect(() => escaped?.(2)).toThrow('spawn is unavailable outside an active run')
+		expect(escaped.value).toBeDefined()
+		expect(() => escaped.value?.(2)).toThrow('spawn is unavailable outside an active run')
 	})
 
 	it('active reports the outstanding unit count, stopped flips after abort', async () => {
@@ -372,7 +379,7 @@ describe('Runner', () => {
 
 	it('abort fans out to a deeply-spawned grandchild (nested-spawn propagation)', async () => {
 		const release = Promise.withResolvers<void>()
-		let grandchildAborted: boolean | undefined
+		const grandchildAborted = new WorkflowObservation<boolean | undefined>(undefined)
 		const runner = createRunner<number, number>({
 			concurrency: 8,
 			retries: 0,
@@ -389,7 +396,7 @@ describe('Runner', () => {
 				}
 				// The grandchild parks until the ancestor's failure fans out to its signal.
 				await controller.wait()
-				grandchildAborted = controller.aborted
+				grandchildAborted.value = controller.aborted
 				return controller.input
 			},
 		})
@@ -403,7 +410,7 @@ describe('Runner', () => {
 		await waitForDelay(0)
 		// The grandchild — spawned two levels deep — observed its signal fire: `abort`
 		// reaches every tracked unit, not only the declared roots.
-		expect(grandchildAborted).toBe(true)
+		expect(grandchildAborted.value).toBe(true)
 	})
 
 	it('abort() is idempotent at the runner level', async () => {
@@ -654,7 +661,8 @@ describe('Runner', () => {
 				if (controller.input === 0) {
 					// Root spawns ten children: 10..19. Child 15 will fail; 10..14 are spawned
 					// before it, 16..19 after — all must observe the cascade.
-					for (let child = 10; child < 20; child += 1) void controller.spawn(child)
+					for (const child of Array.from({ length: 10 }, (_, index) => index + 10))
+						void controller.spawn(child)
 					await Promise.race([controller.wait(), release.promise])
 					return controller.input
 				}
@@ -794,7 +802,8 @@ describe('Runner', () => {
 			handler: (controller) => {
 				if (controller.input === 0) {
 					// Fan out 30 children (values 1000..1029) — none awaited.
-					for (let child = 0; child < fanout; child += 1) void controller.spawn(1000 + child)
+					for (const child of Array.from({ length: fanout }).keys())
+						void controller.spawn(1000 + child)
 				}
 				return controller.input
 			},
@@ -869,17 +878,19 @@ describe('Runner', () => {
 		// `spawn` is valid only during an active run. A handler in a big fan-out leaks its
 		// `controller.spawn`; after the whole closure settles, invoking it must throw — a
 		// captured controller cannot inject work into a finished run.
-		let escaped: ((input: number) => Promise<number>) | undefined
+		const escaped = new WorkflowObservation<((input: number) => Promise<number>) | undefined>(
+			undefined,
+		)
 		const runner = createRunner<number, number>({
 			concurrency: 8,
 			handler: (controller) => {
-				if (controller.input === 0) escaped = (input) => controller.spawn(input)
+				if (controller.input === 0) escaped.value = controller.spawn.bind(controller)
 				return controller.input
 			},
 		})
 		await runner.execute(Array.from({ length: 20 }, (_, index) => index))
-		expect(escaped).toBeDefined()
-		expect(() => escaped?.(5)).toThrow('spawn is unavailable outside an active run')
+		expect(escaped.value).toBeDefined()
+		expect(() => escaped.value?.(5)).toThrow('spawn is unavailable outside an active run')
 	})
 
 	it('deterministic spawn ordering: results are spawn-order, not completion-order (gate-driven)', async () => {
@@ -1440,20 +1451,20 @@ describe('Runner — lifecycle and hostile option boundaries', () => {
 	})
 
 	it('reads constructor and resolved entry options once, including inherited and non-enumerable values', async () => {
-		let handlerReads = 0
-		let concurrencyReads = 0
-		let retriesReads = 0
-		let timeoutReads = 0
-		let entriesReads = 0
-		let resolverReads = 0
-		let entryRetriesReads = 0
-		let entryTimeoutReads = 0
-		let attempts = 0
+		const handlerReads = new WorkflowObservation(0)
+		const concurrencyReads = new WorkflowObservation(0)
+		const retriesReads = new WorkflowObservation(0)
+		const timeoutReads = new WorkflowObservation(0)
+		const entriesReads = new WorkflowObservation(0)
+		const resolverReads = new WorkflowObservation(0)
+		const entryRetriesReads = new WorkflowObservation(0)
+		const entryTimeoutReads = new WorkflowObservation(0)
+		const attempts = new WorkflowObservation(0)
 		const entry: RunnerEntryOptions = {}
 		const entryPrototype = {}
 		Object.defineProperty(entryPrototype, 'retries', {
 			get: () => {
-				entryRetriesReads += 1
+				entryRetriesReads.value += 1
 				return 1
 			},
 		})
@@ -1461,15 +1472,15 @@ describe('Runner — lifecycle and hostile option boundaries', () => {
 		Object.defineProperty(entry, 'timeout', {
 			enumerable: false,
 			get: () => {
-				entryTimeoutReads += 1
+				entryTimeoutReads.value += 1
 				return 1_000
 			},
 		})
-		const options: RunnerOptions<number, number> = { handler: () => 0 }
+		const options: RunnerOptions<number, number> = { handler: returnWorkflowZero }
 		const optionsPrototype = {}
 		Object.defineProperty(optionsPrototype, 'concurrency', {
 			get: () => {
-				concurrencyReads += 1
+				concurrencyReads.value += 1
 				return 1
 			},
 		})
@@ -1478,10 +1489,10 @@ describe('Runner — lifecycle and hostile option boundaries', () => {
 			handler: {
 				enumerable: false,
 				get: () => {
-					handlerReads += 1
+					handlerReads.value += 1
 					return (controller: { readonly input: number }) => {
-						attempts += 1
-						if (attempts === 1) throw new Error('retry once')
+						attempts.value += 1
+						if (attempts.value === 1) throw new Error('retry once')
 						return controller.input
 					}
 				},
@@ -1489,23 +1500,23 @@ describe('Runner — lifecycle and hostile option boundaries', () => {
 			retries: {
 				enumerable: false,
 				get: () => {
-					retriesReads += 1
+					retriesReads.value += 1
 					return 0
 				},
 			},
 			timeout: {
 				enumerable: false,
 				get: () => {
-					timeoutReads += 1
+					timeoutReads.value += 1
 					return 0
 				},
 			},
 			entries: {
 				enumerable: false,
 				get: () => {
-					entriesReads += 1
+					entriesReads.value += 1
 					return () => {
-						resolverReads += 1
+						resolverReads.value += 1
 						return entry
 					}
 				},
@@ -1513,15 +1524,15 @@ describe('Runner — lifecycle and hostile option boundaries', () => {
 		})
 		const runner = createRunner(options)
 		expect(await runner.execute([7])).toEqual([7])
-		expect(attempts).toBe(2)
-		expect(handlerReads).toBe(1)
-		expect(concurrencyReads).toBe(1)
-		expect(retriesReads).toBe(1)
-		expect(timeoutReads).toBe(1)
-		expect(entriesReads).toBe(1)
-		expect(resolverReads).toBe(1)
-		expect(entryRetriesReads).toBe(1)
-		expect(entryTimeoutReads).toBe(1)
+		expect(attempts.value).toBe(2)
+		expect(handlerReads.value).toBe(1)
+		expect(concurrencyReads.value).toBe(1)
+		expect(retriesReads.value).toBe(1)
+		expect(timeoutReads.value).toBe(1)
+		expect(entriesReads.value).toBe(1)
+		expect(resolverReads.value).toBe(1)
+		expect(entryRetriesReads.value).toBe(1)
+		expect(entryTimeoutReads.value).toBe(1)
 	})
 
 	it('converts a synchronous resolver throw into the normal failure path and balances every launch', async () => {
@@ -1544,12 +1555,12 @@ describe('Runner — lifecycle and hostile option boundaries', () => {
 	it('classifies a resolver-triggered graceful stop as never-dispatched work', async () => {
 		const runners: Array<RunnerInterface<number, number>> = []
 		const ran: number[] = []
-		let stopping: Promise<void> | undefined
+		const stopping = new WorkflowObservation<Promise<void> | undefined>(undefined)
 		const runner = createRunner<number, number>({
 			entries: () => {
 				const current = runners[0]
 				if (current === undefined) throw new Error('expected runner fixture')
-				stopping = current.stop()
+				stopping.value = current.stop()
 				return {}
 			},
 			handler: (controller) => {
@@ -1560,8 +1571,8 @@ describe('Runner — lifecycle and hostile option boundaries', () => {
 		runners.push(runner)
 
 		await expect(runner.execute([1, 2])).resolves.toEqual([])
-		if (stopping === undefined) throw new Error('expected resolver stop')
-		await stopping
+		if (stopping.value === undefined) throw new Error('expected resolver stop')
+		await stopping.value
 
 		expect(ran).toEqual([])
 		expect(runner.active).toBe(0)
@@ -1585,7 +1596,7 @@ describe('Runner — lifecycle and hostile option boundaries', () => {
 	it('escalates a graceful stop when an in-flight unit fails and cancels its dispatched sibling', async () => {
 		const release = Promise.withResolvers<void>()
 		const failure = new Error('failed after stop')
-		let siblingAborted = false
+		const siblingAborted = new WorkflowObservation(false)
 		const runner = createRunner<string, string>({
 			concurrency: 2,
 			handler: async (controller) => {
@@ -1594,7 +1605,7 @@ describe('Runner — lifecycle and hostile option boundaries', () => {
 					throw failure
 				}
 				await controller.wait()
-				siblingAborted = controller.aborted
+				siblingAborted.value = controller.aborted
 				return controller.input
 			},
 		})
@@ -1604,7 +1615,7 @@ describe('Runner — lifecycle and hostile option boundaries', () => {
 		release.resolve()
 		await expect(run).rejects.toBe(failure)
 		await stopping
-		expect(siblingAborted).toBe(true)
+		expect(siblingAborted.value).toBe(true)
 		expect(runner.active).toBe(0)
 	})
 
@@ -1644,14 +1655,14 @@ describe('Runner — lifecycle and hostile option boundaries', () => {
 			runner.emitter,
 			RUNNER_EVENTS,
 		)
-		let stopping: Promise<void> | undefined
+		const stopping = new WorkflowObservation<Promise<void> | undefined>(undefined)
 		runner.emitter.on('start', () => {
-			stopping = runner.stop()
+			stopping.value = runner.stop()
 		})
 
 		await expect(runner.execute([])).resolves.toEqual([])
-		if (stopping === undefined) throw new Error('expected start listener to stop runner')
-		await stopping
+		if (stopping.value === undefined) throw new Error('expected start listener to stop runner')
+		await stopping.value
 		expect(events.start.count).toBe(1)
 		expect(events.finish.calls).toEqual([[[]]])
 		expect(events.abort.count).toBe(0)
@@ -1661,14 +1672,14 @@ describe('Runner — lifecycle and hostile option boundaries', () => {
 
 	it('orders a start-listener spawn after every declared input', async () => {
 		const runner = createRunner<number, number>({ handler: (controller) => controller.input })
-		let spawned: Promise<number> | undefined
+		const spawned = new WorkflowObservation<Promise<number> | undefined>(undefined)
 		runner.emitter.on('start', () => {
-			spawned = runner.spawn(3)
+			spawned.value = runner.spawn(3)
 		})
 
 		await expect(runner.execute([1, 2])).resolves.toEqual([1, 2, 3])
-		if (spawned === undefined) throw new Error('expected accepted start-listener spawn')
-		await expect(spawned).resolves.toBe(3)
+		if (spawned.value === undefined) throw new Error('expected accepted start-listener spawn')
+		await expect(spawned.value).resolves.toBe(3)
 	})
 
 	it('rejects an empty run with the exact reason when its start listener aborts', async () => {
@@ -1678,14 +1689,14 @@ describe('Runner — lifecycle and hostile option boundaries', () => {
 			runner.emitter,
 			RUNNER_EVENTS,
 		)
-		let aborting: Promise<void> | undefined
+		const aborting = new WorkflowObservation<Promise<void> | undefined>(undefined)
 		runner.emitter.on('start', () => {
-			aborting = runner.abort(reason)
+			aborting.value = runner.abort(reason)
 		})
 
 		await expect(runner.execute([])).rejects.toBe(reason)
-		if (aborting === undefined) throw new Error('expected start listener to abort runner')
-		await aborting
+		if (aborting.value === undefined) throw new Error('expected start listener to abort runner')
+		await aborting.value
 		expect(events.start.count).toBe(1)
 		expect(events.abort.calls).toEqual([[reason]])
 		expect(events.finish.count).toBe(0)
@@ -1698,14 +1709,14 @@ describe('Runner — lifecycle and hostile option boundaries', () => {
 			runner.emitter,
 			RUNNER_EVENTS,
 		)
-		let destroying: Promise<void> | undefined
+		const destroying = new WorkflowObservation<Promise<void> | undefined>(undefined)
 		runner.emitter.on('start', () => {
-			destroying = runner.destroy()
+			destroying.value = runner.destroy()
 		})
 
 		await expect(runner.execute([])).rejects.toThrow('runner aborted')
-		if (destroying === undefined) throw new Error('expected start listener to destroy runner')
-		await destroying
+		if (destroying.value === undefined) throw new Error('expected start listener to destroy runner')
+		await destroying.value
 		expect(events.start.count).toBe(1)
 		expect(events.abort.count).toBe(1)
 		expect(events.finish.count).toBe(0)
@@ -1725,15 +1736,15 @@ describe('Runner — lifecycle and hostile option boundaries', () => {
 			runner.emitter,
 			RUNNER_EVENTS,
 		)
-		let recursive: Promise<void> | undefined
+		const recursive = new WorkflowObservation<Promise<void> | undefined>(undefined)
 		runner.emitter.on('abort', () => {
-			recursive = runner.abort(new Error('ignored recursive reason'))
+			recursive.value = runner.abort(new Error('ignored recursive reason'))
 		})
 		const run = runner.execute([1])
 		await waitForDelay(10)
 		const aborting = runner.abort(reason)
 
-		expect(recursive).toBe(aborting)
+		expect(recursive.value).toBe(aborting)
 		await expect(run).rejects.toBe(reason)
 		await aborting
 		expect(events.abort.calls).toEqual([[reason]])
@@ -1753,15 +1764,15 @@ describe('Runner — lifecycle and hostile option boundaries', () => {
 			runner.emitter,
 			RUNNER_EVENTS,
 		)
-		let recursive: Promise<void> | undefined
+		const recursive = new WorkflowObservation<Promise<void> | undefined>(undefined)
 		runner.emitter.on('abort', () => {
-			recursive = runner.destroy()
+			recursive.value = runner.destroy()
 		})
 		const run = runner.execute([1])
 		await waitForDelay(10)
 		const destroying = runner.destroy()
 
-		expect(recursive).toBe(destroying)
+		expect(recursive.value).toBe(destroying)
 		expect(runner.destroy()).toBe(destroying)
 		expect(runner.emitter.destroyed).toBe(false)
 		cleanup.resolve()
@@ -1778,17 +1789,18 @@ describe('Runner — lifecycle and hostile option boundaries', () => {
 			runner.emitter,
 			RUNNER_EVENTS,
 		)
-		let destroying: Promise<void> | undefined
-		let destroyedDuring = true
+		const destroying = new WorkflowObservation<Promise<void> | undefined>(undefined)
+		const destroyedDuring = new WorkflowObservation(true)
 		runner.emitter.on('finish', () => {
-			destroyedDuring = runner.emitter.destroyed
-			destroying = runner.destroy()
+			destroyedDuring.value = runner.emitter.destroyed
+			destroying.value = runner.destroy()
 		})
 
 		await expect(runner.execute([1])).resolves.toEqual([1])
-		if (destroying === undefined) throw new Error('expected finish listener to destroy runner')
-		await destroying
-		expect(destroyedDuring).toBe(false)
+		if (destroying.value === undefined)
+			throw new Error('expected finish listener to destroy runner')
+		await destroying.value
+		expect(destroyedDuring.value).toBe(false)
 		expect(events.finish.calls).toEqual([[[1]]])
 		expect(events.abort.count).toBe(1)
 		expect(runner.active).toBe(0)
@@ -1829,11 +1841,13 @@ describe('Runner — lifecycle and hostile option boundaries', () => {
 
 	it('rejects Controller.spawn after stop before creating observable work', async () => {
 		const gate = Promise.withResolvers<void>()
-		let spawn: ((input: number) => Promise<number>) | undefined
+		const spawn = new WorkflowObservation<((input: number) => Promise<number>) | undefined>(
+			undefined,
+		)
 		const events = createRecorder<[string, string | undefined]>()
 		const runner = createRunner<number, number>({
 			handler: async (controller) => {
-				spawn = (input) => controller.spawn(input)
+				spawn.value = controller.spawn.bind(controller)
 				await gate.promise
 				return controller.input
 			},
@@ -1843,7 +1857,7 @@ describe('Runner — lifecycle and hostile option boundaries', () => {
 		await waitForDelay(10)
 		const stopping = runner.stop()
 		const active = runner.active
-		expect(() => spawn?.(2)).toThrow('spawn is unavailable outside an active run')
+		expect(() => spawn.value?.(2)).toThrow('spawn is unavailable outside an active run')
 		expect(runner.active).toBe(active)
 		expect(events.count).toBe(0)
 		gate.resolve()

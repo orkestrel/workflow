@@ -17,7 +17,6 @@ import type {
 	WorkflowSnapshot,
 } from './types.js'
 import type { Failure, Success } from '@orkestrel/contract'
-import { isAbortSignal, linkSignal } from '@orkestrel/abort'
 import {
 	isArray,
 	isBoolean,
@@ -31,7 +30,6 @@ import {
 	isString,
 } from '@orkestrel/contract'
 import { DEFAULT_BAIL, MAX_TIMER_MS, TASK_TRANSITIONS, TERMINAL_STATUSES } from './constants.js'
-import { WorkflowError } from './errors.js'
 import { isLifecycleStatus, isTaskFailure } from './validators.js'
 
 /**
@@ -186,7 +184,7 @@ export function isCompletable(workflow: WorkflowInterface): boolean {
 }
 
 /**
- * Tests whether a task attempt is being genuinely cancelled rather than merely timed out.
+ * Tests whether a task attempt is aborted rather than merely timed out.
  *
  * @remarks
  * The discriminator that keeps a per-attempt deadline off the skip path. Three causes fire a
@@ -195,19 +193,19 @@ export function isCompletable(workflow: WorkflowInterface): boolean {
  * `bail: true`, or a run-level abort / timeout / budget / `destroy`). A bare per-attempt timeout
  * fires neither — it aborts only the deadline portion of the attempt signal — so it stays a
  * retryable failure of that attempt instead of skipping the leaf and losing the recorded fault.
- * Read fresh at each call so a cancel that lands mid-dispatch is seen.
+ * Read fresh at each call so an abort that lands mid-dispatch is seen.
  *
  * @param task - The live task the attempt is driving
  * @param controller - The substrate unit handle carrying the unit-level abort
- * @param runSignal - The run's folded cancellation signal
- * @returns True if the attempt is being genuinely cancelled; false otherwise
+ * @param runSignal - The run's folded abort signal
+ * @returns True if the attempt is aborted; false otherwise
  *
  * @example
  * ```ts
- * isSkipping(task, controller, runSignal) // false until a cancel fires
+ * matchesAbortedAttempt(task, controller, runSignal) // false until an abort fires
  * ```
  */
-export function isSkipping(
+export function matchesAbortedAttempt(
 	task: TaskInterface,
 	controller: ControllerInterface<TaskInterface, void>,
 	runSignal: AbortSignal,
@@ -238,7 +236,7 @@ export function isSkipping(
  * ```
  */
 export function ownsAttempt(
-	owners: Map<string, number>,
+	owners: ReadonlyMap<string, number>,
 	task: TaskInterface,
 	attempt: number,
 ): boolean {
@@ -649,54 +647,57 @@ export function taskDefinitionToSnapshot(
  * @returns The recovery projection
  */
 export function recoverWorkflowSnapshot(snapshot: WorkflowSnapshot): WorkflowSnapshot {
-	const phases: PhaseSnapshot[] = []
-	let halted = false
+	const recovery: Array<{ readonly phase: PhaseSnapshot; readonly halted: boolean }> = []
 	const now = Math.max(Date.now(), snapshot.updated)
 	const workflow = buildWorkflowContext(snapshot)
 	for (const phase of snapshot.phases) {
-		const exhausted = new Set<string>()
-		for (const task of phase.tasks) {
-			const budget = (task.retries ?? 0) + 1
-			if (task.status === 'running' && task.attempts >= budget) exhausted.add(task.id)
-		}
+		const halted = recovery.at(-1)?.halted ?? false
+		const exhausted = new Set(
+			Iterator.from(phase.tasks)
+				.filter((task) => {
+					const budget = (task.retries ?? 0) + 1
+					return task.status === 'running' && task.attempts >= budget
+				})
+				.map((task) => task.id),
+		)
 		const strict =
 			phase.bail && (exhausted.size > 0 || phase.tasks.some((task) => task.status === 'failed'))
-		const tasks: TaskSnapshot[] = []
-		for (const task of phase.tasks) {
-			const eligible = task.status === 'pending' || task.status === 'running'
-			if ((halted || strict) && eligible && !exhausted.has(task.id)) {
-				tasks.push({ ...task, status: 'skipped' })
-				continue
-			}
-			if (!exhausted.has(task.id)) {
-				if (task.status === 'running') {
-					const { activity: _activity, ...pending } = task
-					tasks.push({ ...pending, status: 'pending' })
-				} else tasks.push(task)
-				continue
-			}
-			const phaseContext = buildPhaseContext(workflow, phase)
-			const taskContext = buildTaskContext(phaseContext, task)
-			const result: TaskResult = {
-				task: taskContext,
-				phase: phaseContext,
-				workflow,
-				status: 'failed',
-				result: {
-					success: false,
-					error: {
-						origin: 'recovery',
-						message: `task '${task.id}' exhausted its retry budget during recovery`,
+		const tasks = Iterator.from(phase.tasks)
+			.map((task): TaskSnapshot => {
+				const eligible = task.status === 'pending' || task.status === 'running'
+				if ((halted || strict) && eligible && !exhausted.has(task.id)) {
+					return { ...task, status: 'skipped' }
+				}
+				if (!exhausted.has(task.id)) {
+					if (task.status === 'running') {
+						const { activity: _activity, ...pending } = task
+						return { ...pending, status: 'pending' }
+					}
+					return task
+				}
+				const phaseContext = buildPhaseContext(workflow, phase)
+				const taskContext = buildTaskContext(phaseContext, task)
+				const result: TaskResult = {
+					task: taskContext,
+					phase: phaseContext,
+					workflow,
+					status: 'failed',
+					result: {
+						success: false,
+						error: {
+							origin: 'recovery',
+							message: `task '${task.id}' exhausted its retry budget during recovery`,
+						},
 					},
-				},
-				timestamp: now,
-			}
-			tasks.push({ ...task, status: 'failed', result })
-		}
+					timestamp: now,
+				}
+				return { ...task, status: 'failed', result }
+			})
+			.toArray()
 		const status = derivePhaseStatus(tasks.map((task) => task.status))
-		phases.push({ ...phase, status, tasks })
-		if (strict) halted = true
+		recovery.push({ phase: { ...phase, status, tasks }, halted: halted || strict })
 	}
+	const phases = recovery.map((entry) => entry.phase)
 	return {
 		...snapshot,
 		status: deriveWorkflowStatus(
@@ -1040,126 +1041,6 @@ export function moveEntry<T>(
 	const [entry] = next.splice(at, 1)
 	if (entry !== undefined) next.splice(index, 0, entry)
 	return next
-}
-
-/**
- * Schedules one cancellable host operation behind an owned settlement signal.
- *
- * @remarks
- * A defined `signal` that is not a native `AbortSignal` is refused before anything is armed, as a
- * rejected promise carrying a {@link import('./errors.js').WorkflowError} with the `SCHEDULE` code.
- * Rejecting rather than throwing keeps every caller on one settlement path, so a backend never has
- * to guard the call itself.
- *
- * The guard is necessary but not sufficient, so linking stays contained. A `Proxy` over a native
- * signal passes the guard and can still make linking throw from a trap, and that escape would be
- * synchronous — the one shape every caller here is built not to expect. Containment turns it into
- * the same `SCHEDULE` rejection, so setup has exactly one failure shape however hostile the input.
- *
- * The completion and failure paths each own an {@link AbortController}; their native composite is
- * linked to the optional caller signal before `start` can arm host work. Scheduler backends attach
- * only to that safe composite, so caller mutation of `addEventListener` or `removeEventListener`
- * cannot strand the operation. The first completion resolves, the first host failure rejects with
- * its exact value, and caller abort rejects with its exact linked reason. Caller abort and host
- * failure cancel an armed handle; synchronous settlement also cancels the handle immediately after
- * `start` returns it. Cancellation is secondary cleanup: if its closure throws, the already-winning
- * completion, exact host failure, or exact caller reason still settles without escape or replacement.
- *
- * @param start - Arm host work and return its cancellation closure
- * @param signal - Optional caller cancellation signal
- * @returns A promise settled exactly once by an invalid-signal refusal, completion, host failure,
- *   or caller abort
- */
-export function scheduleHost(
-	start: (complete: () => void, failure: (error: unknown) => void) => () => void,
-	signal?: AbortSignal,
-): Promise<void> {
-	if (signal !== undefined && !isAbortSignal(signal)) {
-		return Promise.reject(
-			new WorkflowError('SCHEDULE', 'scheduleHost signal must be an AbortSignal', {
-				signal: typeof signal,
-			}),
-		)
-	}
-	const completion = new AbortController()
-	const failed = new AbortController()
-	let settled: AbortSignal
-	try {
-		settled = linkSignal(AbortSignal.any([completion.signal, failed.signal]), signal)
-	} catch {
-		return Promise.reject(
-			new WorkflowError('SCHEDULE', 'scheduleHost could not link the caller signal', {
-				signal: typeof signal,
-			}),
-		)
-	}
-	if (settled.aborted) return Promise.reject(settled.reason)
-	return new Promise<void>((resolve, reject) => {
-		let cancel: (() => void) | undefined
-		let hostFailure: unknown
-		settled.addEventListener(
-			'abort',
-			() => {
-				if (completion.signal.aborted) {
-					resolve()
-					return
-				}
-				const reason = failed.signal.aborted ? hostFailure : settled.reason
-				try {
-					cancel?.()
-				} catch {}
-				reject(reason)
-			},
-			{ once: true },
-		)
-		try {
-			cancel = start(
-				() => completion.abort(),
-				(error) => {
-					hostFailure = error
-					failed.abort()
-				},
-			)
-		} catch (error) {
-			hostFailure = error
-			failed.abort()
-		}
-		if (settled.aborted) {
-			try {
-				cancel?.()
-			} catch {}
-		}
-	})
-}
-
-/**
- * Schedules the shared host timer boundary every scheduler backend resumes from.
- *
- * @remarks
- * The one `setTimeout` / `clearTimeout` boundary in the package: the cross-environment
- * {@link import('./Scheduler.js').Scheduler}, both Node primitives, and every browser backend's
- * `delay` and macrotask fallback route here, so the timer is armed and cleared in one place. It
- * composes {@link scheduleHost}, which owns listener safety, the cancellation race, the exact
- * caller reason, and once-only settlement. It does not validate `ms`: the value passes straight to
- * the host `setTimeout`, which clamps a negative value or `NaN` to about zero, so an
- * out-of-domain `ms` resumes on the next host turn rather than throwing. Pass a non-negative
- * finite `ms`.
- *
- * @param ms - The milliseconds to wait before resuming
- * @param signal - Optional caller cancellation signal
- * @returns A promise that resolves after `ms`, or rejects with the caller's exact abort reason
- *
- * @example
- * ```ts
- * const controller = new AbortController()
- * await delayHost(0, controller.signal) // a real macrotask host turn
- * ```
- */
-export function delayHost(ms: number, signal?: AbortSignal): Promise<void> {
-	return scheduleHost((complete) => {
-		const handle = setTimeout(complete, ms)
-		return () => clearTimeout(handle)
-	}, signal)
 }
 
 /**

@@ -2,7 +2,7 @@ import type { SchedulerPriority } from '@src/core'
 import { Scheduler } from '@src/core'
 import { describe, expect, it } from 'vitest'
 import { createRecorder, waitForDelay } from '@orkestrel/test'
-import { instrumentSignal } from '../../setup.js'
+import { instrumentSignal, WorkflowObservation } from '../../setup.js'
 
 // Scheduler is exercised against the real host clock. These tests observe ordering,
 // elapsed time, cancellation, and listener ownership without inspecting timer internals.
@@ -11,15 +11,15 @@ describe('Scheduler', () => {
 	describe('yield', () => {
 		it('resolves asynchronously after the current task', async () => {
 			const scheduler = new Scheduler()
-			let resumed = false
+			const resumed = new WorkflowObservation(false)
 
 			const pending = scheduler.yield().then(() => {
-				resumed = true
+				resumed.value = true
 			})
-			expect(resumed).toBe(false)
+			expect(resumed.value).toBe(false)
 
 			await pending
-			expect(resumed).toBe(true)
+			expect(resumed.value).toBe(true)
 		})
 
 		it('yields as a macrotask after an already-queued microtask', async () => {
@@ -171,13 +171,13 @@ describe('Scheduler', () => {
 			const values: readonly number[] = [0, -0, -100, Number.NaN]
 
 			for (const value of values) {
-				let resumed = false
+				const resumed = new WorkflowObservation(false)
 				const pending = scheduler.delay(value).then(() => {
-					resumed = true
+					resumed.value = true
 				})
-				expect(resumed).toBe(false)
+				expect(resumed.value).toBe(false)
 				await pending
-				expect(resumed).toBe(true)
+				expect(resumed.value).toBe(true)
 			}
 		})
 
@@ -206,7 +206,8 @@ describe('Scheduler', () => {
 			const controller = new AbortController()
 			const { added, removed } = instrumentSignal(controller.signal)
 
-			for (let cycle = 0; cycle < 25; cycle += 1) {
+			for (const cycle of Array.from({ length: 25 }).keys()) {
+				void cycle
 				await scheduler.delay(0, { signal: controller.signal })
 			}
 
@@ -218,7 +219,8 @@ describe('Scheduler', () => {
 			const scheduler = new Scheduler()
 			const settled = createRecorder<readonly ['resolved' | 'rejected']>()
 
-			for (let cycle = 0; cycle < 25; cycle += 1) {
+			for (const cycle of Array.from({ length: 25 }).keys()) {
+				void cycle
 				const controller = new AbortController()
 				const pending = scheduler.delay(20, { signal: controller.signal }).then(
 					() => settled.handler('resolved'),

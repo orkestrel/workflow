@@ -2,7 +2,7 @@ import type { SchedulerPriority } from '@src/core'
 import { NodeScheduler } from '@src/server'
 import { describe, expect, it } from 'vitest'
 import { createRecorder, waitForDelay } from '@orkestrel/test'
-import { instrumentSignal } from '../../setup.js'
+import { instrumentSignal, WorkflowObservation } from '../../setup.js'
 
 // NodeScheduler is exercised against real setImmediate and setTimeout behavior. Abort
 // reasons must remain verbatim rather than being replaced by a Node AbortError.
@@ -146,13 +146,13 @@ describe('NodeScheduler', () => {
 			const values: readonly number[] = [0, -0, -100, Number.NaN]
 
 			for (const value of values) {
-				let resumed = false
+				const resumed = new WorkflowObservation(false)
 				const pending = scheduler.delay(value).then(() => {
-					resumed = true
+					resumed.value = true
 				})
-				expect(resumed).toBe(false)
+				expect(resumed.value).toBe(false)
 				await pending
-				expect(resumed).toBe(true)
+				expect(resumed.value).toBe(true)
 			}
 		})
 
@@ -181,7 +181,8 @@ describe('NodeScheduler', () => {
 			const controller = new AbortController()
 			const { added, removed } = instrumentSignal(controller.signal)
 
-			for (let cycle = 0; cycle < 25; cycle += 1) {
+			for (const cycle of Array.from({ length: 25 }).keys()) {
+				void cycle
 				await scheduler.delay(0, { signal: controller.signal })
 			}
 
@@ -193,7 +194,8 @@ describe('NodeScheduler', () => {
 			const scheduler = new NodeScheduler()
 			const settled = createRecorder<readonly ['resolved' | 'rejected']>()
 
-			for (let cycle = 0; cycle < 25; cycle += 1) {
+			for (const cycle of Array.from({ length: 25 }).keys()) {
+				void cycle
 				const controller = new AbortController()
 				const pending = scheduler.delay(20, { signal: controller.signal }).then(
 					() => settled.handler('resolved'),

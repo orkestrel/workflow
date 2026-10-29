@@ -1,5 +1,5 @@
 import type { SchedulerInterface, SchedulerOptions, SchedulerPriority } from '@src/core'
-import { delayHost, scheduleHost } from '@src/core'
+import { createHostDelay, createHostSchedule } from '@src/core'
 import { isFunction, isPromise, isRecord } from '@orkestrel/contract'
 import { POST_TASK_PRIORITY } from './constants.js'
 
@@ -18,7 +18,7 @@ import { POST_TASK_PRIORITY } from './constants.js'
  *   never an `as`. Where the API is absent (Firefox today, older engines),
  *   it **falls back** to a `setTimeout(0)` macrotask — still a real host-turn, without
  *   priority. `delay(ms)` is always a real `setTimeout`.
- * - **Abort fidelity is verbatim.** The shared `scheduleHost` lifecycle links an owned
+ * - **Abort fidelity is verbatim.** The shared `createHostSchedule` lifecycle links an owned
  *   settlement composite before scheduling, preserving the exact caller reason without
  *   invoking caller-owned signal methods. The caller signal is not handed to `postTask`;
  *   an internal controller cancels that native task. An unexpected native promise rejection
@@ -46,7 +46,7 @@ export class BrowserScheduler implements SchedulerInterface {
 	 */
 	yield(options?: SchedulerOptions): Promise<void> {
 		const post = this.#postTask()
-		if (post === undefined) return delayHost(0, options?.signal)
+		if (post === undefined) return createHostDelay(0, options?.signal)
 		return this.#yieldVia(post, options?.priority ?? 'normal', options?.signal)
 	}
 
@@ -60,7 +60,7 @@ export class BrowserScheduler implements SchedulerInterface {
 	 * out-of-domain `ms` resolves on the next host turn rather than throwing.
 	 */
 	delay(ms: number, options?: SchedulerOptions): Promise<void> {
-		return delayHost(ms, options?.signal)
+		return createHostDelay(ms, options?.signal)
 	}
 
 	// === Private
@@ -76,14 +76,14 @@ export class BrowserScheduler implements SchedulerInterface {
 		return (callback, options) => Reflect.apply(post, candidate, [callback, options])
 	}
 
-	// A `scheduler.postTask` boundary with an internal cancellation controller; `scheduleHost`
+	// A `scheduler.postTask` boundary with an internal cancellation controller; `createHostSchedule`
 	// owns caller linking and first-settlement arbitration, including native promise failure.
 	#yieldVia(
 		post: (callback: () => void, options: Record<string, unknown>) => unknown,
 		priority: SchedulerPriority,
 		signal?: AbortSignal,
 	): Promise<void> {
-		return scheduleHost((complete, failure) => {
+		return createHostSchedule((complete, failure) => {
 			const internal = new AbortController()
 			const task = post(complete, {
 				priority: POST_TASK_PRIORITY[priority],

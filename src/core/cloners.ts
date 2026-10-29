@@ -1,5 +1,5 @@
 import type { TaskActivity, WorkflowSnapshot } from './types.js'
-import { cloneJSONValue, isArray, isContractError, isRecord } from '@orkestrel/contract'
+import { attempt, cloneJSONValue, isArray, isContractError, isRecord } from '@orkestrel/contract'
 import { WorkflowError, isWorkflowError } from './errors.js'
 import { scanSnapshotContext } from './helpers.js'
 import { isOwnedWorkflowSnapshot, isTaskActivity } from './validators.js'
@@ -13,10 +13,9 @@ import { isOwnedWorkflowSnapshot, isTaskActivity } from './validators.js'
  * @throws {WorkflowError} With `RESTORE` when the snapshot is invalid or does not match `id`
  */
 export function cloneWorkflowSnapshot(input: unknown, id?: string): WorkflowSnapshot {
-	let cloned: unknown
-	try {
-		cloned = cloneJSONValue(input)
-	} catch (error) {
+	const outcome = attempt(() => cloneJSONValue(input))
+	if (!outcome.success) {
+		const error = outcome.error
 		if (isWorkflowError(error)) throw error
 		if (isContractError(error)) {
 			throw new WorkflowError(
@@ -26,6 +25,7 @@ export function cloneWorkflowSnapshot(input: unknown, id?: string): WorkflowSnap
 		}
 		throw new WorkflowError('RESTORE', 'workflow snapshot could not be read safely')
 	}
+	const cloned = outcome.value
 	if (!isOwnedWorkflowSnapshot(cloned)) {
 		throw new WorkflowError(
 			'RESTORE',
@@ -71,8 +71,7 @@ export function cloneTaskClaims(input: unknown, noun: string): readonly unknown[
 	if (inputs === undefined) {
 		throw new WorkflowError('MUTATION', `task activity ${noun}s must be an array`)
 	}
-	const claims: unknown[] = []
-	for (const claim of inputs) {
+	return inputs.map((claim) => {
 		if (!isRecord(claim)) {
 			throw new WorkflowError('MUTATION', `task activity contains an invalid ${noun}`)
 		}
@@ -86,9 +85,31 @@ export function cloneTaskClaims(input: unknown, noun: string): readonly unknown[
 		const id = claim.id
 		const name = claim.name
 		const started = claim.started
-		claims.push(Object.freeze({ id, name, started }))
+		return Object.freeze({ id, name, started })
+	})
+}
+
+/** Copies a supplied task progress frame after checking its own keys and prototype. */
+export function cloneTaskProgress(input: unknown): unknown {
+	if (input === undefined) return undefined
+	if (!isRecord(input)) {
+		throw new WorkflowError('MUTATION', 'task activity contains invalid progress')
 	}
-	return claims
+	const prototype = Object.getPrototypeOf(input)
+	if (
+		(prototype !== Object.prototype && prototype !== null) ||
+		!Object.keys(input).every((key) => key === 'progress' || key === 'total' || key === 'message')
+	) {
+		throw new WorkflowError('MUTATION', 'task activity contains invalid progress')
+	}
+	const progress = input.progress
+	const total = input.total
+	const message = input.message
+	return Object.freeze({
+		progress,
+		...(total === undefined ? {} : { total }),
+		...(message === undefined ? {} : { message }),
+	})
 }
 
 /**
@@ -133,29 +154,7 @@ export function cloneTaskActivity(input: unknown, updated?: number): TaskActivit
 
 		const operations = cloneTaskClaims(operationsInput, 'operation')
 
-		let progress: unknown
-		if (progressInput !== undefined) {
-			if (!isRecord(progressInput)) {
-				throw new WorkflowError('MUTATION', 'task activity contains invalid progress')
-			}
-			const progressPrototype = Object.getPrototypeOf(progressInput)
-			if (
-				(progressPrototype !== Object.prototype && progressPrototype !== null) ||
-				!Object.keys(progressInput).every(
-					(key) => key === 'progress' || key === 'total' || key === 'message',
-				)
-			) {
-				throw new WorkflowError('MUTATION', 'task activity contains invalid progress')
-			}
-			const reported = progressInput.progress
-			const total = progressInput.total
-			const message = progressInput.message
-			progress = Object.freeze({
-				progress: reported,
-				...(total === undefined ? {} : { total }),
-				...(message === undefined ? {} : { message }),
-			})
-		}
+		const progress = cloneTaskProgress(progressInput)
 
 		const constraints = cloneTaskClaims(constraintsInput, 'constraint')
 

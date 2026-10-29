@@ -84,6 +84,15 @@ Why this is safe: the definition is the single source of truth. `execute` builds
 | `createScheduler`             | function | Creates the safe cross-environment cooperative-yield default — a `SchedulerInterface` built on `setTimeout` / `clearTimeout` alone, so it runs unchanged in both the browser and Node.                                                                                                                                                                                                                         |
 | `createRunner`                | function | Creates a thin generic orchestrator that drives declared units — and any they `spawn` — through a bounded-concurrency queue, collecting their results in order and failing the run fast on the first genuine unit failure.                                                                                                                                                                                     |
 
+### Copy a progress frame
+
+```ts
+import { cloneTaskProgress } from '@orkestrel/workflow'
+
+const progress = cloneTaskProgress({ progress: 1, total: 2 })
+Object.isFrozen(progress) // true
+```
+
 ### The entity tree
 
 The live runtime mirror of a definition. Each entity class implements its interface exactly, so the `## Methods` tables following double as its per-instance method surface.
@@ -131,16 +140,20 @@ Both handles are minted per dispatch from values only the driving engine holds �
 | `WorkflowPersistence` | class | Coordinates advanced run-local snapshot persistence with one writer and one coalesced most recent obligation, normally composed through `execute({ store })` rather than built directly.                                           |
 | `Runner`              | class | Implements a thin generic orchestrator that drives declared units — and any they `spawn` — through a bounded-concurrency `createQueue`, collecting ordered results.                                                                |
 | `RunHolder`           | class | Holds the active phase `RunnerInterface` for one `WorkflowRunnerInterface.execute` call, for the lifetime of that run.                                                                                                             |
+| `HostSchedule`        | class | Owns the cancellation and exact failure of one scheduled host operation.                                                                                                                                                           |
+| `WorkflowExecution`   | class | Owns the bounds, durability, and live phase cursor of one workflow execution.                                                                                                                                                      |
+| `TaskAttempt`         | class | Holds one handler outcome without moving its invocation or exception boundary.                                                                                                                                                     |
+| `PhaseExecution`      | class | Owns task launch membership, attempt counts, and active claims for one phase execution.                                                                                                                                            |
 
 ### Scheduler (pacing)
 
-The cooperative host-yield primitive that paces the engine between phases: a loop decides what to do; the scheduler decides when the host regains control. Every backend delegates setup, exact settlement, caller cancellation, and handle cleanup to the exported `scheduleHost` lifecycle helper, and every `delay` — plus each macrotask fallback — routes its timer through the one exported `delayHost` boundary, so no backend arms a `setTimeout` of its own. It links an owned native composite to the optional caller signal before host work is armed, so patched caller listener methods cannot strand a wait, pre-abort schedules nothing, and the first completion, exact host failure, or exact caller reason settles once. A returned cancellation closure is cleanup only: even if it throws during a later caller abort or host failure, the already-winning exact reason still settles the promise without escaping or hanging.
+The cooperative host-yield primitive that paces the engine between phases: a loop decides what to do; the scheduler decides when the host regains control. Every backend delegates setup, exact settlement, caller cancellation, and handle cleanup to the exported `createHostSchedule` lifecycle helper, and every `delay` — plus each macrotask fallback — routes its timer through the one exported `createHostDelay` boundary, so no backend arms a `setTimeout` of its own. It links an owned native composite to the optional caller signal before host work is armed, so patched caller listener methods cannot strand a wait, pre-abort schedules nothing, and the first completion, exact host failure, or exact caller reason settles once. A returned cancellation closure is cleanup only: even if it throws during a later caller abort or host failure, the already-winning exact reason still settles the promise without escaping or hanging.
 
 ```ts
-import { scheduleHost } from '@orkestrel/workflow'
+import { createHostSchedule } from '@orkestrel/workflow'
 
 const controller = new AbortController()
-await scheduleHost((complete) => {
+await createHostSchedule((complete) => {
 	const handle = setTimeout(complete, 0)
 	return () => clearTimeout(handle)
 }, controller.signal)
@@ -152,9 +165,9 @@ await scheduleHost((complete) => {
 
 ### Environment backends
 
-Beyond the cross-environment default, each host has a native cooperative-yield primitive a `yield()` can reach for. The backends are standalone `SchedulerInterface` implementations that retain only feature detection and native start/cancel boundaries; `scheduleHost` is the one shared lifecycle. A pending `yield` / `delay` rejects with `signal.reason` _verbatim_, an already-aborted signal rejects with that same reason before arming, a signal that is not a native `AbortSignal` rejects before arming with a `WorkflowError` carrying the `SCHEDULE` code, caller signal method mutation is harmless, cancellation clears the returned handle once, cancellation-closure failure is contained after the winner is captured, and native composite arbitration prevents late completion, abort, or failure from resettling. Each backend's `delay(ms)` is a real `setTimeout`; only the `yield` primitive differs.
+Beyond the cross-environment default, each host has a native cooperative-yield primitive a `yield()` can reach for. The backends are standalone `SchedulerInterface` implementations that retain only feature detection and native start/cancel boundaries; `createHostSchedule` is the one shared lifecycle. A pending `yield` / `delay` rejects with `signal.reason` _verbatim_, an already-aborted signal rejects with that same reason before arming, a signal that is not a native `AbortSignal` rejects before arming with a `WorkflowError` carrying the `SCHEDULE` code, caller signal method mutation is harmless, cancellation clears the returned handle once, cancellation-closure failure is contained after the winner is captured, and native composite arbitration prevents late completion, abort, or failure from resettling. Each backend's `delay(ms)` is a real `setTimeout`; only the `yield` primitive differs.
 
-The **Node** backend ships in [`src/server`](../src/server), published through `@orkestrel/workflow/server`. `NodeScheduler.yield()` waits on `setImmediate` — the canonical Node "give the event loop a turn", running after the current operation and pending I/O. It deliberately does **not** use `node:timers/promises` (whose `{ signal }` option rejects with a Node `AbortError`, `code: 'ABORT_ERR'`, _not_ the caller's `reason`); its `setImmediate` / `setTimeout` boundaries compose `scheduleHost` to preserve the caller reason. `priority` is accepted but a no-op — Node has no priority primitive.
+The **Node** backend ships in [`src/server`](../src/server), published through `@orkestrel/workflow/server`. `NodeScheduler.yield()` waits on `setImmediate` — the canonical Node "give the event loop a turn", running after the current operation and pending I/O. It deliberately does **not** use `node:timers/promises` (whose `{ signal }` option rejects with a Node `AbortError`, `code: 'ABORT_ERR'`, _not_ the caller's `reason`); its `setImmediate` / `setTimeout` boundaries compose `createHostSchedule` to preserve the caller reason. `priority` is accepted but a no-op — Node has no priority primitive.
 
 The **browser** backends ship in [`src/browser`](../src/browser), published through `@orkestrel/workflow/browser`, one per host-turn strategy. Each browser backend feature-detects its native API through `@orkestrel/contract` guards (`isRecord` / `isFunction`), never an `as`, and fall back to a real macrotask where it is absent:
 
@@ -216,13 +229,15 @@ The additive manager tier, following the `@orkestrel/agent` line's store standar
 | `WorkflowError`   | class    | Represents an error the workflow runtime raises for an operation it refuses — a `WorkflowErrorCode` (`TRANSITION`, `RESTORE`, `MUTATION`, `SCHEDULE`, or `INVARIANT`) beside an optional `context` naming the node or the parameter at fault. |
 | `isWorkflowError` | function | Narrows an unknown caught value to a `WorkflowError`.                                                                                                                                                                                         |
 
-Every error this package raises for a refused operation of its own is a `WorkflowError`, narrowable with `isWorkflowError`. These values are deliberately not translated and reach the caller unchanged: a value thrown by a consumer-supplied `WorkflowFunction`, a value thrown or rejected by a consumer-supplied `WorkflowStoreInterface`, a value thrown by the `start` closure a caller hands `scheduleHost` or reported through its `failure` callback, and the `reason` an `AbortSignal` carries — a pending wait rejects with that reason verbatim, which is what makes cancellation identity-preserving. Each is a caller-owned value the package passes through on purpose, not a package fault it failed to wrap.
+Every error this package raises for a refused operation of its own is a `WorkflowError`, narrowable with `isWorkflowError`. These values are deliberately not translated and reach the caller unchanged: a value thrown by a consumer-supplied `WorkflowFunction`, a value thrown or rejected by a consumer-supplied `WorkflowStoreInterface`, a value thrown by the `start` closure a caller hands `createHostSchedule` or reported through its `failure` callback, and the `reason` an `AbortSignal` carries — a pending wait rejects with that reason verbatim, which is what makes cancellation identity-preserving. Each is a caller-owned value the package passes through on purpose, not a package fault it failed to wrap.
+
+`isWorkflowError` accepts branded errors from separate package copies and subclasses, regardless of `name`. It checks the global `Error` prototype boundary, the own immutable self-brand, the declared code, and the optional object or callable context. Plain errors, unbranded look-alikes, branded plain objects, and transparent proxies over genuine errors are refused. Hostile property access returns `false`.
 
 Dependency-owned errors still reach callers untranslated. These are known gaps, not intended pass-throughs: `createRunner` surfaces `@orkestrel/queue`'s `QueueError` for an invalid `concurrency` / `retries` / `timeout`, and `createDatabaseWorkflowStore`'s `get` / `set` / `delete` surface `@orkestrel/database`'s `DatabaseError`. Until they are folded into `WorkflowError`, narrow them with the owning package's own guard rather than `isWorkflowError`.
 
 ### Helpers & guards
 
-Centralized, exhaustively unit-tested helpers and guards. The status derivations are pure and encode the lifecycle truth tables; the lineage / snapshot builders seed the entity tree; `scheduleHost` owns the scheduler's intentionally effectful host lifecycle.
+Centralized, exhaustively unit-tested helpers and guards. The status derivations are pure and encode the lifecycle truth tables; the lineage / snapshot builders seed the entity tree; `createHostSchedule` owns the scheduler's intentionally effectful host lifecycle.
 
 Generic exact-JSON ownership comes directly from [`@orkestrel/contract`](contract.md):
 consumers import its `JSONRecord`, `cloneJSONValue`, and `cloneJSONRecord` from their
@@ -247,10 +262,11 @@ workflow-specific validation and translate ownership failures into `WorkflowErro
 | `canTransitionTask`         | function | Tests whether the live W-b task state machine may move directly from one `LifecycleStatus` to another — the legal-transition guard.                                                                                                                                                                                                                                                              |
 | `resolveTaskSilence`        | function | Resolves a task's runtime silence window against its workflow default, to a host-safe `1..MAX_TIMER_MS` window or to `undefined` where the task disables it.                                                                                                                                                                                                                                     |
 | `cloneTaskActivity`         | function | Validates and clones one complete task activity frame.                                                                                                                                                                                                                                                                                                                                           |
+| `cloneTaskProgress`         | function | Copies a supplied task progress frame after checking its own keys and prototype.                                                                                                                                                                                                                                                                                                                 |
 | `isTaskActivityInput`       | function | Tests whether an unknown value is a valid whole-frame activity report.                                                                                                                                                                                                                                                                                                                           |
 | `isTaskActivity`            | function | Tests whether an unknown value is valid persisted task activity.                                                                                                                                                                                                                                                                                                                                 |
 | `captureWorkflowOptions`    | function | Captures every top-level `WorkflowOptions` value exactly once into an owned plain bag.                                                                                                                                                                                                                                                                                                           |
-| `scheduleHost`              | function | Schedules one cancellable host operation behind an owned settlement signal.                                                                                                                                                                                                                                                                                                                      |
+| `createHostSchedule`        | function | Schedules one cancellable host operation behind an owned settlement signal.                                                                                                                                                                                                                                                                                                                      |
 | `success`                   | function | Boxes a value as a `Success` — the graceful outcome half of a `Result`.                                                                                                                                                                                                                                                                                                                          |
 | `failure`                   | function | Boxes an error as a `Failure` — the graceful outcome half of a `Result`.                                                                                                                                                                                                                                                                                                                         |
 | `errorToMessage`            | function | Normalizes an unknown thrown value to a non-empty persistence-safe message.                                                                                                                                                                                                                                                                                                                      |
@@ -266,14 +282,14 @@ workflow-specific validation and translate ownership failures into `WorkflowErro
 | `parkSignal`                | function | Parks until `signal` aborts — a promise-parked wait, never a timer or busy-loop, that resolves on the abort event and never rejects.                                                                                                                                                                                                                                                             |
 | `insertEntry`               | function | Inserts one `[key, value]` entry at a positional index into a readonly entries array — the pure splice-in step behind an insertion-ordered registry's `add`.                                                                                                                                                                                                                                     |
 | `moveEntry`                 | function | Repositions the entry keyed `key` to a new positional index in a readonly entries array — the pure remove-then-reinsert step behind an insertion-ordered registry's `move`.                                                                                                                                                                                                                      |
-| `delayHost`                 | function | Schedules the shared host timer boundary every scheduler backend resumes from.                                                                                                                                                                                                                                                                                                                   |
+| `createHostDelay`           | function | Schedules the shared host timer boundary every scheduler backend resumes from.                                                                                                                                                                                                                                                                                                                   |
 | `isWorkflowInterface`       | function | Checks whether an unknown value is a live workflow entity rather than a definition.                                                                                                                                                                                                                                                                                                              |
 | `isTaskClaimList`           | function | Checks whether an unknown value is a valid list of task activity claims.                                                                                                                                                                                                                                                                                                                         |
 | `cloneTaskClaims`           | function | Validates and owns one list of task activity claims.                                                                                                                                                                                                                                                                                                                                             |
 | `isHalted`                  | function | Tests whether a driving run must stop giving a workflow — or one forced phase of it — more work.                                                                                                                                                                                                                                                                                                 |
 | `isStoppable`               | function | Tests whether forcing a workflow `stopped` would still record the cancellation.                                                                                                                                                                                                                                                                                                                  |
 | `isCompletable`             | function | Tests whether a naturally-finished run may force its workflow `completed`.                                                                                                                                                                                                                                                                                                                       |
-| `isSkipping`                | function | Tests whether a task attempt is being genuinely cancelled rather than merely timed out.                                                                                                                                                                                                                                                                                                          |
+| `matchesAbortedAttempt`     | function | Tests whether a task attempt is aborted rather than merely timed out.                                                                                                                                                                                                                                                                                                                            |
 | `ownsAttempt`               | function | Tests whether one attempt still owns the task it launched.                                                                                                                                                                                                                                                                                                                                       |
 
 Every exported `is*` guard is total over every traversed argument. In particular,
@@ -426,6 +442,11 @@ A `Shape` cell holds an interface's data members as bare names in braces, `?` ma
 | `TaskControllerInterface`      | interface | `{ signal, aborted, input, task, attempt, paused } plus report, pulse, wait, results`                                                                                                                                                                                | Declares the per-task handle a `WorkflowFunction` receives — the running task's cancellation, its input, its lineage, and read access up the tree to the results already settled.                                                                                                                                                                                                                                                                                                             |
 | `AttemptOutcome`               | type      | `readonly [settled: true, value: JSONValue] \| readonly [settled: false, value: undefined, genuine?: boolean]`                                                                                                                                                       | Names how one task attempt left the race between its handler and its cancellation.                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `RunHolderInterface`           | interface | `{ runner } plus hold`                                                                                                                                                                                                                                               | Holds the phase `RunnerInterface` one `WorkflowRunnerInterface.execute` call is driving, for the lifetime of that run.                                                                                                                                                                                                                                                                                                                                                                        |
+| `HostScheduleInterface`        | interface | `{ promise }`                                                                                                                                                                                                                                                        | Exposes the settlement of one owned host operation.                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `HostScheduleFunction`         | type      | `(complete, failure) => cancel`                                                                                                                                                                                                                                      | Arms one host operation and returns its cancellation closure.                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `WorkflowExecutionInterface`   | interface | `{ cursor, persistence } plus start / advance / clear`                                                                                                                                                                                                               | Owns the bounds, durability, and phase cursor of one workflow execution.                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `TaskAttemptInterface`         | interface | `{ outcome } plus resolve`                                                                                                                                                                                                                                           | Holds the captured outcome of one task handler invocation.                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `PhaseExecutionInterface`      | interface | `{ launched, attempts, owners } plus add / restore / record / claim / revoke`                                                                                                                                                                                        | Owns task launch membership, attempt counts, and active claims for one phase execution.                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `WorkflowResult`               | interface | `{ workflow, status, results, durable?, fault? }`                                                                                                                                                                                                                    | Represents the structured outcome of a `WorkflowRunnerInterface.execute` run — the settled live workflow, its final status, the flattened result tree, and the persistence outcome a supplied store produced.                                                                                                                                                                                                                                                                                 |
 | `WorkflowCheckpoint`           | type      | `'initial' \| 'attempt' \| 'settlement' \| 'final'`                                                                                                                                                                                                                  | Names a runner-owned durability boundary.                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `WorkflowFault`                | interface | `{ checkpoint, message, task?, attempt? }`                                                                                                                                                                                                                           | Represents a normalized persistence failure surfaced as workflow result data.                                                                                                                                                                                                                                                                                                                                                                                                                 |
@@ -633,6 +654,77 @@ The attempt-scoped handle a `WorkflowFunction` receives. `signal` / `aborted` / 
 | Method | Returns | Summary                                                                        |
 | ------ | ------- | ------------------------------------------------------------------------------ |
 | `hold` | `void`  | Takes a phase runner for the phase that is starting, or releases the held one. |
+
+#### `WorkflowExecutionInterface`
+
+The runner creates this owner per execution. Its cursor tracks the next live phase, and its persistence member exposes the durability coordinator after setup.
+
+| Method    | Returns       | Summary                                                                          |
+| --------- | ------------- | -------------------------------------------------------------------------------- |
+| `start`   | `AbortSignal` | Arms the execution bounds and durability before returning the composed signal.   |
+| `advance` | `void`        | Advances the live phase cursor after one phase has been visited.                 |
+| `clear`   | `void`        | Detaches durability, clears the deadline, and removes the cancellation listener. |
+
+```ts
+import { createWorkflow, RunHolder, WorkflowExecution } from '@orkestrel/workflow'
+
+const workflow = createWorkflow({ id: 'run', name: 'Run', phases: [] })
+const execution = new WorkflowExecution()
+try {
+	const signal = execution.start(
+		workflow,
+		new RunHolder(),
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+	)
+	execution.advance()
+	execution.cursor // 1
+	signal === workflow.signal // true
+} finally {
+	execution.clear()
+}
+```
+
+#### `TaskAttemptInterface`
+
+The runner captures the handler outcome without changing its invocation or exception boundary.
+
+| Method    | Returns | Summary                                                           |
+| --------- | ------- | ----------------------------------------------------------------- |
+| `resolve` | `void`  | Captures the handler outcome at the original invocation boundary. |
+
+```ts
+import { TaskAttempt } from '@orkestrel/workflow'
+
+const invocation = new TaskAttempt()
+invocation.resolve([true, 'complete'])
+invocation.outcome // [true, 'complete']
+```
+
+#### `PhaseExecutionInterface`
+
+The runner creates this owner before subscribing to live task additions. Its maps retain invocation counts and active ownership for that phase.
+
+| Method    | Returns  | Summary                                                             |
+| --------- | -------- | ------------------------------------------------------------------- |
+| `add`     | `void`   | Registers a task identifier before dispatch.                        |
+| `restore` | `void`   | Restores the task's persisted attempt count before phase dispatch.  |
+| `record`  | `number` | Records and returns the task's next invocation number.              |
+| `claim`   | `void`   | Assigns activity ownership to the task's current invocation.        |
+| `revoke`  | `void`   | Releases activity ownership only when the invocation still owns it. |
+
+```ts
+import { PhaseExecution } from '@orkestrel/workflow'
+
+const execution = new PhaseExecution()
+execution.add(task)
+execution.restore(task)
+const attempt = execution.record(task)
+execution.claim(task, attempt)
+execution.revoke(task.id, attempt)
+```
 
 #### `ControllerInterface`
 
@@ -1470,7 +1562,7 @@ A successful run fires `start` → `unit`/`settle` per unit → `finish`. A fail
 
 - [`tests/guides.test.ts`](../tests/guides.test.ts) — the `## Surface` ↔ source bijection across `src/core` (value + type exports), each behavioral interface's `## Methods` ↔ source-method bijection, each implementing-class ↔ interface method parity, and the equality gate: every `Summary` cell against its declaration's description paragraph, the titled `Author a definition and run it` fence against the `@example` block of that title (pinned so the titled pair cannot be retired silently), and the README pitch against this guide's tagline. It also runs the flagship fences and asserts the values their comments claim.
 - [`tests/policy.test.ts`](../tests/policy.test.ts) — coding policy rejects private `@src/*` imports in TSDoc examples while accepting legitimate source imports and identical text in ordinary non-TSDoc comments.
-- [`tests/src/core/helpers.test.ts`](../tests/src/core/helpers.test.ts) — status/lineage/snapshot helpers, bounded silence inheritance, `scheduleHost` setup/cancellation race arbitration with exact falsy failures, hostile caller signal methods, and throwing cancellation closures after caller abort or host failure, plus the snapshot-decode leaves: remaining-budget recovery, established strict halt boundaries, exhausted recovery failures, monotonic stamps, exact-restore separation, and hostile inputs.
+- [`tests/src/core/helpers.test.ts`](../tests/src/core/helpers.test.ts) — status/lineage/snapshot helpers, bounded silence inheritance, `createHostSchedule` setup/cancellation race arbitration with exact falsy failures, hostile caller signal methods, and throwing cancellation closures after caller abort or host failure, plus the snapshot-decode leaves: remaining-budget recovery, established strict halt boundaries, exhausted recovery failures, monotonic stamps, exact-restore separation, and hostile inputs.
 - [`tests/src/core/cloners.test.ts`](../tests/src/core/cloners.test.ts) — immutable activity cloning, hostile/revoked proxy containment, one-read getters, no alias retention, stamp-vs-restore `updated` handling, and exact wrong-storage-key `RESTORE` evidence.
 - [`tests/src/core/validators.test.ts`](../tests/src/core/validators.test.ts) — total activity, task-failure, task-result, and owned-snapshot guards over valid, malformed, cyclic, throwing-proxy/getter/ownKeys, and revoked inputs.
 - [`tests/src/core/shapers.test.ts`](../tests/src/core/shapers.test.ts) — the shape descriptors: the `taskShape` / `phaseShape` / `workflowShape` mirroring the hand-written definition interfaces, the per-field `description`s riding the `behavior` string + key fields (Rank 1), `describedLiteral`.

@@ -1,5 +1,5 @@
 import type { WorkflowErrorCode } from './types.js'
-import { isInstance } from '@orkestrel/contract'
+import { holds, INTRINSICS, isFunction, isObject } from '@orkestrel/contract'
 
 // The fault kinds: an illegal state-machine transition, structurally invalid restore, refused
 // mutation, refused host schedule, or broken internal invariant carries a machine-readable
@@ -30,6 +30,7 @@ export class WorkflowError extends Error {
 		context?: Readonly<Record<string, unknown>>,
 	) {
 		super(message)
+		INTRINSICS.define(this, Symbol.for('@orkestrel/workflow.WorkflowError'), { value: this })
 		this.name = 'WorkflowError'
 		this.code = code
 		if (context !== undefined) this.context = context
@@ -38,6 +39,11 @@ export class WorkflowError extends Error {
 
 /**
  * Narrows an unknown caught value to a {@link WorkflowError}.
+ *
+ * @remarks
+ * Accepts the own self-brand across package copies and subclasses without requiring a name.
+ * Requires the global Error prototype boundary, a declared code, and an optional object or
+ * callable context. Refuses transparent proxies and contains hostile reads.
  *
  * @param value - The value to test (typically a `catch` binding)
  * @returns True if `value` is a {@link WorkflowError}; false otherwise
@@ -52,5 +58,19 @@ export class WorkflowError extends Error {
  * ```
  */
 export function isWorkflowError(value: unknown): value is WorkflowError {
-	return isInstance(value, WorkflowError)
+	return holds(() => {
+		if (!(value instanceof Error) || INTRINSICS.prototype(value) === Error.prototype) return false
+		const brand = INTRINSICS.describe(value, Symbol.for('@orkestrel/workflow.WorkflowError'))
+		if (brand === undefined || brand.value !== value) return false
+		const code: unknown = INTRINSICS.reflect.read(value, 'code')
+		const context: unknown = INTRINSICS.reflect.read(value, 'context')
+		return (
+			(code === 'TRANSITION' ||
+				code === 'RESTORE' ||
+				code === 'MUTATION' ||
+				code === 'SCHEDULE' ||
+				code === 'INVARIANT') &&
+			(context === undefined || isObject(context) || isFunction(context))
+		)
+	})
 }

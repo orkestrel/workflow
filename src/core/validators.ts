@@ -157,11 +157,17 @@ export function isOwnedWorkflowSnapshot(value: unknown): value is WorkflowSnapsh
 			return false
 		}
 		const phaseIds = new Set<string>()
-		const derivations: Array<{ status: LifecycleStatus; bail: boolean }> = []
-		let frontier = false
-		let running = false
-		let vacuous = true
+		const derivations: Array<{
+			readonly status: LifecycleStatus
+			readonly bail: boolean
+			readonly frontier: boolean
+			readonly running: boolean
+			readonly vacuous: boolean
+		}> = []
 		for (const phase of value.phases) {
+			const previous = derivations.at(-1)
+			const frontier = previous?.frontier ?? false
+			const running = previous?.running ?? false
 			if (
 				!isRecord(phase) ||
 				!Object.keys(phase).every(
@@ -196,19 +202,18 @@ export function isOwnedWorkflowSnapshot(value: unknown): value is WorkflowSnapsh
 			if ((!forced && frontier && started) || (phase.status === 'running' && running)) {
 				return false
 			}
-			if (phase.status === 'running') running = true
-			if (
+			const nextRunning = phase.status === 'running' ? true : running
+			const nextFrontier =
 				!forced &&
 				(phase.status === 'pending' ||
 					phase.status === 'running' ||
 					(phase.status === 'failed' && phase.bail))
-			) {
-				frontier = true
-			}
+					? true
+					: frontier
 			phaseIds.add(phase.id)
 			const taskIds = new Set<string>()
 			const statuses: LifecycleStatus[] = []
-			if (phase.tasks.length > 0) vacuous = false
+			const vacuous = phase.tasks.length > 0 ? false : (previous?.vacuous ?? true)
 			for (const task of phase.tasks) {
 				if (
 					!isRecord(task) ||
@@ -269,11 +274,21 @@ export function isOwnedWorkflowSnapshot(value: unknown): value is WorkflowSnapsh
 			) {
 				return false
 			}
-			derivations.push({ status: phase.status, bail: phase.bail })
+			derivations.push({
+				status: phase.status,
+				bail: phase.bail,
+				frontier: nextFrontier,
+				running: nextRunning,
+				vacuous,
+			})
 		}
 		const derived = deriveWorkflowStatus(derivations)
 		if (value.override === 'completed') {
-			return value.status === 'completed' && derived === 'pending' && vacuous
+			return (
+				value.status === 'completed' &&
+				derived === 'pending' &&
+				(derivations.at(-1)?.vacuous ?? true)
+			)
 		}
 		return value.status === (value.override ?? derived)
 	} catch {

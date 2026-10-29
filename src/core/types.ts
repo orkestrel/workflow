@@ -320,7 +320,7 @@ export interface PhaseUpdate {
  *   {@link TaskManagerInterface.append} / {@link PhaseManagerInterface.append} duplicate-id
  *   guard (both genuine programmer-error paths). The error `context` names
  *   the offending id / index / status.
- * - `SCHEDULE` — {@link import('./helpers.js').scheduleHost} refused to arm host work
+ * - `SCHEDULE` — {@link import('./factories.js').createHostSchedule} refused to arm host work
  *   because the caller passed a `signal` that is not a native `AbortSignal`. The refusal
  *   is a rejected promise, never a synchronous throw, so every scheduler backend settles
  *   the same way whatever the caller passed. The error `context` names the offending
@@ -1852,6 +1852,49 @@ export interface WorkflowPersistenceInterface {
 	detach(): void
 }
 
+/** Owns the bounds, durability, and phase cursor of one workflow execution. */
+export interface WorkflowExecutionInterface {
+	readonly cursor: number
+	readonly persistence: WorkflowPersistenceInterface | undefined
+	/** Arms the execution bounds and durability before returning the composed signal. */
+	start(
+		workflow: WorkflowInterface,
+		holder: RunHolderInterface,
+		signal: AbortSignal | undefined,
+		ms: number | undefined,
+		budget: WorkflowRunOptions['budget'],
+		store: WorkflowRunOptions['store'],
+	): AbortSignal
+	/** Advances the live phase cursor after one phase has been visited. */
+	advance(): void
+	/** Detaches durability, clears the deadline, and removes the cancellation listener. */
+	clear(): void
+}
+
+/** Holds the captured outcome of one task handler invocation. */
+export interface TaskAttemptInterface {
+	readonly outcome: AttemptOutcome | undefined
+	/** Captures the handler outcome at the original invocation boundary. */
+	resolve(outcome: AttemptOutcome): void
+}
+
+/** Owns task launch membership, attempt counts, and active claims for one phase execution. */
+export interface PhaseExecutionInterface {
+	readonly launched: ReadonlySet<string>
+	readonly attempts: ReadonlyMap<string, number>
+	readonly owners: ReadonlyMap<string, number>
+	/** Registers a task identifier before dispatch. */
+	add(task: TaskInterface): void
+	/** Restores the task's persisted attempt count before phase dispatch. */
+	restore(task: TaskInterface): void
+	/** Records and returns the task's next invocation number. */
+	record(task: TaskInterface): number
+	/** Assigns activity ownership to the task's current invocation. */
+	claim(task: TaskInterface, attempt: number): void
+	/** Releases activity ownership only when the invocation still owns it. */
+	revoke(id: string, attempt: number): void
+}
+
 /**
  * Declares the options for one {@link WorkflowRunnerInterface.execute} call — the live tree's
  * construction options ({@link WorkflowOptions}) beside the per-run controls: the bounds
@@ -2554,4 +2597,15 @@ export interface RunnerInterface<TInput, TResult> {
 	 * @returns The stable teardown barrier
 	 */
 	destroy(): Promise<void>
+}
+
+/** Arms one host operation and returns its cancellation closure. */
+export type HostScheduleFunction = (
+	complete: () => void,
+	failure: (error: unknown) => void,
+) => () => void
+
+/** Exposes the settlement of one owned host operation. */
+export interface HostScheduleInterface {
+	readonly promise: Promise<void>
 }

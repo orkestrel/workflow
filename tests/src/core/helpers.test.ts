@@ -1,7 +1,8 @@
+import { RECOVERY_POLICY_CASES, WORKFLOW_BAIL_CASES } from '../../setup.js'
 import type {
-	LifecycleStatus,
 	PhaseDerivation,
 	TaskResult,
+	LifecycleStatus,
 	WorkflowDefinition,
 	WorkflowOptions,
 	WorkflowRegistry,
@@ -15,7 +16,6 @@ import {
 	captureWorkflowOptions,
 	collectResults,
 	createWorkflow,
-	createWorkflowRunner,
 	definitionToSnapshot,
 	deriveBoundary,
 	derivePhaseStatus,
@@ -32,14 +32,33 @@ import {
 	createRecoveredWorkflow,
 	resolveTaskSilence,
 	createRestoredWorkflow,
-	scheduleHost,
+	createHostSchedule,
 	success,
 	taskDefinitionToSnapshot,
 } from '@src/core'
 import { describe, expect, it } from 'vitest'
 import { isAbortSignal, linkSignal } from '@orkestrel/abort'
 import { captureError, createRecorder, waitForDelay } from '@orkestrel/test'
-import { createErrorRecorder, createRecordingScheduler } from '../../setup.js'
+import {
+	createErrorRecorder,
+	WorkflowObservation,
+	createDurabilityRunner,
+	buildPhaseDerivations,
+	enumerateStatusOrders,
+	buildCompletedResult,
+	buildOutcomeResult,
+	EVERY_STATUS,
+	RECOVERY_DEFINITION,
+	VALIDATED_FUNCTIONS,
+	RECOVERY_SHIFTED_FUNCTIONS,
+	PHASE_STATUS_CASES,
+	WORKFLOW_STATUS_CASES,
+	WORKFLOW_AGNOSTIC_CASES,
+	buildHostileString,
+	RECOVERY_MIXED_FUNCTIONS,
+	buildHostileWorkflow,
+	buildCountedRegistry,
+} from '../../setup.js'
 
 // The lifecycle logic core: the derivation truth tables under BOTH bail modes, the ONE
 // terminal predicate, and the task-form `via` guards. Pure functions — real inputs, no
@@ -49,23 +68,15 @@ import { createErrorRecorder, createRecordingScheduler } from '../../setup.js'
 
 // The whole shared lifecycle vocabulary — the six literals every tier draws from. Used to
 // prove the ONE terminal predicate covers the entire set (no literal left untested).
-const EVERY_STATUS: readonly LifecycleStatus[] = [
-	'pending',
-	'running',
-	'completed',
-	'failed',
-	'skipped',
-	'stopped',
-]
 
 describe('captureWorkflowOptions — one-read hostile option ownership', () => {
 	it('captures inherited and non-enumerable values once while retaining nested identities', () => {
-		let onReads = 0
-		let bailReads = 0
-		let errorReads = 0
-		let phasesReads = 0
-		let functionsReads = 0
-		let silenceReads = 0
+		const onReads = new WorkflowObservation(0)
+		const bailReads = new WorkflowObservation(0)
+		const errorReads = new WorkflowObservation(0)
+		const phasesReads = new WorkflowObservation(0)
+		const functionsReads = new WorkflowObservation(0)
+		const silenceReads = new WorkflowObservation(0)
 		const on = {}
 		const errors = createErrorRecorder()
 		const phases = {}
@@ -75,19 +86,19 @@ describe('captureWorkflowOptions — one-read hostile option ownership', () => {
 		Object.defineProperties(prototype, {
 			on: {
 				get: () => {
-					onReads += 1
+					onReads.value += 1
 					return on
 				},
 			},
 			bail: {
 				get: () => {
-					bailReads += 1
+					bailReads.value += 1
 					return true
 				},
 			},
 			error: {
 				get: () => {
-					errorReads += 1
+					errorReads.value += 1
 					return errors.handler
 				},
 			},
@@ -97,21 +108,21 @@ describe('captureWorkflowOptions — one-read hostile option ownership', () => {
 			phases: {
 				enumerable: false,
 				get: () => {
-					phasesReads += 1
+					phasesReads.value += 1
 					return phases
 				},
 			},
 			functions: {
 				enumerable: false,
 				get: () => {
-					functionsReads += 1
+					functionsReads.value += 1
 					return functions
 				},
 			},
 			silence: {
 				enumerable: false,
 				get: () => {
-					silenceReads += 1
+					silenceReads.value += 1
 					return 25
 				},
 			},
@@ -126,9 +137,14 @@ describe('captureWorkflowOptions — one-read hostile option ownership', () => {
 		expect(captured.phases).toBe(phases)
 		expect(captured.functions).toBe(functions)
 		expect(captured.silence).toBe(25)
-		expect([onReads, bailReads, errorReads, phasesReads, functionsReads, silenceReads]).toEqual([
-			1, 1, 1, 1, 1, 1,
-		])
+		expect([
+			onReads.value,
+			bailReads.value,
+			errorReads.value,
+			phasesReads.value,
+			functionsReads.value,
+			silenceReads.value,
+		]).toEqual([1, 1, 1, 1, 1, 1])
 	})
 
 	it('stops reading at the first throwing option getter', () => {
@@ -217,47 +233,8 @@ describe('derivePhaseStatus — exhaustive truth table (tasks concurrent)', () =
 	// Every equivalence class of the phase derivation, by branch:
 	//   empty → pending · all-pending → pending · not-all-terminal → running ·
 	//   then most-severe terminal wins: failed > stopped > completed > skipped.
-	const cases: ReadonlyArray<readonly [readonly LifecycleStatus[], LifecycleStatus, string]> = [
-		// — empty + all-pending (→ pending)
-		[[], 'pending', 'no tasks'],
-		[['pending'], 'pending', 'single pending'],
-		[['pending', 'pending'], 'pending', 'all pending'],
-		// — any non-terminal among the set (→ running): a started-but-unsettled phase
-		[['running'], 'running', 'single running'],
-		[['running', 'pending'], 'running', 'running + pending'],
-		[['running', 'running'], 'running', 'all running'],
-		[['completed', 'pending'], 'running', 'terminal + pending (not all settled)'],
-		[['failed', 'pending'], 'running', 'failed + pending (still not all settled)'],
-		[['skipped', 'pending'], 'running', 'skipped + pending'],
-		[['stopped', 'pending'], 'running', 'stopped + pending'],
-		[['completed', 'running'], 'running', 'completed + running'],
-		[['failed', 'running'], 'running', 'failed + running (failed does NOT settle the phase)'],
-		[['failed', 'completed', 'pending'], 'running', 'two terminals + a straggler pending'],
-		// — all-terminal: single child of each terminal kind
-		[['completed'], 'completed', 'single completed'],
-		[['failed'], 'failed', 'single failed'],
-		[['skipped'], 'skipped', 'single skipped'],
-		[['stopped'], 'stopped', 'single stopped'],
-		// — all-terminal severity ordering, discriminating ADJACENT pairs
-		[['failed', 'stopped'], 'failed', 'failed > stopped'],
-		[['stopped', 'completed'], 'stopped', 'stopped > completed'],
-		[['completed', 'skipped'], 'completed', 'completed > skipped (skips never fail a phase)'],
-		// — all-terminal severity ordering, NON-adjacent pairs (the relation is transitive)
-		[['failed', 'completed'], 'failed', 'failed > completed'],
-		[['failed', 'skipped'], 'failed', 'failed > skipped'],
-		[['stopped', 'skipped'], 'stopped', 'stopped > skipped'],
-		// — all-terminal homogeneous (the lowest-severity all-same cases)
-		[['completed', 'completed'], 'completed', 'all completed'],
-		[['skipped', 'skipped'], 'skipped', 'all skipped'],
-		[['stopped', 'stopped'], 'stopped', 'all stopped'],
-		[['failed', 'failed'], 'failed', 'all failed'],
-		// — the full mix (every terminal present → the most severe, failed)
-		[['failed', 'skipped', 'stopped', 'completed'], 'failed', 'all four terminals'],
-		[['stopped', 'completed', 'skipped'], 'stopped', 'three terminals, no failure → stopped'],
-		[['completed', 'skipped', 'completed'], 'completed', 'completes + skips → completed'],
-	]
 
-	for (const [tasks, expected, label] of cases) {
+	for (const [tasks, expected, label] of PHASE_STATUS_CASES) {
 		it(`[${tasks.join(', ') || '∅'}] → ${expected} (${label})`, () => {
 			expect(derivePhaseStatus(tasks)).toBe(expected)
 		})
@@ -267,12 +244,12 @@ describe('derivePhaseStatus — exhaustive truth table (tasks concurrent)', () =
 		// Tasks are concurrent, so the reduction must not depend on order. Assert it over EVERY
 		// permutation of a four-terminal mix (the strongest order-independence claim, not one shuffle).
 		const base: readonly LifecycleStatus[] = ['failed', 'completed', 'skipped', 'stopped']
-		for (const permutation of permutations(base)) {
+		for (const permutation of enumerateStatusOrders(base)) {
 			expect(derivePhaseStatus(permutation)).toBe('failed')
 		}
 		// And a non-terminal mix whose answer is `running` regardless of order.
 		const mixed: readonly LifecycleStatus[] = ['completed', 'running', 'pending']
-		for (const permutation of permutations(mixed)) {
+		for (const permutation of enumerateStatusOrders(mixed)) {
 			expect(derivePhaseStatus(permutation)).toBe('running')
 		}
 	})
@@ -282,133 +259,26 @@ describe('derivePhaseStatus — exhaustive truth table (tasks concurrent)', () =
 // effective `bail` — the legacy "one scalar bail" the old signature took, carried per phase.
 // A uniform bail reproduces the old behavior exactly; the per-phase divergence is exercised by the
 // `mixed-bail` rows below (and end-to-end in WorkflowRunner.test.ts).
-function derivations(
-	statuses: readonly LifecycleStatus[],
-	bail: boolean,
-): readonly PhaseDerivation[] {
-	return statuses.map((status) => ({ status, bail }))
-}
 
 describe('deriveWorkflowStatus — exhaustive truth table under BOTH bail modes', () => {
 	// The workflow derivation differs from the phase only in the FAILED handling, which `bail`
 	// gates PER PHASE. Each row pins one equivalence class under a specific (uniform) `bail`; the
 	// bail-agnostic classes are asserted under BOTH modes (below) to prove `bail` touches ONLY
 	// failure. A trailing MIXED-bail block proves the policy is resolved per phase, not globally.
-	const cases: ReadonlyArray<{
-		readonly input: readonly LifecycleStatus[]
-		readonly bail: boolean
-		readonly expected: LifecycleStatus
-		readonly label: string
-	}> = [
-		// ── bail: true (halt) — a failed phase short-circuits to `failed`, even mid-flight ──
-		{ input: ['failed'], bail: true, expected: 'failed', label: 'single failed halts' },
-		{
-			input: ['completed', 'failed'],
-			bail: true,
-			expected: 'failed',
-			label: 'a failure among completes halts',
-		},
-		{
-			input: ['failed', 'pending'],
-			bail: true,
-			expected: 'failed',
-			label: 'failed + pending: halts BEFORE the all-pending check',
-		},
-		{
-			input: ['failed', 'running'],
-			bail: true,
-			expected: 'failed',
-			label: 'failed + running: the failed short-circuit fires BEFORE the running check',
-		},
-		{
-			input: ['failed', 'stopped'],
-			bail: true,
-			expected: 'failed',
-			label: 'failed beats stopped under halt',
-		},
-		{ input: ['failed', 'failed'], bail: true, expected: 'failed', label: 'all failed halts' },
-		{
-			input: ['failed', 'skipped'],
-			bail: true,
-			expected: 'failed',
-			label: 'failed beats skipped under halt',
-		},
-		// ── bail: false (graceful) — a failed phase is DATA; the workflow NEVER derives `failed` ──
-		{
-			input: ['failed'],
-			bail: false,
-			expected: 'completed',
-			label: 'single failed folds into completed',
-		},
-		{
-			input: ['completed', 'failed'],
-			bail: false,
-			expected: 'completed',
-			label: 'failure folded into completion',
-		},
-		{
-			input: ['failed', 'pending'],
-			bail: false,
-			expected: 'running',
-			label: 'failed + pending: NOT all terminal ⇒ running (failed does not short-circuit)',
-		},
-		{
-			input: ['failed', 'running'],
-			bail: false,
-			expected: 'running',
-			label: 'failed + running: NOT all terminal ⇒ running (THE graceful→running case)',
-		},
-		{
-			input: ['failed', 'stopped'],
-			bail: false,
-			expected: 'stopped',
-			label: 'a stop still beats a folded failure',
-		},
-		{
-			input: ['failed', 'failed'],
-			bail: false,
-			expected: 'completed',
-			label: 'all failed still completes gracefully',
-		},
-		{
-			input: ['failed', 'skipped'],
-			bail: false,
-			expected: 'completed',
-			label: 'failed folds to completed even with only skips beside it',
-		},
-	]
 
-	for (const { input, bail, expected, label } of cases) {
+	for (const { input, bail, expected, label } of WORKFLOW_STATUS_CASES) {
 		it(`[${input.join(', ') || '∅'}] @ bail:${bail} → ${expected} (${label})`, () => {
-			expect(deriveWorkflowStatus(derivations(input, bail))).toBe(expected)
+			expect(deriveWorkflowStatus(buildPhaseDerivations(input, bail))).toBe(expected)
 		})
 	}
 
 	// The bail-AGNOSTIC classes — every branch that does NOT involve a failed phase. Asserted
 	// under BOTH modes with the SAME expected value, proving `bail` changes only the failed path.
-	const agnostic: ReadonlyArray<readonly [readonly LifecycleStatus[], LifecycleStatus, string]> = [
-		[[], 'pending', 'no phases'],
-		[['pending'], 'pending', 'single pending'],
-		[['pending', 'pending'], 'pending', 'all pending'],
-		[['running'], 'running', 'single running'],
-		[['running', 'pending'], 'running', 'running + pending'],
-		[['completed', 'pending'], 'running', 'terminal + pending (started, not all settled)'],
-		[['completed', 'running'], 'running', 'terminal + running (started, not all settled)'],
-		[['completed'], 'completed', 'single completed'],
-		[['completed', 'completed'], 'completed', 'all completed'],
-		[['completed', 'skipped'], 'completed', 'completes + skips → completed'],
-		[['skipped'], 'skipped', 'single skipped'],
-		[['skipped', 'skipped'], 'skipped', 'all skipped'],
-		[['stopped'], 'stopped', 'single stopped'],
-		[['stopped', 'stopped'], 'stopped', 'all stopped'],
-		[['stopped', 'completed'], 'stopped', 'stopped beats completed'],
-		[['stopped', 'skipped'], 'stopped', 'stopped beats skipped'],
-	]
 
-	for (const [input, expected, label] of agnostic) {
-		for (const bail of [false, true]) {
+	for (const [input, expected, label] of WORKFLOW_AGNOSTIC_CASES) {
+		for (const bail of WORKFLOW_BAIL_CASES) {
 			it(`[${input.join(', ') || '∅'}] @ bail:${bail} → ${expected} (bail-agnostic: ${label})`, () => {
-				expect(deriveWorkflowStatus(derivations(input, bail))).toBe(expected)
+				expect(deriveWorkflowStatus(buildPhaseDerivations(input, bail))).toBe(expected)
 			})
 		}
 	}
@@ -417,8 +287,8 @@ describe('deriveWorkflowStatus — exhaustive truth table under BOTH bail modes'
 		// A phase graph with exactly one failed phase among terminals: graceful folds it into
 		// `completed`, halt propagates `failed`. The two modes diverge ONLY because of the failure.
 		const phases: readonly LifecycleStatus[] = ['completed', 'failed', 'completed']
-		expect(deriveWorkflowStatus(derivations(phases, false))).toBe('completed')
-		expect(deriveWorkflowStatus(derivations(phases, true))).toBe('failed')
+		expect(deriveWorkflowStatus(buildPhaseDerivations(phases, false))).toBe('completed')
+		expect(deriveWorkflowStatus(buildPhaseDerivations(phases, true))).toBe('failed')
 	})
 
 	it('a failed-free graph is identical under both modes (no divergence without a failure)', () => {
@@ -430,17 +300,17 @@ describe('deriveWorkflowStatus — exhaustive truth table under BOTH bail modes'
 			['skipped', 'skipped'],
 		]
 		for (const input of graphs) {
-			expect(deriveWorkflowStatus(derivations(input, false))).toBe(
-				deriveWorkflowStatus(derivations(input, true)),
+			expect(deriveWorkflowStatus(buildPhaseDerivations(input, false))).toBe(
+				deriveWorkflowStatus(buildPhaseDerivations(input, true)),
 			)
 		}
 	})
 
 	it('is order-insensitive under both modes (phases are a settled set here)', () => {
 		const base: readonly LifecycleStatus[] = ['failed', 'completed', 'stopped']
-		for (const permutation of permutations(base)) {
-			expect(deriveWorkflowStatus(derivations(permutation, true))).toBe('failed') // failed dominates under halt
-			expect(deriveWorkflowStatus(derivations(permutation, false))).toBe('stopped') // stop beats a folded fail
+		for (const permutation of enumerateStatusOrders(base)) {
+			expect(deriveWorkflowStatus(buildPhaseDerivations(permutation, true))).toBe('failed') // failed dominates under halt
+			expect(deriveWorkflowStatus(buildPhaseDerivations(permutation, false))).toBe('stopped') // stop beats a folded fail
 		}
 	})
 
@@ -491,7 +361,7 @@ describe('deriveWorkflowStatus — exhaustive truth table under BOTH bail modes'
 				{ status: 'failed', bail: true },
 				{ status: 'completed', bail: false },
 			]
-			for (const permutation of permutations(base)) {
+			for (const permutation of enumerateStatusOrders(base)) {
 				expect(deriveWorkflowStatus(permutation)).toBe('failed')
 			}
 		})
@@ -500,15 +370,6 @@ describe('deriveWorkflowStatus — exhaustive truth table under BOTH bail modes'
 
 // Every permutation of a small status list — the order-independence prover (a real generator,
 // not a mock). Kept local: order-permutation is specific to these derivation tests.
-function permutations<T>(items: readonly T[]): ReadonlyArray<readonly T[]> {
-	if (items.length <= 1) return [items]
-	const out: T[][] = []
-	for (const [index, item] of items.entries()) {
-		const rest = [...items.slice(0, index), ...items.slice(index + 1)]
-		for (const permutation of permutations(rest)) out.push([item, ...permutation])
-	}
-	return out
-}
 
 describe('canTransitionTask — the legal transition graph', () => {
 	it('allows the legal moves off pending and running', () => {
@@ -539,17 +400,13 @@ describe('canTransitionTask — the legal transition graph', () => {
 })
 
 describe('collectResults — the workflow tier of the result tree', () => {
-	const result = (id: string): TaskResult => ({
-		task: { id, name: id, phase: { id: 'p', name: 'P', workflow: { id: 'w', name: 'W' } } },
-		phase: { id: 'p', name: 'P', workflow: { id: 'w', name: 'W' } },
-		workflow: { id: 'w', name: 'W' },
-		status: 'completed',
-		timestamp: 0,
-	})
-
 	it('flattens per-phase result lists in order', () => {
 		expect(
-			collectResults([[result('a'), result('b')], [], [result('c')]]).map((one) => one.task.id),
+			collectResults([
+				[buildCompletedResult('a'), buildCompletedResult('b')],
+				[],
+				[buildCompletedResult('c')],
+			]).map((one) => one.task.id),
 		).toEqual(['a', 'b', 'c'])
 	})
 
@@ -705,23 +562,23 @@ describe('scheduleHost — centralized host settlement lifecycle', () => {
 	it('rejects a pre-aborted signal without starting host work', async () => {
 		const controller = new AbortController()
 		const reason = new Error('already stopped')
-		let starts = 0
+		const starts = new WorkflowObservation(0)
 		controller.abort(reason)
 
 		await expect(
-			scheduleHost(() => {
-				starts += 1
+			createHostSchedule(() => {
+				starts.value += 1
 				return () => undefined
 			}, controller.signal),
 		).rejects.toBe(reason)
-		expect(starts).toBe(0)
+		expect(starts.value).toBe(0)
 	})
 
 	it('rejects an invalid signal before starting host work', async () => {
-		let starts = 0
-		const pending: unknown = Reflect.apply(scheduleHost, undefined, [
+		const starts = new WorkflowObservation(0)
+		const pending: unknown = Reflect.apply(createHostSchedule, undefined, [
 			() => {
-				starts += 1
+				starts.value += 1
 				return () => undefined
 			},
 			{},
@@ -733,7 +590,7 @@ describe('scheduleHost — centralized host settlement lifecycle', () => {
 			code: 'SCHEDULE',
 			context: { signal: 'object' },
 		})
-		expect(starts).toBe(0)
+		expect(starts.value).toBe(0)
 	})
 
 	it('rejects rather than throwing when a proxied caller signal cannot be linked', async () => {
@@ -750,7 +607,7 @@ describe('scheduleHost — centralized host settlement lifecycle', () => {
 		// Prove this input reaches linking and linking throws on this host.
 		expect(isAbortSignal(hostile)).toBe(true)
 		expect(() => linkSignal(new AbortController().signal, hostile)).toThrow(TypeError)
-		const pending = scheduleHost(() => {
+		const pending = createHostSchedule(() => {
 			starts.handler()
 			return () => undefined
 		}, hostile)
@@ -759,7 +616,7 @@ describe('scheduleHost — centralized host settlement lifecycle', () => {
 		await expect(pending).rejects.toBeInstanceOf(WorkflowError)
 		await expect(pending).rejects.toMatchObject({
 			code: 'SCHEDULE',
-			message: 'scheduleHost could not link the caller signal',
+			message: 'createHostSchedule could not link the caller signal',
 			context: { signal: 'object' },
 		})
 		await expect(pending).rejects.not.toBe(trap)
@@ -775,7 +632,7 @@ describe('scheduleHost — centralized host settlement lifecycle', () => {
 		})
 
 		await expect(
-			scheduleHost((complete) => {
+			createHostSchedule((complete) => {
 				const handle = setTimeout(complete, 0)
 				return () => clearTimeout(handle)
 			}, controller.signal),
@@ -784,9 +641,9 @@ describe('scheduleHost — centralized host settlement lifecycle', () => {
 
 	it('cannot hang when the caller removeEventListener method changes after scheduling', async () => {
 		const controller = new AbortController()
-		let complete: (() => void) | undefined
-		const pending = scheduleHost((settle) => {
-			complete = settle
+		const complete = new WorkflowObservation<(() => void) | undefined>(undefined)
+		const pending = createHostSchedule((settle) => {
+			complete.value = settle
 			return () => undefined
 		}, controller.signal)
 		Object.defineProperty(controller.signal, 'removeEventListener', {
@@ -794,9 +651,9 @@ describe('scheduleHost — centralized host settlement lifecycle', () => {
 				throw new Error('caller listener method must stay unread')
 			},
 		})
-		if (complete === undefined) throw new Error('expected armed host completion')
+		if (complete.value === undefined) throw new Error('expected armed host completion')
 
-		complete()
+		complete.value()
 
 		await expect(pending).resolves.toBeUndefined()
 	})
@@ -805,64 +662,64 @@ describe('scheduleHost — centralized host settlement lifecycle', () => {
 		const fault = new Error('host setup failed')
 
 		await expect(
-			scheduleHost(() => {
+			createHostSchedule(() => {
 				throw fault
 			}),
 		).rejects.toBe(fault)
 	})
 
 	it('cancels once when completion settles synchronously before start returns', async () => {
-		let cancellations = 0
+		const cancellations = new WorkflowObservation(0)
 
 		await expect(
-			scheduleHost((complete) => {
+			createHostSchedule((complete) => {
 				complete()
 				return () => {
-					cancellations += 1
+					cancellations.value += 1
 				}
 			}),
 		).resolves.toBeUndefined()
-		expect(cancellations).toBe(1)
+		expect(cancellations.value).toBe(1)
 	})
 
 	it('cancels once when host failure settles synchronously before start returns', async () => {
 		const fault = new Error('host failed while arming')
-		let cancellations = 0
-		const pending = scheduleHost((_complete, fail) => {
+		const cancellations = new WorkflowObservation(0)
+		const pending = createHostSchedule((_complete, fail) => {
 			fail(fault)
 			return () => {
-				cancellations += 1
+				cancellations.value += 1
 			}
 		})
 
 		await expect(pending).rejects.toBe(fault)
-		expect(cancellations).toBe(1)
+		expect(cancellations.value).toBe(1)
 	})
 
 	it('cancels once and preserves the exact reason when the caller aborts during start', async () => {
 		const controller = new AbortController()
 		const reason = { command: 'stop' }
-		let cancellations = 0
+		const cancellations = new WorkflowObservation(0)
 
-		const pending = scheduleHost(() => {
+		const pending = createHostSchedule(() => {
 			controller.abort(reason)
 			return () => {
-				cancellations += 1
+				cancellations.value += 1
 			}
 		}, controller.signal)
 
 		await expect(pending).rejects.toBe(reason)
-		expect(cancellations).toBe(1)
+		expect(cancellations.value).toBe(1)
 	})
 
 	it('keeps the caller reason when cancellation synchronously reports a host failure', async () => {
 		const controller = new AbortController()
 		const reason = new Error('caller stopped first')
 		const cleanupFailure = new Error('cleanup reported failure')
-		let cancellations = 0
-		const pending = scheduleHost((_complete, fail) => {
+		const cancellations = new WorkflowObservation(0)
+		const pending = createHostSchedule((_complete, fail) => {
 			return () => {
-				cancellations += 1
+				cancellations.value += 1
 				fail(cleanupFailure)
 			}
 		}, controller.signal)
@@ -870,14 +727,14 @@ describe('scheduleHost — centralized host settlement lifecycle', () => {
 		controller.abort(reason)
 
 		await expect(pending).rejects.toBe(reason)
-		expect(cancellations).toBe(1)
+		expect(cancellations.value).toBe(1)
 	})
 
 	it('contains a throwing cancellation closure after an asynchronous caller abort', async () => {
 		const controller = new AbortController()
 		const reason = new Error('caller stopped')
 		const cleanup = new Error('caller cleanup failed')
-		const pending = scheduleHost(
+		const pending = createHostSchedule(
 			() => () => {
 				throw cleanup
 			},
@@ -891,7 +748,7 @@ describe('scheduleHost — centralized host settlement lifecycle', () => {
 	it('contains a throwing cancellation closure after an asynchronous host failure', async () => {
 		const reason = new Error('host failed')
 		const cleanup = new Error('host cleanup failed')
-		const pending = scheduleHost((_complete, fail) => {
+		const pending = createHostSchedule((_complete, fail) => {
 			queueMicrotask(() => fail(reason))
 			return () => {
 				throw cleanup
@@ -905,11 +762,11 @@ describe('scheduleHost — centralized host settlement lifecycle', () => {
 		const reasons: readonly unknown[] = [undefined, null, false, 0, '']
 
 		for (const reason of reasons) {
-			let cancellations = 0
-			const pending = scheduleHost((_complete, fail) => {
+			const cancellations = new WorkflowObservation(0)
+			const pending = createHostSchedule((_complete, fail) => {
 				queueMicrotask(() => fail(reason))
 				return () => {
-					cancellations += 1
+					cancellations.value += 1
 				}
 			})
 			const outcome = await pending.then(
@@ -920,119 +777,122 @@ describe('scheduleHost — centralized host settlement lifecycle', () => {
 			expect(outcome.success).toBe(false)
 			if (outcome.success) throw new Error('expected host rejection')
 			expect(outcome.error).toBe(reason)
-			expect(cancellations).toBe(1)
+			expect(cancellations.value).toBe(1)
 		}
 	})
 
 	it('ignores late caller abort and host failure after completion', async () => {
 		const controller = new AbortController()
-		let complete: (() => void) | undefined
-		let fail: ((error: unknown) => void) | undefined
-		let settlements = 0
-		let cancellations = 0
-		const pending = scheduleHost((settle, reject) => {
-			complete = settle
-			fail = reject
+		const complete = new WorkflowObservation<(() => void) | undefined>(undefined)
+		const fail = new WorkflowObservation<((error: unknown) => void) | undefined>(undefined)
+		const settlements = new WorkflowObservation(0)
+		const cancellations = new WorkflowObservation(0)
+		const pending = createHostSchedule((settle, reject) => {
+			complete.value = settle
+			fail.value = reject
 			return () => {
-				cancellations += 1
+				cancellations.value += 1
 			}
 		}, controller.signal).then(
 			() => {
-				settlements += 1
+				settlements.value += 1
 				return 'resolved'
 			},
 			() => {
-				settlements += 1
+				settlements.value += 1
 				return 'rejected'
 			},
 		)
-		if (complete === undefined || fail === undefined) throw new Error('expected armed host')
+		if (complete.value === undefined || fail.value === undefined)
+			throw new Error('expected armed host')
 
-		complete()
+		complete.value()
 		expect(await pending).toBe('resolved')
 		controller.abort(new Error('late caller abort'))
-		fail(new Error('late host failure'))
-		complete()
+		fail.value(new Error('late host failure'))
+		complete.value()
 		await Promise.resolve()
 
-		expect(settlements).toBe(1)
-		expect(cancellations).toBe(0)
+		expect(settlements.value).toBe(1)
+		expect(cancellations.value).toBe(0)
 	})
 
 	it('ignores late completion and caller abort after host failure', async () => {
 		const controller = new AbortController()
 		const reason = new Error('host failed first')
-		let complete: (() => void) | undefined
-		let fail: ((error: unknown) => void) | undefined
-		let settlements = 0
-		let cancellations = 0
-		const pending = scheduleHost((settle, reject) => {
-			complete = settle
-			fail = reject
+		const complete = new WorkflowObservation<(() => void) | undefined>(undefined)
+		const fail = new WorkflowObservation<((error: unknown) => void) | undefined>(undefined)
+		const settlements = new WorkflowObservation(0)
+		const cancellations = new WorkflowObservation(0)
+		const pending = createHostSchedule((settle, reject) => {
+			complete.value = settle
+			fail.value = reject
 			return () => {
-				cancellations += 1
+				cancellations.value += 1
 			}
 		}, controller.signal).then(
 			() => {
-				settlements += 1
+				settlements.value += 1
 				return success(undefined)
 			},
 			(error) => {
-				settlements += 1
+				settlements.value += 1
 				return failure(error)
 			},
 		)
-		if (complete === undefined || fail === undefined) throw new Error('expected armed host')
+		if (complete.value === undefined || fail.value === undefined)
+			throw new Error('expected armed host')
 
-		fail(reason)
+		fail.value(reason)
 		const outcome = await pending
 		expect(outcome.success).toBe(false)
 		if (outcome.success) throw new Error('expected host rejection')
 		expect(outcome.error).toBe(reason)
-		complete()
+		complete.value()
 		controller.abort(new Error('late caller abort'))
 		await Promise.resolve()
 
-		expect(settlements).toBe(1)
-		expect(cancellations).toBe(1)
+		expect(settlements.value).toBe(1)
+		expect(cancellations.value).toBe(1)
 	})
 
 	it('ignores late completion and host failure after caller abort', async () => {
 		const controller = new AbortController()
 		const reason = new Error('caller stopped first')
-		let complete: (() => void) | undefined
-		let fail: ((error: unknown) => void) | undefined
-		let settlements = 0
-		let cancellations = 0
-		const pending = scheduleHost((settle, reject) => {
-			complete = settle
-			fail = reject
+		const complete = new WorkflowObservation<(() => void) | undefined>(undefined)
+		const fail = new WorkflowObservation<((error: unknown) => void) | undefined>(undefined)
+		const settlements = new WorkflowObservation(0)
+		const cancellations = new WorkflowObservation(0)
+		const pending = createHostSchedule((settle, reject) => {
+			complete.value = settle
+			fail.value = reject
 			return () => {
-				cancellations += 1
+				cancellations.value += 1
 			}
 		}, controller.signal).then(
 			() => {
-				settlements += 1
+				settlements.value += 1
 				return success(undefined)
 			},
 			(error) => {
-				settlements += 1
+				settlements.value += 1
 				return failure(error)
 			},
 		)
-		if (complete === undefined || fail === undefined) throw new Error('expected armed host')
+		if (complete.value === undefined || fail.value === undefined)
+			throw new Error('expected armed host')
 
 		controller.abort(reason)
 		const outcome = await pending
 		expect(outcome.success).toBe(false)
 		if (outcome.success) throw new Error('expected caller rejection')
 		expect(outcome.error).toBe(reason)
-		complete()
-		fail(new Error('late host failure'))
+		complete.value()
+		fail.value(new Error('late host failure'))
 		await Promise.resolve()
 
-		expect(settlements).toBe(1)
-		expect(cancellations).toBe(1)
+		expect(settlements.value).toBe(1)
+		expect(cancellations.value).toBe(1)
 	})
 })
 
@@ -1045,15 +905,15 @@ describe('parkSignal — a one-shot promise-park on an AbortSignal, never reject
 
 	it('resolves after the signal aborts (parks across real macrotasks first)', async () => {
 		const controller = new AbortController()
-		let settled = false
+		const settled = new WorkflowObservation(false)
 		const parked = parkSignal(controller.signal).then(() => {
-			settled = true
+			settled.value = true
 		})
 		await waitForDelay(5)
-		expect(settled).toBe(false)
+		expect(settled.value).toBe(false)
 		controller.abort()
 		await parked
-		expect(settled).toBe(true)
+		expect(settled.value).toBe(true)
 	})
 
 	it('never rejects, even when the signal aborts with a reason', async () => {
@@ -1086,11 +946,7 @@ describe('errorToMessage', () => {
 				throw new Error('hostile message')
 			},
 		})
-		const hostileString = {
-			toString: () => {
-				throw new Error('hostile string')
-			},
-		}
+		const hostileString = buildHostileString()
 
 		expect(errorToMessage(new Error('boom'))).toBe('boom')
 		expect(errorToMessage('plain')).toBe('plain')
@@ -1102,25 +958,22 @@ describe('errorToMessage', () => {
 })
 
 describe('findFailure — the first Failure in a positional result list', () => {
-	const outcome = (id: string, ok: boolean): TaskResult => ({
-		task: { id, name: id, phase: { id: 'p', name: 'P', workflow: { id: 'w', name: 'W' } } },
-		phase: { id: 'p', name: 'P', workflow: { id: 'w', name: 'W' } },
-		workflow: { id: 'w', name: 'W' },
-		status: ok ? 'completed' : 'failed',
-		result: ok ? success('v') : failure({ origin: 'handler', message: `${id} failed` }),
-		timestamp: 0,
-	})
-
 	it('returns undefined for an empty list', () => {
 		expect(findFailure([])).toBeUndefined()
 	})
 
 	it('returns undefined when no result is a Failure', () => {
-		expect(findFailure([outcome('a', true), outcome('b', true)])).toBeUndefined()
+		expect(
+			findFailure([buildOutcomeResult('a', true), buildOutcomeResult('b', true)]),
+		).toBeUndefined()
 	})
 
 	it('returns the first Failure among several — order sensitive', () => {
-		const results = [outcome('a', true), outcome('b', false), outcome('c', false)]
+		const results = [
+			buildOutcomeResult('a', true),
+			buildOutcomeResult('b', false),
+			buildOutcomeResult('c', false),
+		]
 		expect(findFailure(results)?.task.id).toBe('b')
 		// Reversing the order changes which is found FIRST — proving it is order-sensitive, not
 		// a set search.
@@ -1302,44 +1155,24 @@ describe('resolveTaskSilence — runtime inheritance', () => {
 // that returns interrupted work to its remaining budget. Real definitions, real snapshots, real
 // handler registries throughout.
 
-const RECOVERY_DEFINITION: WorkflowDefinition = {
-	id: 'durable',
-	name: 'Durable',
-	bail: false,
-	phases: [
-		{
-			id: 'phase',
-			name: 'Phase',
-			tasks: [{ id: 'task', name: 'Task', behavior: 'work', retries: 1 }],
-		},
-	],
-}
-
-const VALIDATED_FUNCTIONS = { work: () => 'validated' }
-const SHIFTED_FUNCTIONS = { work: () => 'shifted' }
-
-function recoveryRunner(): ReturnType<typeof createWorkflowRunner> {
-	return createWorkflowRunner({ scheduler: createRecordingScheduler() })
-}
-
 describe('workflow recovery', () => {
 	it('uses the exact once-read functions registry for validation and recovered handlers', () => {
 		const source = createWorkflow(RECOVERY_DEFINITION, { functions: VALIDATED_FUNCTIONS })
 		const task = source.phase('phase')?.task('task')
 		if (task === undefined) throw new Error('expected recoverable task')
 		task.start()
-		let reads = 0
+		const reads = new WorkflowObservation(0)
 		const options: WorkflowOptions = {}
 		Object.defineProperty(options, 'functions', {
 			get: () => {
-				reads += 1
-				return reads === 1 ? VALIDATED_FUNCTIONS : SHIFTED_FUNCTIONS
+				reads.value += 1
+				return reads.value === 1 ? VALIDATED_FUNCTIONS : RECOVERY_SHIFTED_FUNCTIONS
 			},
 		})
 
 		const recovered = createRecoveredWorkflow(source.snapshot(), options)
 
-		expect(reads).toBe(1)
+		expect(reads.value).toBe(1)
 		expect(recovered.phase('phase')?.task('task')?.handler).toBe(VALIDATED_FUNCTIONS.work)
 	})
 
@@ -1359,42 +1192,42 @@ describe('workflow recovery', () => {
 			],
 		}
 		const snapshot = createWorkflow(definition, { functions: VALIDATED_FUNCTIONS }).snapshot()
-		let reads = 0
+		const reads = new WorkflowObservation(0)
 		const functions: WorkflowRegistry = {}
 		Object.defineProperty(functions, 'work', {
 			get: () => {
-				reads += 1
-				return reads === 1 ? VALIDATED_FUNCTIONS.work : SHIFTED_FUNCTIONS.work
+				reads.value += 1
+				return reads.value === 1 ? VALIDATED_FUNCTIONS.work : RECOVERY_SHIFTED_FUNCTIONS.work
 			},
 		})
 
 		const recovered = createRecoveredWorkflow(snapshot, { functions })
 
-		expect(reads).toBe(1)
+		expect(reads.value).toBe(1)
 		expect(recovered.phase('phase')?.task('first')?.handler).toBe(VALIDATED_FUNCTIONS.work)
 		expect(recovered.phase('phase')?.task('second')?.handler).toBe(VALIDATED_FUNCTIONS.work)
 		const added = recovered.phase('phase')?.add({ id: 'later', name: 'Later', behavior: 'work' })
 		if (added === undefined || !added.success) throw new Error('expected live task addition')
-		expect(reads).toBe(2)
-		expect(added.value.handler).toBe(SHIFTED_FUNCTIONS.work)
+		expect(reads.value).toBe(2)
+		expect(added.value.handler).toBe(RECOVERY_SHIFTED_FUNCTIONS.work)
 	})
 
 	it('rejects the first unresolved keyed binding without rereading a later valid value', () => {
 		const snapshot = createWorkflow(RECOVERY_DEFINITION, {
 			functions: VALIDATED_FUNCTIONS,
 		}).snapshot()
-		let reads = 0
+		const reads = new WorkflowObservation(0)
 		const functions: WorkflowRegistry = {}
 		Object.defineProperty(functions, 'work', {
 			get: () => {
-				reads += 1
-				return reads === 1 ? undefined : VALIDATED_FUNCTIONS.work
+				reads.value += 1
+				return reads.value === 1 ? undefined : VALIDATED_FUNCTIONS.work
 			},
 		})
 
 		const error = captureError(() => createRecoveredWorkflow(snapshot, { functions }))
 
-		expect(reads).toBe(1)
+		expect(reads.value).toBe(1)
 		expect(isWorkflowError(error) ? error.code : undefined).toBe('RESTORE')
 	})
 
@@ -1415,11 +1248,7 @@ describe('workflow recovery', () => {
 				},
 			],
 		}
-		const functions = {
-			first: () => 'first',
-			done: () => 'done',
-			interrupted: () => 'interrupted',
-		}
+		const functions = RECOVERY_MIXED_FUNCTIONS
 		const source = createWorkflow(definition, { functions })
 		const done = source.phase('phase')?.task('done')
 		const interrupted = source.phase('phase')?.task('interrupted')
@@ -1429,7 +1258,7 @@ describe('workflow recovery', () => {
 		interrupted.start()
 
 		const exact = createRestoredWorkflow(source.snapshot(), { functions })
-		expect(() => recoveryRunner().execute(exact)).toThrow(/not drivable/)
+		expect(() => createDurabilityRunner().execute(exact)).toThrow(/not drivable/)
 
 		const calls: string[] = []
 		const recovered = createRecoveredWorkflow(source.snapshot(), {
@@ -1448,7 +1277,7 @@ describe('workflow recovery', () => {
 				},
 			},
 		})
-		const result = await recoveryRunner().execute(recovered)
+		const result = await createDurabilityRunner().execute(recovered)
 
 		expect(result.status).toBe('completed')
 		expect(calls.sort()).toEqual(['first', 'interrupted'])
@@ -1483,7 +1312,7 @@ describe('workflow recovery', () => {
 		expect(recovered.phase('phase')?.task('task')?.activity).toBeUndefined()
 		expect(recovered.snapshot().phases[0]?.tasks[0]).not.toHaveProperty('activity')
 
-		const result = await recoveryRunner().execute(recovered)
+		const result = await createDurabilityRunner().execute(recovered)
 		expect(result.status).toBe('completed')
 		expect(attempts).toEqual([2])
 		expect(result.workflow.phase('phase')?.task('task')?.attempts).toBe(2)
@@ -1574,18 +1403,7 @@ describe('workflow recovery', () => {
 		expect(exhausted.phase('phase')?.task('task')?.status).toBe('failed')
 	})
 
-	it.each([
-		{
-			bail: true,
-			expected: ['skipped', 'failed', 'skipped', 'skipped'],
-			later: 'skipped',
-		},
-		{
-			bail: false,
-			expected: ['pending', 'failed', 'pending', 'pending'],
-			later: 'pending',
-		},
-	])(
+	it.each(RECOVERY_POLICY_CASES)(
 		'applies the whole-phase exhausted recovery policy under bail:$bail',
 		({ bail, expected, later }) => {
 			const definition: WorkflowDefinition = {
@@ -1690,7 +1508,7 @@ describe('workflow recovery', () => {
 		})
 
 		expect(restored.phase('phase')?.task('task')?.status).toBe('running')
-		const error = captureError(() => recoveryRunner().execute(restored))
+		const error = captureError(() => createDurabilityRunner().execute(restored))
 		expect(isWorkflowError(error) ? error.code : undefined).toBe('TRANSITION')
 	})
 
@@ -1700,13 +1518,9 @@ describe('workflow recovery', () => {
 		}).snapshot()
 		const restored = createRestoredWorkflow(snapshot)
 		expect(restored.phase('phase')?.task('task')?.behavior).toBe('work')
-		expect(() => recoveryRunner().execute(restored)).toThrow(/not drivable/)
+		expect(() => createDurabilityRunner().execute(restored)).toThrow(/not drivable/)
 
-		const hostile = {
-			get id(): string {
-				throw new Error('accessor must not run')
-			},
-		}
+		const hostile = buildHostileWorkflow()
 		const error = captureError(() => createRestoredWorkflow(hostile))
 		expect(isWorkflowError(error)).toBe(true)
 		if (!isWorkflowError(error)) throw new Error('expected WorkflowError')
@@ -1718,22 +1532,17 @@ describe('workflow recovery', () => {
 		const snapshot = createWorkflow(RECOVERY_DEFINITION, {
 			functions: { work: () => null },
 		}).snapshot()
-		let calls = 0
-		const functions = {
-			work: () => {
-				calls += 1
-				return null
-			},
-		}
+		const calls = new WorkflowObservation(0)
+		const functions = buildCountedRegistry(calls)
 		const first = createRestoredWorkflow(snapshot, { functions })
 		const second = createRestoredWorkflow(snapshot, { functions })
 		expect(first).not.toBe(second)
 
 		const results = await Promise.all([
-			recoveryRunner().execute(first),
-			recoveryRunner().execute(second),
+			createDurabilityRunner().execute(first),
+			createDurabilityRunner().execute(second),
 		])
 		expect(results.map((result) => result.status)).toEqual(['completed', 'completed'])
-		expect(calls).toBe(2)
+		expect(calls.value).toBe(2)
 	})
 })

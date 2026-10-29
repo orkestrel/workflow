@@ -1,7 +1,7 @@
 import type { SchedulerInterface, SchedulerOptions } from '@src/core'
 import type { AnyFunction } from '@orkestrel/contract'
 import type { IdleInterface } from './types.js'
-import { delayHost, scheduleHost } from '@src/core'
+import { createHostDelay, createHostSchedule } from '@src/core'
 import { isFunction } from '@orkestrel/contract'
 
 /**
@@ -19,7 +19,7 @@ import { isFunction } from '@orkestrel/contract'
  *   `setTimeout(0)` macrotask — still a real host-turn, not idle-gated. `delay(ms)` is
  *   always a real `setTimeout`. `options.priority` is accepted for contract compliance but a
  *   no-op — idle scheduling has no priority dimension.
- * - **Abort fidelity is verbatim, with cleanup.** The shared `scheduleHost` lifecycle links
+ * - **Abort fidelity is verbatim, with cleanup.** The shared `createHostSchedule` lifecycle links
  *   an owned settlement composite before scheduling, never invokes caller-owned signal
  *   methods, and cancels the idle callback or fallback timer when abort wins.
  * - **Event-free.** A pure functional primitive — no Emitter, no events.
@@ -45,7 +45,7 @@ export class IdleScheduler implements SchedulerInterface {
 	 */
 	yield(options?: SchedulerOptions): Promise<void> {
 		const idle = this.#idleCallback()
-		if (idle === undefined) return delayHost(0, options?.signal)
+		if (idle === undefined) return createHostDelay(0, options?.signal)
 		return this.#idle(idle, options?.signal)
 	}
 
@@ -59,7 +59,7 @@ export class IdleScheduler implements SchedulerInterface {
 	 * out-of-domain `ms` resolves on the next host turn rather than throwing.
 	 */
 	delay(ms: number, options?: SchedulerOptions): Promise<void> {
-		return delayHost(ms, options?.signal)
+		return createHostDelay(ms, options?.signal)
 	}
 
 	// === Private
@@ -77,9 +77,9 @@ export class IdleScheduler implements SchedulerInterface {
 		}
 	}
 
-	// The idle yield boundary; `scheduleHost` owns cancellation lifecycle.
+	// The idle yield boundary; `createHostSchedule` owns cancellation lifecycle.
 	#idle(idle: IdleInterface, signal?: AbortSignal): Promise<void> {
-		return scheduleHost((complete) => {
+		return createHostSchedule((complete) => {
 			const handle = idle.request(complete)
 			return () => idle.cancel(handle)
 		}, signal)
