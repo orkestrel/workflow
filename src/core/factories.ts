@@ -544,7 +544,7 @@ export function createWorkflowManager(options?: WorkflowManagerOptions): Workflo
  *
  * // A backoff: wait a growing interval between retries.
  * const scheduler = createScheduler()
- * for (let attempt = 0; attempt < 5; attempt += 1) {
+ * for (const attempt of new Array(5).keys()) {
  * 	if (await tryOnce()) break
  * 	await scheduler.delay(2 ** attempt * 100)
  * }

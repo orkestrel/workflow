@@ -732,6 +732,21 @@ describe('createRestoredWorkflow / cloneWorkflowSnapshot — the round-trip inve
 // ── createScheduler ──
 
 describe('createScheduler', () => {
+	it('keeps the backoff example attempt order and stops before delaying a success', async () => {
+		const scheduler = createScheduler()
+		const attempts: number[] = []
+		const delays: number[] = []
+		for (const attempt of new Array(5).keys()) {
+			attempts.push(attempt)
+			if (attempt === 2) break
+			const delay = 2 ** attempt * 100
+			await scheduler.delay(delay)
+			delays.push(delay)
+		}
+		expect(attempts).toEqual([0, 1, 2])
+		expect(delays).toEqual([100, 200])
+	})
+
 	it('returns a scheduler whose yield and delay round-trip', async () => {
 		const scheduler = createScheduler()
 		await expect(scheduler.yield()).resolves.toBeUndefined()

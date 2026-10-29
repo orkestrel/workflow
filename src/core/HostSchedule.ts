@@ -12,7 +12,7 @@ export class HostSchedule implements HostScheduleInterface {
 	constructor(start: HostScheduleFunction, signal?: AbortSignal) {
 		if (signal !== undefined && !isAbortSignal(signal)) {
 			this.#promise = Promise.reject(
-				new WorkflowError('SCHEDULE', 'scheduleHost signal must be an AbortSignal', {
+				new WorkflowError('SCHEDULE', 'createHostSchedule signal must be an AbortSignal', {
 					signal: typeof signal,
 				}),
 			)
