@@ -5,7 +5,7 @@ import {
 	createWorkflowContract,
 	MAX_TIMER_MS,
 	phaseShape,
-	taskShape,
+	taskDefinitionShape,
 	workflowShape,
 } from '@src/core'
 import { describe, expect, it } from 'vitest'
@@ -14,13 +14,13 @@ import { describe, expect, it } from 'vitest'
 // that mirror the hand-written definition interfaces (types.ts). Structural checks
 // on the descriptors — the four-way-parity behavior is covered in factories.test.ts.
 
-describe('taskShape', () => {
+describe('taskDefinitionShape', () => {
 	it('requires id / name and makes description / behavior optional', () => {
-		expect(taskShape.category).toBe('object')
-		expect(taskShape.properties.id).toMatchObject({ category: 'string', min: 1 })
-		expect(taskShape.properties.name).toMatchObject({ category: 'string', min: 1 })
-		expect(taskShape.properties.description.category).toBe('optional')
-		const behavior = taskShape.properties.behavior
+		expect(taskDefinitionShape.category).toBe('object')
+		expect(taskDefinitionShape.properties.id).toMatchObject({ category: 'string', min: 1 })
+		expect(taskDefinitionShape.properties.name).toMatchObject({ category: 'string', min: 1 })
+		expect(taskDefinitionShape.properties.description.category).toBe('optional')
+		const behavior = taskDefinitionShape.properties.behavior
 		expect(behavior.category).toBe('optional')
 		expect(behavior.category === 'optional' && behavior.inner).toMatchObject({
 			category: 'string',
@@ -31,7 +31,7 @@ describe('taskShape', () => {
 	it('carries optional non-negative-integer retries / timeout reliability settings', () => {
 		const keys: ReadonlyArray<'retries' | 'timeout'> = ['retries', 'timeout']
 		for (const key of keys) {
-			const field = taskShape.properties[key]
+			const field = taskDefinitionShape.properties[key]
 			expect(field.category).toBe('optional')
 			expect(field.category === 'optional' && field.inner).toMatchObject({
 				category: 'number',
@@ -39,7 +39,7 @@ describe('taskShape', () => {
 				min: 0,
 			})
 		}
-		const timeout = taskShape.properties.timeout
+		const timeout = taskDefinitionShape.properties.timeout
 		expect(timeout.category === 'optional' && timeout.inner).toMatchObject({ max: MAX_TIMER_MS })
 	})
 })
@@ -49,7 +49,7 @@ describe('phaseShape', () => {
 		expect(phaseShape.properties.tasks).toMatchObject({ category: 'array' })
 		expect(
 			phaseShape.properties.tasks.category === 'array' && phaseShape.properties.tasks.items,
-		).toBe(taskShape)
+		).toBe(taskDefinitionShape)
 		const concurrency = phaseShape.properties.concurrency
 		expect(concurrency.category).toBe('optional')
 		expect(concurrency.category === 'optional' && concurrency.inner).toMatchObject({
@@ -118,7 +118,7 @@ describe('per-field descriptions (Rank 1)', () => {
 	})
 
 	it('the behavior field describes itself (a registry key, not a label)', () => {
-		const behavior = taskShape.properties.behavior
+		const behavior = taskDefinitionShape.properties.behavior
 		expect(
 			typeof (
 				behavior.category === 'optional' &&

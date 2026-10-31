@@ -323,7 +323,7 @@ export function isWorkflowSnapshot(value: unknown): value is WorkflowSnapshot {
  *
  * @remarks
  * The one guard behind both claim lists of a {@link TaskActivityInput} — its `operations` and its
- * `constraints` — because {@link import('./types.js').TaskOperation} and
+ * `constraints` — because {@link import('./types.js').TaskActivityOperation} and
  * {@link import('./types.js').TaskConstraint} are the same {@link TaskClaim} shape. Every member must be a plain record carrying exactly `id`, `name`, and
  * `started`, with non-empty string `id` and `name`, a finite non-negative `started`, and an `id`
  * unique within the list. Total: a hostile prototype, an accessor, or a cycle returns `false`

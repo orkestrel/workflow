@@ -174,7 +174,7 @@ export interface TaskInput extends Partial<TaskContext> {
 
 /**
  * Represents one identified thing a running task claims active, with the moment the claim
- * began — the shape {@link TaskOperation} and {@link TaskConstraint} share.
+ * began — the shape {@link TaskActivityOperation} and {@link TaskConstraint} share.
  *
  * @remarks
  * `id` is unique within one complete activity report, `name` is the human-readable label, and
@@ -197,7 +197,7 @@ export interface TaskClaim {
  * A {@link TaskClaim}: `id` is stable within one complete activity report, `name` is the
  * human-readable label, and `started` is a finite non-negative reporter timestamp.
  */
-export interface TaskOperation extends TaskClaim {}
+export interface TaskActivityOperation extends TaskClaim {}
 
 /**
  * Represents the aggregate progress most recently reported by a running task.
@@ -235,7 +235,7 @@ export interface TaskConstraint extends TaskClaim {}
 export interface TaskActivityInput {
 	readonly note?: string
 	readonly progress?: TaskProgress
-	readonly operations?: readonly TaskOperation[]
+	readonly operations?: readonly TaskActivityOperation[]
 	readonly constraints?: readonly TaskConstraint[]
 }
 
@@ -245,7 +245,7 @@ export interface TaskActivityInput {
 export interface TaskActivity {
 	readonly note?: string
 	readonly progress?: TaskProgress
-	readonly operations: readonly TaskOperation[]
+	readonly operations: readonly TaskActivityOperation[]
 	readonly constraints: readonly TaskConstraint[]
 	readonly updated: number
 }

@@ -1,4 +1,5 @@
 import { FOREIGN_ACTIVITY_VALUES } from '../../setup.js'
+import type { TaskActivityOperation } from '@src/core'
 import {
 	cloneTaskProgress,
 	cloneTaskActivity,
@@ -31,7 +32,7 @@ describe('cloneTaskProgress', () => {
 
 describe('cloneTaskActivity', () => {
 	it('clones and freezes a complete frame without retaining caller aliases', () => {
-		const operations = [{ id: 'operation', name: 'Operation', started: 1 }]
+		const operations: TaskActivityOperation[] = [{ id: 'operation', name: 'Operation', started: 1 }]
 		const constraints = [{ id: 'constraint', name: 'Constraint', started: 2 }]
 		const progress = { progress: 2, total: 4, message: 'steps' }
 		const activity = cloneTaskActivity({ note: 'working', operations, constraints, progress }, 10)
