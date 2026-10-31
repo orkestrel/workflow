@@ -603,7 +603,7 @@ describe('scheduleHost — centralized host settlement lifecycle', () => {
 
 		// Prove this input reaches linking and linking throws on this host.
 		expect(isAbortSignal(hostile)).toBe(true)
-		expect(() => linkSignal(new AbortController().signal, hostile)).toThrow(TypeError)
+		expect(() => linkSignal(new AbortController().signal, hostile)).toThrow(Error)
 		const pending = createHostSchedule(() => {
 			starts.handler()
 			return () => undefined
