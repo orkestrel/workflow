@@ -16,7 +16,6 @@ import type {
 	WorkflowRegistry,
 	WorkflowSnapshot,
 } from './types.js'
-import type { Failure, Success } from '@orkestrel/contract'
 import {
 	isArray,
 	isBoolean,
@@ -26,7 +25,6 @@ import {
 	isJSONValue,
 	isNonEmptyString,
 	isRecord,
-	isError,
 	isString,
 } from '@orkestrel/contract'
 import { DEFAULT_BAIL, MAX_TIMER_MS, TASK_TRANSITIONS, TERMINAL_STATUSES } from './constants.js'
@@ -398,58 +396,6 @@ export function resolveTaskSilence(
 		fallback <= MAX_TIMER_MS
 		? fallback
 		: undefined
-}
-
-// === Result construction (`@orkestrel/contract` ships the `Result` /
-// `Success` / `Failure` types but no `success`/`failure` constructors, so this module
-// provides the ones every gated Result-constructing site in this package's W-b entities
-// + managers uses instead of a hand-rolled `{ success: true/false, ... }` literal)
-
-/**
- * Boxes a value as a {@link Success} — the graceful outcome half of a {@link Result}.
- *
- * @typeParam T - The boxed value's type
- * @param value - The value to box
- * @returns A {@link Success} wrapping `value`
- *
- * @example
- * ```ts
- * const result = success(task) // { success: true, value: task }
- * ```
- */
-export function success<T>(value: T): Success<T> {
-	return { success: true, value }
-}
-
-/**
- * Boxes an error as a {@link Failure} — the graceful outcome half of a {@link Result}.
- *
- * @typeParam E - The boxed error's type
- * @param error - The error to box
- * @returns A {@link Failure} wrapping `error`
- *
- * @example
- * ```ts
- * const result = failure(new WorkflowError('MUTATION', 'refused')) // { success: false, error }
- * ```
- */
-export function failure<E>(error: E): Failure<E> {
-	return { success: false, error }
-}
-
-/**
- * Normalizes an unknown thrown value to a non-empty persistence-safe message.
- *
- * @param error - The caught value
- * @returns A non-empty message without stack or cause data
- */
-export function errorToMessage(error: unknown): string {
-	try {
-		const message = isError(error) ? error.message : String(error)
-		return isString(message) && message.length > 0 ? message : 'unknown failure'
-	} catch {
-		return 'unknown failure'
-	}
 }
 
 // === Result-tree collection

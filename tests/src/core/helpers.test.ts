@@ -20,8 +20,6 @@ import {
 	deriveBoundary,
 	derivePhaseStatus,
 	deriveWorkflowStatus,
-	errorToMessage,
-	failure,
 	findFailure,
 	insertEntry,
 	isTerminalStatus,
@@ -33,11 +31,11 @@ import {
 	resolveTaskSilence,
 	createRestoredWorkflow,
 	createHostSchedule,
-	success,
 	taskDefinitionToSnapshot,
 } from '@src/core'
 import { describe, expect, it } from 'vitest'
 import { isAbortSignal, linkSignal } from '@orkestrel/abort'
+import { failure, success } from '@orkestrel/contract'
 import { captureError, createRecorder, waitForDelay } from '@orkestrel/test'
 import {
 	createErrorRecorder,
@@ -54,7 +52,6 @@ import {
 	PHASE_STATUS_CASES,
 	WORKFLOW_STATUS_CASES,
 	WORKFLOW_AGNOSTIC_CASES,
-	buildHostileString,
 	RECOVERY_MIXED_FUNCTIONS,
 	buildHostileWorkflow,
 	buildCountedRegistry,
@@ -921,39 +918,6 @@ describe('parkSignal — a one-shot promise-park on an AbortSignal, never reject
 		const parked = parkSignal(controller.signal)
 		controller.abort(new Error('boom'))
 		await expect(parked).resolves.toBeUndefined()
-	})
-})
-
-describe('success / failure — the Result constructors', () => {
-	it('success boxes a value as { success: true, value }', () => {
-		expect(success(42)).toEqual({ success: true, value: 42 })
-		expect(success('x')).toEqual({ success: true, value: 'x' })
-		expect(success(undefined)).toEqual({ success: true, value: undefined })
-	})
-
-	it('failure boxes an error as { success: false, error }', () => {
-		const error = new Error('boom')
-		expect(failure(error)).toEqual({ success: false, error })
-		expect(failure('plain reason')).toEqual({ success: false, error: 'plain reason' })
-	})
-})
-
-describe('errorToMessage', () => {
-	it('normalizes empty and hostile values without throwing', () => {
-		const hostileMessage = Object.create(Error.prototype)
-		Object.defineProperty(hostileMessage, 'message', {
-			get: () => {
-				throw new Error('hostile message')
-			},
-		})
-		const hostileString = buildHostileString()
-
-		expect(errorToMessage(new Error('boom'))).toBe('boom')
-		expect(errorToMessage('plain')).toBe('plain')
-		expect(errorToMessage('')).toBe('unknown failure')
-		expect(errorToMessage(hostileMessage)).toBe('unknown failure')
-		expect(errorToMessage(hostileString)).toBe('unknown failure')
-		expect(errorToMessage(Symbol('reason'))).toBe('Symbol(reason)')
 	})
 })
 

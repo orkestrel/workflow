@@ -4,11 +4,10 @@ import type { EmitterInterface } from '@orkestrel/emitter'
 import type { QueueContext, QueueInterface } from '@orkestrel/queue'
 import type { RunnerEventMap, RunnerInterface, RunnerOptions, RunnerUnit } from './types.js'
 import { createAbort } from '@orkestrel/abort'
-import { attempt } from '@orkestrel/contract'
+import { attempt, failure, success } from '@orkestrel/contract'
 import { createQueue } from '@orkestrel/queue'
 import { Emitter } from '@orkestrel/emitter'
 import { WorkflowError } from './errors.js'
-import { failure, success } from './helpers.js'
 import { Controller } from './Controller.js'
 
 /**

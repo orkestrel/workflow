@@ -1,7 +1,8 @@
 import type { Guard, Result } from '@orkestrel/contract'
 import type { CollectionEntry, CollectionInterface } from './types.js'
+import { failure, success } from '@orkestrel/contract'
 import { WorkflowError } from './errors.js'
-import { failure, insertEntry, moveEntry, success } from './helpers.js'
+import { insertEntry, moveEntry } from './helpers.js'
 
 /**
  * Implements the insertion-ordered gated store both lean managers hold — entities keyed by `id`,

@@ -19,13 +19,13 @@ import type {
 	WorkflowInterface,
 	WorkflowRegistry,
 } from '../types.js'
+import { failure } from '@orkestrel/contract'
 import { Emitter } from '@orkestrel/emitter'
 import { WorkflowError } from '../errors.js'
 import {
 	buildPhaseContext,
 	buildTaskContext,
 	derivePhaseStatus,
-	failure,
 	findFailure,
 	isTerminalStatus,
 	taskDefinitionToSnapshot,

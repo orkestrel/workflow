@@ -1,5 +1,5 @@
 import type { JSONValue } from '@orkestrel/contract'
-import { isBoolean, isFiniteNumber } from '@orkestrel/contract'
+import { errorToMessage, failure, isBoolean, isFiniteNumber } from '@orkestrel/contract'
 import type { TimeoutInterface } from '@orkestrel/timeout'
 import type {
 	AttemptOutcome,
@@ -24,8 +24,6 @@ import { WorkflowError } from './errors.js'
 import { createWorkflowTree } from './factories.js'
 import {
 	captureWorkflowOptions,
-	errorToMessage,
-	failure,
 	hasWorkflowHandlers,
 	isCompletable,
 	isHalted,

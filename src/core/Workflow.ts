@@ -19,6 +19,7 @@ import type {
 	WorkflowSnapshot,
 } from './types.js'
 import { createAbort } from '@orkestrel/abort'
+import { failure } from '@orkestrel/contract'
 import { Emitter } from '@orkestrel/emitter'
 import { cloneWorkflowSnapshot } from './cloners.js'
 import { WorkflowError } from './errors.js'
@@ -28,7 +29,6 @@ import {
 	collectResults,
 	deriveBoundary,
 	deriveWorkflowStatus,
-	failure,
 	findFailure,
 	isTerminalStatus,
 	phaseDefinitionToSnapshot,

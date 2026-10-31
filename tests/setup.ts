@@ -24,13 +24,11 @@ import type {
 	WorkflowSnapshot,
 	WorkflowStoreInterface,
 } from '@src/core'
-import { compileGuard } from '@orkestrel/contract'
+import { compileGuard, failure, success } from '@orkestrel/contract'
 import { createAbort } from '@orkestrel/abort'
 import { createRecorder, requireValue } from '@orkestrel/test'
 import {
 	Collection,
-	success,
-	failure,
 	createRunner,
 	createMemoryWorkflowStore,
 	createDatabaseWorkflowStore,

@@ -12,6 +12,7 @@ import {
 	buildWorkflowStore,
 	createPacedRunner,
 	buildFunctionTask,
+	buildHostileString,
 	buildRunnerDefinition,
 	createOrderFunction,
 	buildReliableTask,
@@ -250,6 +251,35 @@ describe('WorkflowRunner — dispatch by function-registry name', () => {
 		expect(recorded?.result?.success).toBe(false)
 		const error = recorded?.result?.success === false ? recorded.result.error : undefined
 		expect(error).toEqual({ origin: 'handler', message: 'boom exploded' })
+	})
+
+	it('a failing function whose thrown value renders no message records the fallback message', async () => {
+		const definition = buildRunnerDefinition(
+			[
+				{
+					id: 'a',
+					tasks: [buildFunctionTask('empty', 'empty'), buildFunctionTask('hostile', 'hostile')],
+				},
+			],
+			false,
+		)
+		const result = await createPacedRunner().execute(definition, {
+			functions: {
+				empty: () => {
+					throw ''
+				},
+				hostile: () => {
+					throw buildHostileString()
+				},
+			},
+		})
+		expect(result.status).toBe('completed')
+		for (const id of ['empty', 'hostile']) {
+			expect(result.workflow.phase('a')?.task(id)?.result?.result).toEqual({
+				success: false,
+				error: { origin: 'handler', message: 'unknown failure' },
+			})
+		}
 	})
 
 	it('an unresolved named task is rejected before execution', () => {

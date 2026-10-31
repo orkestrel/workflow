@@ -7,8 +7,8 @@ import type {
 	WorkflowPersistenceInterface,
 	WorkflowStoreInterface,
 } from './types.js'
+import { errorToMessage } from '@orkestrel/contract'
 import { PERSISTED_NODE_EVENTS, PERSISTED_TASK_EVENTS } from './constants.js'
-import { errorToMessage } from './helpers.js'
 
 /**
  * Coordinates advanced run-local snapshot persistence with one writer and one coalesced most
