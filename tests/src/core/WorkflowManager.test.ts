@@ -4,6 +4,7 @@ import {
 	WorkflowStoreBoundary,
 	buildReleaseDefinition,
 	buildMisspeltDefinition,
+	buildShiftingDefinition,
 	WorkflowObservation,
 	buildCompileRegistry,
 	buildWorkflowStore,
@@ -31,6 +32,15 @@ describe('WorkflowManager — add / accessors / count', () => {
 		expect(isWorkflowError(error) && error.code).toBe('SCHEDULE')
 		expect(manager.count).toBe(1)
 		expect(manager.workflow('wf')).toBe(registered)
+	})
+
+	it('refuses a definition whose read changes with SCHEDULE, registering nothing', () => {
+		const manager = createWorkflowManager()
+
+		const error = captureError(() => manager.add(buildShiftingDefinition()))
+
+		expect(isWorkflowError(error) && error.code).toBe('SCHEDULE')
+		expect(manager.count).toBe(0)
 	})
 
 	it('starts empty', () => {

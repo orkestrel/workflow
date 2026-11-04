@@ -22,6 +22,7 @@ import {
 	MAX_TIMER_MS,
 	WORKFLOW_REFUSAL_LIMIT,
 	createRestoredWorkflow,
+	workflowContract,
 } from '@src/core'
 import { describe, expect, it } from 'vitest'
 import { captureError, createRecorder, createRecorders, waitForDelay } from '@orkestrel/test'
@@ -33,6 +34,7 @@ import {
 	buildFactoryDefinition,
 	buildMisspeltDefinition,
 	buildRepairableDefinition,
+	buildShiftingDefinition,
 	INVALID_CONCURRENCIES,
 	INVALID_TIMER_BOUNDS,
 	FACTORY_RESTORE_FUNCTIONS,
@@ -54,6 +56,10 @@ import {
 
 describe('createWorkflowContract — surface', () => {
 	const contract = createWorkflowContract()
+
+	it('returns the one compiled contract every door reads', () => {
+		expect(contract).toBe(workflowContract)
+	})
 
 	it('exposes a JSON Schema for an object with the definition properties', () => {
 		expect(contract.schema.type).toBe('object')
@@ -201,6 +207,59 @@ describe('createWorkflow — the definition door', () => {
 				limit: 1,
 			}),
 		])
+	})
+
+	it('refuses a definition whose read changes, instead of leaking the contract error', () => {
+		const error = captureError(() => createWorkflow(buildShiftingDefinition()))
+
+		expect(isWorkflowError(error) && error.code).toBe('SCHEDULE')
+		expect(isWorkflowError(error) && error.message).toContain('could not be read')
+		expect(isWorkflowError(error) && error.context?.faults).toEqual([])
+	})
+
+	it('lists every unexpected key beside the other faults, so no typo waits for a retry', () => {
+		const error = captureError(() =>
+			Reflect.apply(createWorkflow, undefined, [
+				{
+					id: 'w',
+					name: 'W',
+					phases: [
+						{ id: 'p', name: 'P', tasks: [{ id: 't', behaviour: 'compile', timeout: 'abc' }] },
+					],
+				},
+			]),
+		)
+		const task = ['phases', '0', 'tasks', '0']
+
+		expect(isWorkflowError(error) && error.code).toBe('SCHEDULE')
+		expect(isWorkflowError(error) && error.context?.faults).toEqual([
+			expect.objectContaining({ reason: 'missing', path: [...task, 'name'] }),
+			expect.objectContaining({ reason: 'type', path: [...task, 'timeout'] }),
+			{ reason: 'extra', path: [...task, 'behaviour'] },
+		])
+		expect(isWorkflowError(error) && error.message).toContain('tasks.0.behaviour: extra')
+	})
+
+	it('names the remedy of a bound the door refuses, from the schema it read', () => {
+		const timeout = captureError(() =>
+			createWorkflow({
+				id: 'w',
+				name: 'W',
+				phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', timeout: 0 }] }],
+			}),
+		)
+		const concurrency = captureError(() =>
+			createWorkflow({
+				id: 'w',
+				name: 'W',
+				phases: [{ id: 'p', name: 'P', tasks: [], concurrency: 0 }],
+			}),
+		)
+
+		expect(isWorkflowError(timeout) && timeout.message).toContain('Omit the key for no bound')
+		expect(isWorkflowError(concurrency) && concurrency.message).toContain(
+			'Omit the key for no bound',
+		)
 	})
 
 	it('refuses a value that is no definition at all', () => {

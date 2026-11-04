@@ -1,7 +1,13 @@
-import { isWorkflowError } from '@src/core'
+import type { PhaseInterface, PhaseUpdate } from '@src/core'
+import { Collection, createWorkflow, isWorkflowError, phaseUpdateContract } from '@src/core'
 import { describe, expect, it } from 'vitest'
 import { captureError } from '@orkestrel/test'
-import { buildCollection, buildTasks } from '../../setup.js'
+import {
+	buildCollection,
+	buildPhaseWorkflow,
+	buildTasks,
+	WorkflowObservation,
+} from '../../setup.js'
 
 // The one insertion-ordered gated store behind both lean managers. Driven directly over real live
 // tasks minted by `createWorkflow`, with the real compiled `taskUpdateShape` guard — no mocks. The
@@ -216,6 +222,58 @@ describe('Collection — remove / move / update share the pending gate', () => {
 		expect(!rejected.success && rejected.error.code).toBe('MUTATION')
 		expect(!rejected.success && rejected.error.message).toContain('could not be read')
 		expect(!rejected.success && rejected.error.context?.faults).toEqual([])
+	})
+
+	it('update fails gracefully on a patch whose read changes, a Result and never a throw', () => {
+		const [first] = buildTasks()
+		const store = buildCollection()
+		store.append(first)
+		const reads = new WorkflowObservation(0)
+		const name = first.name
+
+		const rejected = store.update(first.id, {
+			get name(): string {
+				reads.value += 1
+				if (reads.value > 1) throw new Error('the read changed')
+				return 'Renamed task'
+			},
+		})
+
+		expect(rejected.success).toBe(false)
+		expect(!rejected.success && rejected.error.code).toBe('MUTATION')
+		expect(!rejected.success && rejected.error.message).toContain('could not be read')
+		expect(first.name).toBe(name)
+	})
+
+	it('update hands the entity the owned patch, so it never reads the caller object again', () => {
+		const [first] = buildTasks()
+		const store = buildCollection()
+		store.append(first)
+		const reads = new WorkflowObservation(0)
+
+		const result = store.update(first.id, {
+			get name(): string {
+				reads.value += 1
+				if (reads.value > 2) throw new Error('the read changed')
+				return 'Renamed task'
+			},
+		})
+
+		expect(result.success).toBe(true)
+		expect(first.name).toBe('Renamed task')
+	})
+
+	it('update names what omitting a key does on a patch, from the patch schema', () => {
+		const store = new Collection<PhaseInterface, PhaseUpdate>('phase', phaseUpdateContract)
+		const phase = createWorkflow(buildPhaseWorkflow(1)).phase('p')
+		if (phase === undefined) throw new Error('expected one phase')
+		store.append(phase)
+
+		const rejected = store.update(phase.id, { concurrency: 0 })
+
+		expect(!rejected.success && rejected.error.message).toContain(
+			'Omit the key to leave it unchanged',
+		)
 	})
 
 	it('update refuses an empty patch, which changes nothing, and names the keys it can set', () => {

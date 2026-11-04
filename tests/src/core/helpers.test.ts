@@ -34,7 +34,7 @@ import {
 	taskDefinitionToSnapshot,
 	admitDefinition,
 	describeWorkflowFaults,
-	scanDeclaredKeys,
+	scanSchemaNode,
 	taskDefinitionContract,
 	WORKFLOW_REFUSAL_LIMIT,
 	MAX_TIMER_MS,
@@ -68,7 +68,8 @@ import {
 	buildCountedRegistry,
 	buildMisspeltDefinition,
 	buildRepairableDefinition,
-	createReportingContract,
+	createRecordedContract,
+	buildShiftingDefinition,
 	INVALID_CONCURRENCIES,
 	INVALID_TIMER_BOUNDS,
 } from '../../setup.js'
@@ -1128,6 +1129,16 @@ describe('resolveTaskSilence — runtime inheritance', () => {
 		expect(resolveTaskSilence(undefined, undefined)).toBeUndefined()
 	})
 
+	it('refuses a null at either tier, because only undefined means no bound', () => {
+		const task = captureError(() => Reflect.apply(resolveTaskSilence, undefined, [null, 10]))
+		const inherited = captureError(() =>
+			Reflect.apply(resolveTaskSilence, undefined, [undefined, null]),
+		)
+
+		expect(isWorkflowError(task) && task.code).toBe('SCHEDULE')
+		expect(isWorkflowError(inherited) && inherited.code).toBe('SCHEDULE')
+	})
+
 	for (const value of INVALID_TIMER_BOUNDS) {
 		it(`refuses a present task value or inherited default of ${value} with SCHEDULE`, () => {
 			const task = captureError(() => resolveTaskSilence(value, 10))
@@ -1287,7 +1298,7 @@ describe('admitDefinition — the door a definition enters through', () => {
 
 	it('asks for a report only when the guard refuses, because a valid value has no fault to report', () => {
 		const reports = createRecorder<readonly [string]>()
-		const contract = createReportingContract(workflowContract, reports)
+		const contract = createRecordedContract(workflowContract, reports)
 
 		const valid = { id: 'w', name: 'W', phases: [] }
 		expect(admitDefinition(contract, valid, 'SCHEDULE', 'workflow definition').success).toBe(true)
@@ -1316,7 +1327,7 @@ describe('admitDefinition — the door a definition enters through', () => {
 		])
 	})
 
-	it('reports explain faults first, because extras read only on a parseable value', () => {
+	it('reports explain faults, then every undeclared key, in one refusal', () => {
 		const admitted = admitDefinition(
 			workflowContract,
 			{ id: '', name: 'W', phases: [], undeclared: true },
@@ -1326,7 +1337,55 @@ describe('admitDefinition — the door a definition enters through', () => {
 
 		expect(!admitted.success && admitted.error.context?.faults).toEqual([
 			expect.objectContaining({ reason: 'constraint', path: ['id'] }),
+			{ reason: 'extra', path: ['undeclared'] },
 		])
+	})
+
+	it('reports a full audit whole when an explain fault joins it, because it can hide a key', () => {
+		const admitted = admitDefinition(
+			workflowContract,
+			{ ...buildRepairableDefinition(FAULT_LIMIT), id: '', undeclared: true },
+			'SCHEDULE',
+			'workflow definition',
+		)
+
+		expect(!admitted.success && admitted.error.context?.faults).toHaveLength(FAULT_LIMIT)
+		expect(!admitted.success && admitted.error.message).toContain('the list stops here')
+	})
+
+	it('refuses as unreadable when every read throws, which the guard answers and the audit cannot', () => {
+		const admitted = admitDefinition(
+			workflowContract,
+			{
+				id: 'w',
+				name: 'W',
+				get phases(): never {
+					throw new Error('unreadable')
+				},
+			},
+			'SCHEDULE',
+			'workflow definition',
+		)
+
+		expect(admitted.success).toBe(false)
+		expect(!admitted.success && admitted.error.code).toBe('SCHEDULE')
+		expect(!admitted.success && admitted.error.message).toContain('could not be read')
+	})
+
+	it('refuses as unreadable when a read throws, whichever contract call it reaches', () => {
+		const admitted = admitDefinition(
+			workflowContract,
+			buildShiftingDefinition(),
+			'MUTATION',
+			'workflow definition',
+		)
+
+		expect(admitted.success).toBe(false)
+		expect(!admitted.success && admitted.error.code).toBe('MUTATION')
+		expect(!admitted.success && admitted.error.message).toBe(
+			'workflow definition refused: it could not be read; send plain JSON data',
+		)
+		expect(!admitted.success && admitted.error.context?.faults).toEqual([])
 	})
 
 	it('refuses an audit at FAULT_LIMIT and repairs one below it', () => {
@@ -1348,19 +1407,18 @@ describe('admitDefinition — the door a definition enters through', () => {
 	})
 })
 
-describe('scanDeclaredKeys — the candidates a refusal offers', () => {
-	it('reads the keys of the object that holds the path, through arrays and objects', () => {
-		expect(scanDeclaredKeys(workflowContract.schema, ['behaviour'])).toEqual(
-			expect.arrayContaining(['id', 'name', 'phases']),
-		)
+describe('scanSchemaNode — the walk a refusal reads the schema through', () => {
+	it('walks objects and arrays to the node a path names', () => {
+		expect(scanSchemaNode(workflowContract.schema, [])).toBe(workflowContract.schema)
 		expect(
-			scanDeclaredKeys(workflowContract.schema, ['phases', '0', 'tasks', '0', 'behaviour']),
+			Object.keys(
+				scanSchemaNode(workflowContract.schema, ['phases', '0', 'tasks', '0'])?.properties ?? {},
+			),
 		).toEqual(['id', 'name', 'description', 'behavior', 'retries', 'timeout'])
 	})
 
-	it('reads the root for a string path, and no key once the path leaves the schema', () => {
-		expect(scanDeclaredKeys(taskDefinitionContract.schema, 'behaviour')).toContain('behavior')
-		expect(scanDeclaredKeys(taskDefinitionContract.schema, ['id', 'nested', 'key'])).toEqual([])
+	it('finds no node once the path leaves the schema', () => {
+		expect(scanSchemaNode(taskDefinitionContract.schema, ['id', 'nested'])).toBeUndefined()
 	})
 })
 
@@ -1385,7 +1443,7 @@ describe('describeWorkflowFaults — the text a refusal reads', () => {
 			'behaviour: extra; this key is not declared, remove it or send one of id, name, description, behavior, retries, timeout',
 			'id: missing; expected string',
 			'name: constraint; expected string; received ""; constraint min; limit 1',
-			'timeout: type; expected integer; received NaN',
+			'timeout: type; expected integer; received NaN; Per-attempt deadline in milliseconds; overrides the phase default. Omit the key for no bound.',
 		])
 	})
 
@@ -1398,6 +1456,32 @@ describe('describeWorkflowFaults — the text a refusal reads', () => {
 		expect(describeWorkflowFaults('patch', workflowContract.schema, [])).toBe(
 			'patch refused: it could not be read; send plain JSON data',
 		)
+	})
+
+	it('adds the schema description of an optional key and none for a required one', () => {
+		const message = describeWorkflowFaults('task definition', taskDefinitionContract.schema, [
+			{
+				reason: 'constraint',
+				path: ['timeout'],
+				expected: 'integer',
+				constraint: 'min',
+				limit: 1,
+				received: '0',
+			},
+			{
+				reason: 'constraint',
+				path: ['id'],
+				expected: 'string',
+				constraint: 'min',
+				limit: 1,
+				received: '""',
+			},
+		])
+		const [, timeout, id] = message.split('\n')
+
+		expect(timeout).toContain('received 0; constraint min; limit 1; ')
+		expect(timeout).toContain('Omit the key for no bound.')
+		expect(id).toBe('id: constraint; expected string; received ""; constraint min; limit 1')
 	})
 
 	it('offers only removal when the schema declares no candidate there', () => {
@@ -1432,7 +1516,7 @@ describe('describeWorkflowFaults — the text a refusal reads', () => {
 		expect(message.length).toBeLessThanOrEqual(WORKFLOW_REFUSAL_LIMIT)
 		expect(lines.length).toBeLessThan(FAULT_LIMIT)
 		expect(lines.at(1)).toContain('phases.0.tasks.0.timeout: type')
-		expect(lines.at(-2)).toMatch(/timeout: type; expected integer; received "5000"$/u)
+		expect(lines.at(-2)).toMatch(/timeout: type; expected integer; received "5000"; /u)
 		expect(lines.at(-1)).toContain('the list stops here')
 	})
 

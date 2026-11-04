@@ -85,8 +85,31 @@ export function buildMisspeltDefinition(): {
 	}
 }
 
+/** Builds a task whose `timeout` reads 5 once and throws after, a definition whose reads change. */
+export function buildShiftingTask(): TaskDefinition {
+	const reads = new WorkflowObservation(0)
+	return {
+		id: 't',
+		name: 'T',
+		get timeout(): number {
+			reads.value += 1
+			if (reads.value > 1) throw new Error('the read changed')
+			return 5
+		},
+	}
+}
+
+/** Builds a definition holding one {@link buildShiftingTask} task. */
+export function buildShiftingDefinition(): WorkflowDefinition {
+	return {
+		id: 'wf',
+		name: 'WF',
+		phases: [{ id: 'p', name: 'P', tasks: [buildShiftingTask()] }],
+	}
+}
+
 /** Wraps a real contract so a recorder sees each report a door asks it for. */
-export function createReportingContract<T>(
+export function createRecordedContract<T>(
 	contract: ContractInterface<T>,
 	reports: RecorderInterface<readonly [string]>,
 ): ContractInterface<T> {

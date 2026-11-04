@@ -56,7 +56,7 @@ export const taskDefinitionShape = objectShape({
 			min: 1,
 			max: MAX_TIMER_MS,
 			description:
-				'Per-attempt deadline in milliseconds; overrides the phase default. Omitted means no deadline.',
+				'Per-attempt deadline in milliseconds; overrides the phase default. Omit the key for no bound.',
 		}),
 	),
 })
@@ -77,7 +77,7 @@ export const phaseShape = objectShape({
 		integerShape({
 			min: 1,
 			max: Number.MAX_SAFE_INTEGER,
-			description: 'Max tasks in flight at once (a resource throttle); omitted means unbounded.',
+			description: 'Max tasks in flight at once (a resource throttle). Omit the key for no bound.',
 		}),
 	),
 	bail: optionalShape(
@@ -148,7 +148,7 @@ export const phaseUpdateShape = objectShape({
 			min: 1,
 			max: Number.MAX_SAFE_INTEGER,
 			description:
-				'Max tasks in flight at once (a resource throttle); omitted leaves it unchanged.',
+				'Max tasks in flight at once (a resource throttle). Omit the key to leave it unchanged.',
 		}),
 	),
 	bail: optionalShape(

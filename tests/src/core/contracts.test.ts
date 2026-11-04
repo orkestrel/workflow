@@ -18,6 +18,11 @@ describe('the compiled workflow contracts', () => {
 		).toEqual([{ reason: 'extra', path: ['bails'] }])
 	})
 
+	it('freezes what a shared contract exposes, so no caller can change what a door reads', () => {
+		expect(Object.isFrozen(workflowContract)).toBe(true)
+		expect(Object.isFrozen(workflowContract.schema)).toBe(true)
+	})
+
 	it('phaseContract bounds concurrency at the positive safe integers', () => {
 		const phase = { id: 'build', name: 'Build', tasks: [] }
 

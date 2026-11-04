@@ -14,7 +14,9 @@ import {
 	buildFunctionTask,
 	buildHostileString,
 	buildMisspeltDefinition,
+	buildRepairableDefinition,
 	buildRunnerDefinition,
+	buildShiftingDefinition,
 	INVALID_CONCURRENCIES,
 	INVALID_TIMER_BOUNDS,
 	createOrderFunction,
@@ -616,6 +618,28 @@ describe('WorkflowRunner — the definition door', () => {
 			},
 		})
 		expect(ran.count).toBe(0)
+	})
+
+	it('a definition whose read changes rejects SCHEDULE, not the contract error', async () => {
+		await expect(createPacedRunner().execute(buildShiftingDefinition())).rejects.toMatchObject({
+			code: 'SCHEDULE',
+			message: expect.stringContaining('could not be read'),
+		})
+	})
+
+	it('repairs a leaf inside a definition, and refuses the same value as a run option', async () => {
+		const runner = createPacedRunner()
+		const repaired: unknown = await Reflect.apply(runner.execute, runner, [
+			buildRepairableDefinition(1),
+		])
+		expect(repaired).toMatchObject({ status: 'completed' })
+
+		const definition = buildRunnerDefinition([{ id: 'a', tasks: [{ id: 't0', name: 't0' }] }])
+		const refused: unknown = Reflect.apply(runner.execute, runner, [definition, { timeout: '5' }])
+		await expect(refused).rejects.toMatchObject({
+			code: 'SCHEDULE',
+			context: { option: 'timeout' },
+		})
 	})
 
 	it('a run-time silence outside its bound rejects rather than throwing', async () => {

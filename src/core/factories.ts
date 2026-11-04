@@ -15,7 +15,7 @@ import type {
 	WorkflowSnapshotRow,
 	WorkflowStoreInterface,
 } from './types.js'
-import { createContract, rawShape, stringShape } from '@orkestrel/contract'
+import { rawShape, stringShape } from '@orkestrel/contract'
 import { createDatabase, createMemoryDriver } from '@orkestrel/database'
 import { cloneWorkflowSnapshot } from './cloners.js'
 import { workflowContract } from './contracts.js'
@@ -28,7 +28,6 @@ import {
 	recoverWorkflowSnapshot,
 } from './helpers.js'
 import { Scheduler } from './Scheduler.js'
-import { workflowShape } from './shapers.js'
 import { DatabaseWorkflowStore } from './stores/DatabaseWorkflowStore.js'
 import { MemoryWorkflowStore } from './stores/MemoryWorkflowStore.js'
 import { Workflow } from './Workflow.js'
@@ -102,9 +101,9 @@ export function createHostDelay(ms: number, signal?: AbortSignal): Promise<void>
 	}, signal)
 }
 
-// Workflow contract factory — compiles the workflow shape (shapers.ts) into the
-// four lockstep outputs (JSON Schema + guard + parser + generator) and types the
-// result as the hand-written `WorkflowDefinition` (the source of truth).
+// Workflow contract factory — returns the one contract (contracts.ts) that compiles the workflow
+// shape (shapers.ts) into the lockstep outputs (JSON Schema + guard + parser + generator) and types
+// the result as the hand-written `WorkflowDefinition` (the source of truth).
 //
 // The compiled `ContractInterface<Infer<typeof workflowShape>>` is structurally
 // identical to `ContractInterface<WorkflowDefinition>` — verified bidirectionally,
@@ -124,12 +123,13 @@ export function createHostDelay(ms: number, signal?: AbortSignal): Promise<void>
 // at the contract level, so no guard-gate wrapper is needed here.
 
 /**
- * Compiles the workflow definition contract — the JSON Schema, guard, parser, and
+ * Returns the compiled workflow definition contract — the JSON Schema, guard, parser, and
  * seeded generator for a {@link WorkflowDefinition}, all derived from one shape and
  * kept in lockstep.
  *
  * @remarks
- * The returned {@link ContractInterface}:
+ * The returned {@link ContractInterface} is the frozen `workflowContract` every definition door
+ * reads:
  * - `schema` — the emitted JSON Schema for a workflow definition.
  * - `is` — a total guard that narrows `unknown` to a valid {@link WorkflowDefinition}
  *   (malformed input returns `false`, never throws).
@@ -151,7 +151,7 @@ export function createHostDelay(ms: number, signal?: AbortSignal): Promise<void>
  * ```
  */
 export function createWorkflowContract(): ContractInterface<WorkflowDefinition> {
-	return createContract(workflowShape)
+	return workflowContract
 }
 
 /**

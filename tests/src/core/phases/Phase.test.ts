@@ -6,6 +6,7 @@ import { captureError, createRecorder, createRecorders } from '@orkestrel/test'
 import { Phase } from '../../../../src/core/phases/Phase.js'
 import {
 	buildPhaseWorkflow,
+	buildShiftingTask,
 	INVALID_CONCURRENCIES,
 	INVALID_TIMER_BOUNDS,
 	requireWorkflowPhase,
@@ -665,6 +666,17 @@ describe('Phase — add() runs the task definition door', () => {
 			expect(phase.task('late')).toBeUndefined()
 		})
 	}
+
+	it('fails MUTATION on a definition whose read changes, a Result and never a throw', () => {
+		const phase = requireWorkflowPhase(createWorkflow(buildPhaseWorkflow(1)))
+
+		const result = phase.add(buildShiftingTask())
+
+		expect(result.success).toBe(false)
+		expect(!result.success && result.error.code).toBe('MUTATION')
+		expect(!result.success && result.error.message).toContain('could not be read')
+		expect(phase.task('t')).toBeUndefined()
+	})
 
 	it('mints a valid definition with its bound', () => {
 		const phase = requireWorkflowPhase(createWorkflow(buildPhaseWorkflow(1)))

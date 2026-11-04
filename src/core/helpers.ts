@@ -1,10 +1,4 @@
-import type {
-	AuditFault,
-	ContractInterface,
-	FieldPath,
-	JSONSchema,
-	Result,
-} from '@orkestrel/contract'
+import type { AuditFault, ContractInterface, JSONSchema, Result } from '@orkestrel/contract'
 import type {
 	ControllerInterface,
 	LifecycleStatus,
@@ -25,6 +19,7 @@ import type {
 	WorkflowSnapshot,
 } from './types.js'
 import {
+	attempt as attemptCall,
 	failure,
 	FAULT_LIMIT,
 	isArray,
@@ -409,7 +404,7 @@ export function resolveTaskSilence(
 	value: number | undefined,
 	fallback: number | undefined,
 ): number | undefined {
-	const window = value ?? fallback
+	const window = value !== undefined ? value : fallback
 	return window === undefined ? undefined : requireTimerBound(window, 'silence')
 }
 
@@ -514,26 +509,25 @@ export function requireRunnable(workflow: WorkflowInterface, ms: number | undefi
 // === The definition door
 
 /**
- * Lists the keys a schema declares on the object that holds a path, the candidates a refusal of an
- * undeclared key offers.
+ * Walks a schema to the node a path names, through object properties and array items.
  *
  * @param schema - The schema the path walks
- * @param path - The path of the undeclared key
- * @returns The declared keys in schema order, empty when the path leaves the schema
+ * @param path - The path segments to follow
+ * @returns The node at the path, or `undefined` when the path leaves the schema
  *
  * @example
  * ```ts
- * scanDeclaredKeys(taskDefinitionContract.schema, ['behaviour'])
- * // ['id', 'name', 'description', 'behavior', 'retries', 'timeout']
+ * scanSchemaNode(workflowContract.schema, ['phases', '0', 'tasks', '0']) // the task schema
  * ```
  */
-export function scanDeclaredKeys(schema: JSONSchema, path: FieldPath): readonly string[] {
-	const parents = isString(path) ? [] : path.slice(0, -1)
-	const parent = parents.reduce<JSONSchema | undefined>(
+export function scanSchemaNode(
+	schema: JSONSchema,
+	path: readonly string[],
+): JSONSchema | undefined {
+	return path.reduce<JSONSchema | undefined>(
 		(node, segment) => node?.properties?.[segment] ?? node?.items,
 		schema,
 	)
-	return Object.keys(parent?.properties ?? {})
 }
 
 /**
@@ -542,7 +536,8 @@ export function scanDeclaredKeys(schema: JSONSchema, path: FieldPath): readonly 
  *
  * @remarks
  * A line holds the fault's path and reason, then what to send: the declared keys for an undeclared
- * one, otherwise what the fault expected and received. A path segment that is not a plain identifier
+ * one, otherwise what the fault expected and received, and for an optional key the schema's
+ * `description`, which says what omitting it does. A path segment that is not a plain identifier
  * is JSON-encoded and length-capped, because a key the caller sent is untrusted text. A report at
  * `FAULT_LIMIT`, or one the limit cuts, closes with a line saying that the list stops there.
  *
@@ -567,12 +562,17 @@ export function describeWorkflowFaults(
 ): string {
 	if (faults.length === 0) return `${subject} refused: it could not be read; send plain JSON data`
 	const head = `${subject} refused; correct each line and send it again:`
-	const closing = 'the list stops here; context.faults holds the report, so correct these first'
+	const final = 'the list stops here; context.faults holds the report, so correct these first'
 	const lines = faults.map((fault) => {
-		const path = (isString(fault.path) ? [fault.path] : fault.path)
+		const segments = isString(fault.path) ? [fault.path] : fault.path
+		const path = segments
 			.map((segment) => (/^[\w$-]{1,64}$/u.test(segment) ? segment : preview(segment)))
 			.join('.')
-		const keys = fault.reason === 'extra' ? scanDeclaredKeys(schema, fault.path) : []
+		const parent = scanSchemaNode(schema, segments.slice(0, -1))
+		const key = segments.at(-1) ?? ''
+		const keys = Object.keys(parent?.properties ?? {})
+		const field = parent?.properties?.[key]
+		const optional = !(parent?.required ?? []).includes(key)
 		return [
 			`${path === '' ? 'the root' : path}: ${fault.reason}`,
 			...(fault.reason === 'extra'
@@ -584,23 +584,25 @@ export function describeWorkflowFaults(
 			...('received' in fault ? [`received ${fault.received}`] : []),
 			...('constraint' in fault ? [`constraint ${fault.constraint}`] : []),
 			...('limit' in fault && fault.limit !== undefined ? [`limit ${fault.limit}`] : []),
+			...(optional && field?.description !== undefined ? [field.description] : []),
 		].join('; ')
 	})
-	const room = WORKFLOW_REFUSAL_LIMIT - head.length - closing.length - 2
+	const room = WORKFLOW_REFUSAL_LIMIT - head.length - final.length - 2
 	const kept = lines.filter((_line, index) => lines.slice(0, index + 1).join('\n').length <= room)
 	const stopped = kept.length < lines.length || faults.length >= FAULT_LIMIT
-	return [head, ...kept, ...(stopped ? [closing] : [])].join('\n')
+	return [head, ...kept, ...(stopped ? [final] : [])].join('\n')
 }
 
 /**
  * Admits a definition through its contract, or refuses it with the faults that name why.
  *
  * @remarks
- * A value the guard accepts has no fault to report, so it skips both reports. Otherwise an
- * `explain` fault refuses, then an undeclared key from `audit`, then an audit at `FAULT_LIMIT`,
- * because a full report can hide one. What is left is a repair `parse` makes, so the parsed value
- * is what enters. The workflow shapes declare no union, so no `variant` or `oneOf` fault reaches
- * this door.
+ * A value the guard accepts has no fault to report, so it skips both reports. Otherwise the refusal
+ * lists every `explain` fault and then every undeclared key from `audit`, and an audit at
+ * `FAULT_LIMIT` refuses whole, because a full report can hide a key. What is left is a repair
+ * `parse` makes, so the parsed value is what enters. A read that throws, as a value whose reads
+ * change can, refuses as unreadable. The workflow shapes declare no union, so no `variant` or
+ * `oneOf` fault reaches this door.
  *
  * @typeParam T - The definition the contract describes
  * @param contract - The compiled contract of the definition
@@ -623,26 +625,22 @@ export function admitDefinition<T>(
 ): Result<T, WorkflowError> {
 	// The two reports cost about eight times the guard on a 1000-task definition, and a valid value
 	// is the common case: `audit(v)` is empty iff `is(v)`, and an empty audit implies an empty explain.
-	const strict = contract.is(value)
-	const explained = strict ? [] : contract.explain(value)
-	const audited = strict || explained.length > 0 ? [] : contract.audit(value)
-	const extras = audited.filter((fault) => fault.reason === 'extra')
-	const faults: readonly AuditFault[] =
-		explained.length > 0
-			? explained
-			: extras.length > 0
-				? extras
-				: audited.length >= FAULT_LIMIT
-					? audited
-					: []
-	const parsed = faults.length === 0 ? contract.parse(value) : undefined
-	return parsed === undefined
-		? failure(
-				new WorkflowError(code, describeWorkflowFaults(subject, contract.schema, faults), {
-					faults,
-				}),
-			)
-		: success(parsed)
+	const report = attemptCall((): readonly AuditFault[] => {
+		if (contract.is(value)) return []
+		const explained = contract.explain(value)
+		const audited = contract.audit(value)
+		return audited.length >= FAULT_LIMIT
+			? audited
+			: [...explained, ...audited.filter((fault) => fault.reason === 'extra')]
+	})
+	const parsed = attemptCall(() =>
+		report.success && report.value.length === 0 ? contract.parse(value) : undefined,
+	)
+	if (parsed.success && parsed.value !== undefined) return success(parsed.value)
+	const faults = report.success ? report.value : []
+	return failure(
+		new WorkflowError(code, describeWorkflowFaults(subject, contract.schema, faults), { faults }),
+	)
 }
 
 // === Result-tree collection

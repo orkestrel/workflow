@@ -334,6 +334,21 @@ describe('Task — activity, liveness, and cooperative control', () => {
 		})
 	}
 
+	it('refuses a null silence at both tiers, because only undefined means no bound', () => {
+		const inherited = captureError(() =>
+			Reflect.apply(createWorkflow, undefined, [buildSingleTaskWorkflow(), { silence: null }]),
+		)
+		const override = captureError(() =>
+			Reflect.apply(createWorkflow, undefined, [
+				buildSingleTaskWorkflow(),
+				{ silence: 10, phases: { p: { tasks: { t: { silence: null } } } } },
+			]),
+		)
+
+		expect(isWorkflowError(inherited) && inherited.code).toBe('SCHEDULE')
+		expect(isWorkflowError(override) && override.code).toBe('SCHEDULE')
+	})
+
 	it('lets a task override widen inherited silence and releases pause on stop', async () => {
 		const workflow = createWorkflow(buildSingleTaskWorkflow(), {
 			silence: 10,

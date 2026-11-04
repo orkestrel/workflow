@@ -106,10 +106,14 @@ export class Collection<
 	update(id: string, patch: TPatch): Result<TEntry, WorkflowError> {
 		const target = this.#pending(id)
 		if (target === undefined) return this.#refuse(id)
-		if (!this.#patch.is(patch)) {
-			// The guard is total; the audit reads the patch again, and an unreadable one has no report.
-			const audited = attempt(() => this.#patch.audit(patch))
-			const faults = audited.success ? audited.value : []
+		// The guard is total, and each later read can throw or change, so a failed read refuses too
+		// and the entity receives the owned value.
+		const report = attempt(() => (this.#patch.is(patch) ? [] : this.#patch.audit(patch)))
+		const owned = attempt(() =>
+			report.success && report.value.length === 0 ? this.#patch.parse(patch) : undefined,
+		)
+		if (!owned.success || owned.value === undefined) {
+			const faults = report.success ? report.value : []
 			return failure(
 				new WorkflowError(
 					'MUTATION',
@@ -122,7 +126,7 @@ export class Collection<
 				),
 			)
 		}
-		if (isRecord(patch) && Object.keys(patch).length === 0) {
+		if (isRecord(owned.value) && Object.keys(owned.value).length === 0) {
 			const keys = Object.keys(this.#patch.schema.properties ?? {}).join(', ')
 			return failure(
 				new WorkflowError(
@@ -132,7 +136,7 @@ export class Collection<
 				),
 			)
 		}
-		target.patch(patch)
+		target.patch(owned.value)
 		return success(target)
 	}
 

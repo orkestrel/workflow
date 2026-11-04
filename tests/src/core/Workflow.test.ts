@@ -5,6 +5,7 @@ import {
 	completeTask,
 	buildEmptyWorkflow,
 	buildMultiPhaseWorkflow,
+	buildShiftingTask,
 	INVALID_CONCURRENCIES,
 	WorkflowObservation,
 	buildWorkflowDefinition,
@@ -1283,6 +1284,17 @@ describe('Workflow — add() runs the phase definition door', () => {
 			expect(workflow.phase('late')).toBeUndefined()
 		})
 	}
+
+	it('fails MUTATION on a definition whose read changes, a Result and never a throw', () => {
+		const workflow = createWorkflow(buildEmptyWorkflow(false))
+
+		const result = workflow.add({ id: 'late', name: 'Late', tasks: [buildShiftingTask()] })
+
+		expect(result.success).toBe(false)
+		expect(!result.success && result.error.code).toBe('MUTATION')
+		expect(!result.success && result.error.message).toContain('could not be read')
+		expect(workflow.phase('late')).toBeUndefined()
+	})
 
 	it('update fails MUTATION with faults on a concurrency past the safe integers', () => {
 		const workflow = createWorkflow(buildMultiPhaseWorkflow(1))
