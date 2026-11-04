@@ -294,7 +294,7 @@ export class Phase implements PhaseInterface {
 		const status = this.status
 		if (isTerminalStatus(status)) {
 			return failure(
-				new WorkflowError('MUTATION', `phase '${this.#id}' is terminal`, {
+				new WorkflowError('MUTATION', `phase ${preview(this.#id)} is terminal`, {
 					id: this.#id,
 					status,
 				}),
@@ -316,7 +316,7 @@ export class Phase implements PhaseInterface {
 				return failure(
 					new WorkflowError(
 						'MUTATION',
-						`phase '${this.#id}' only accepts an append while executing`,
+						`phase ${preview(this.#id)} only accepts an append while executing`,
 						{ id: this.#id, index: at },
 					),
 				)
@@ -329,7 +329,7 @@ export class Phase implements PhaseInterface {
 	remove(id: string): Result<TaskInterface, WorkflowError> {
 		if (this.status !== 'pending') {
 			return failure(
-				new WorkflowError('MUTATION', `phase '${this.#id}' is not pending`, {
+				new WorkflowError('MUTATION', `phase ${preview(this.#id)} is not pending`, {
 					id: this.#id,
 					status: this.status,
 				}),
@@ -343,7 +343,7 @@ export class Phase implements PhaseInterface {
 	move(id: string, index: number): Result<TaskInterface, WorkflowError> {
 		if (this.status !== 'pending') {
 			return failure(
-				new WorkflowError('MUTATION', `phase '${this.#id}' is not pending`, {
+				new WorkflowError('MUTATION', `phase ${preview(this.#id)} is not pending`, {
 					id: this.#id,
 					status: this.status,
 				}),
@@ -357,7 +357,7 @@ export class Phase implements PhaseInterface {
 	update(id: string, patch: TaskUpdate): Result<TaskInterface, WorkflowError> {
 		if (this.status !== 'pending') {
 			return failure(
-				new WorkflowError('MUTATION', `phase '${this.#id}' is not pending`, {
+				new WorkflowError('MUTATION', `phase ${preview(this.#id)} is not pending`, {
 					id: this.#id,
 					status: this.status,
 				}),
@@ -372,10 +372,14 @@ export class Phase implements PhaseInterface {
 		// Defense-in-depth: the owning WorkflowInterface.update gates first, so a
 		// direct call here throws unless this phase is genuinely `pending`.
 		if (this.status !== 'pending') {
-			throw new WorkflowError('MUTATION', `phase '${this.#id}' can only be patched while pending`, {
-				id: this.#id,
-				status: this.status,
-			})
+			throw new WorkflowError(
+				'MUTATION',
+				`phase ${preview(this.#id)} can only be patched while pending`,
+				{
+					id: this.#id,
+					status: this.status,
+				},
+			)
 		}
 		const admitted = admitPatch(phaseUpdateContract, value, 'phase', this.#id)
 		if (!admitted.success) throw admitted.error
@@ -453,7 +457,7 @@ export class Phase implements PhaseInterface {
 		if (found === undefined) {
 			throw new WorkflowError(
 				'INVARIANT',
-				`phase '${this.id}' derived failed with no failing task result`,
+				`phase ${preview(this.id)} derived failed with no failing task result`,
 				{ phase: this.id },
 			)
 		}

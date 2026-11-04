@@ -325,7 +325,7 @@ export class Workflow implements WorkflowInterface {
 	add(definition: PhaseDefinition, index?: number): Result<PhaseInterface, WorkflowError> {
 		if (isTerminalStatus(this.status)) {
 			return failure(
-				new WorkflowError('MUTATION', `workflow '${this.id}' is terminal`, {
+				new WorkflowError('MUTATION', `workflow ${preview(this.id)} is terminal`, {
 					id: this.id,
 					status: this.status,
 				}),
@@ -334,7 +334,7 @@ export class Workflow implements WorkflowInterface {
 		const at = index ?? this.#phases.count
 		if (at < this.#boundary()) {
 			return failure(
-				new WorkflowError('MUTATION', `workflow '${this.id}' add index precedes boundary`, {
+				new WorkflowError('MUTATION', `workflow ${preview(this.id)} add index precedes boundary`, {
 					id: this.id,
 					index: at,
 				}),
@@ -355,7 +355,7 @@ export class Workflow implements WorkflowInterface {
 	remove(id: string): Result<PhaseInterface, WorkflowError> {
 		if (isTerminalStatus(this.status)) {
 			return failure(
-				new WorkflowError('MUTATION', `workflow '${this.id}' is terminal`, {
+				new WorkflowError('MUTATION', `workflow ${preview(this.id)} is terminal`, {
 					id: this.id,
 					status: this.status,
 				}),
@@ -364,7 +364,7 @@ export class Workflow implements WorkflowInterface {
 		const at = this.#indexOf(id)
 		if (at === -1 || at < this.#boundary()) {
 			return failure(
-				new WorkflowError('MUTATION', `workflow '${this.id}' cannot remove '${id}'`, {
+				new WorkflowError('MUTATION', `workflow ${preview(this.id)} cannot remove ${preview(id)}`, {
 					id: this.id,
 					phase: id,
 				}),
@@ -378,7 +378,7 @@ export class Workflow implements WorkflowInterface {
 	move(id: string, index: number): Result<PhaseInterface, WorkflowError> {
 		if (isTerminalStatus(this.status)) {
 			return failure(
-				new WorkflowError('MUTATION', `workflow '${this.id}' is terminal`, {
+				new WorkflowError('MUTATION', `workflow ${preview(this.id)} is terminal`, {
 					id: this.id,
 					status: this.status,
 				}),
@@ -388,7 +388,7 @@ export class Workflow implements WorkflowInterface {
 		const boundary = this.#boundary()
 		if (at === -1 || at < boundary || index < boundary) {
 			return failure(
-				new WorkflowError('MUTATION', `workflow '${this.id}' cannot move '${id}'`, {
+				new WorkflowError('MUTATION', `workflow ${preview(this.id)} cannot move ${preview(id)}`, {
 					id: this.id,
 					phase: id,
 					index,
@@ -403,7 +403,7 @@ export class Workflow implements WorkflowInterface {
 	update(id: string, patch: PhaseUpdate): Result<PhaseInterface, WorkflowError> {
 		if (isTerminalStatus(this.status)) {
 			return failure(
-				new WorkflowError('MUTATION', `workflow '${this.id}' is terminal`, {
+				new WorkflowError('MUTATION', `workflow ${preview(this.id)} is terminal`, {
 					id: this.id,
 					status: this.status,
 				}),
@@ -412,7 +412,7 @@ export class Workflow implements WorkflowInterface {
 		const at = this.#indexOf(id)
 		if (at === -1 || at < this.#boundary()) {
 			return failure(
-				new WorkflowError('MUTATION', `workflow '${this.id}' cannot update '${id}'`, {
+				new WorkflowError('MUTATION', `workflow ${preview(this.id)} cannot update ${preview(id)}`, {
 					id: this.id,
 					phase: id,
 				}),
@@ -512,7 +512,7 @@ export class Workflow implements WorkflowInterface {
 		if (found === undefined) {
 			throw new WorkflowError(
 				'INVARIANT',
-				`workflow '${this.id}' derived failed with no failing task result`,
+				`workflow ${preview(this.id)} derived failed with no failing task result`,
 				{ workflow: this.id },
 			)
 		}

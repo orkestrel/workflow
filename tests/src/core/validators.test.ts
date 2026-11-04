@@ -537,7 +537,7 @@ describe('snapshot logical leaves', () => {
 			success: false,
 			error: {
 				origin: 'recovery',
-				message: "task 'exhausted' exhausted its retry budget during recovery",
+				message: 'task "exhausted" exhausted its retry budget during recovery',
 			},
 		})
 	})

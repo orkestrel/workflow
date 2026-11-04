@@ -121,7 +121,7 @@ describe('Task — direct construction option ownership', () => {
 		expect(reads).toEqual(['metadata'])
 		expect(isWorkflowError(error) ? error.code : undefined).toBe('RESTORE')
 		expect(isWorkflowError(error) ? error.message : undefined).toContain(
-			"task 't' metadata could not be read safely",
+			'task "t" metadata could not be read safely',
 		)
 	})
 })

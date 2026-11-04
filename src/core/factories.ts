@@ -15,7 +15,7 @@ import type {
 	WorkflowSnapshotRow,
 	WorkflowStoreInterface,
 } from './types.js'
-import { rawShape, stringShape } from '@orkestrel/contract'
+import { preview, rawShape, stringShape } from '@orkestrel/contract'
 import { createDatabase, createMemoryDriver } from '@orkestrel/database'
 import { cloneWorkflowSnapshot } from './cloners.js'
 import { workflowContract } from './contracts.js'
@@ -317,13 +317,13 @@ export function createRecoveredWorkflow(
 	const captured = captureWorkflowOptions(options)
 	const owned = cloneWorkflowSnapshot(snapshot)
 	if (owned.override !== undefined || owned.phases.some((phase) => phase.override !== undefined)) {
-		throw new WorkflowError('RESTORE', `workflow '${owned.id}' has a terminal override`, {
+		throw new WorkflowError('RESTORE', `workflow ${preview(owned.id)} has a terminal override`, {
 			workflow: owned.id,
 		})
 	}
 	const workflow = new Workflow(recoverWorkflowSnapshot(owned), captured)
 	if (!hasWorkflowHandlers(workflow)) {
-		throw new WorkflowError('RESTORE', `workflow '${owned.id}' has an unresolved behavior`, {
+		throw new WorkflowError('RESTORE', `workflow ${preview(owned.id)} has an unresolved behavior`, {
 			workflow: owned.id,
 		})
 	}

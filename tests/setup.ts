@@ -1,6 +1,6 @@
 import { createMemoryDriver } from '@orkestrel/database'
 import type { BudgetInterface, TokenUsage } from '@orkestrel/budget'
-import type { ContractInterface } from '@orkestrel/contract'
+import type { ContractInterface, JSONRecord } from '@orkestrel/contract'
 import type { RecorderInterface } from '@orkestrel/test'
 import type {
 	LifecycleStatus,
@@ -27,8 +27,14 @@ import type {
 	WorkflowStoreInterface,
 } from '@src/core'
 import { failure, success } from '@orkestrel/contract'
+import {
+	cloneWorkflowSnapshot,
+	createRecoveredWorkflow,
+	recoverWorkflowSnapshot,
+	WorkflowError,
+} from '@src/core'
 import { createAbort } from '@orkestrel/abort'
-import { createRecorder, requireValue } from '@orkestrel/test'
+import { createRecorder, requireValue, waitForAbort } from '@orkestrel/test'
 import {
 	Collection,
 	createRunner,
@@ -45,6 +51,259 @@ import {
 import { Controller } from '../src/core/Controller.js'
 import { Phase } from '../src/core/phases/Phase.js'
 import { TaskController } from '../src/core/tasks/TaskController.js'
+import { Task } from '../src/core/tasks/Task.js'
+
+/** Builds a tree with hostile-length ids at every level. */
+export function buildDiagnosticWorkflow(): WorkflowInterface {
+	const id = 'x'.repeat(100_000)
+	return createWorkflow({ id, name: 'W', phases: [{ id, name: 'P', tasks: [{ id, name: 'T' }] }] })
+}
+
+/** Returns the hostile-id fixture's leaf. */
+export function requireDiagnosticTask(workflow: WorkflowInterface): TaskInterface {
+	const id = 'x'.repeat(100_000)
+	return requireValue(workflow.phase(id)?.task(id))
+}
+
+/** Runs a real attempt whose handler times out or reports after losing ownership. */
+export async function runDiagnosticAttempt(
+	workflow: WorkflowInterface,
+	timeout: boolean,
+): Promise<WorkflowError> {
+	const id = workflow.id
+	const errors = createRecorder<readonly [WorkflowError]>()
+	const active = createWorkflow(
+		{
+			id,
+			name: 'W',
+			phases: [
+				{
+					id,
+					name: 'P',
+					tasks: [{ id, name: 'T', behavior: 'run', ...(timeout ? { timeout: 10 } : {}) }],
+				},
+			],
+		},
+		{
+			functions: {
+				run: async (controller) => {
+					if (timeout) {
+						await waitForAbort(controller.signal)
+						return null
+					}
+					requireDiagnosticTask(active).stop()
+					const result = controller.report({})
+					if (!result.success) errors.handler(result.error)
+					return null
+				},
+			},
+		},
+	)
+	try {
+		await createWorkflowRunner().execute(active)
+		const result = requireDiagnosticTask(active).result?.result
+		return timeout && result !== undefined && !result.success
+			? new WorkflowError('TRANSITION', result.error.message)
+			: requireValue(errors.calls[0]?.[0])
+	} finally {
+		active.destroy()
+	}
+}
+
+/** Lists public diagnostic paths with hostile-length caller ids. */
+/** Runs a live append whose task has an unresolved behavior. */
+export async function runDiagnosticAppend(workflow: WorkflowInterface): Promise<WorkflowError> {
+	const id = workflow.id
+	const appended = 'y'.repeat(100_000)
+	const active = createWorkflow(
+		{ id, name: 'W', phases: [{ id, name: 'P', tasks: [{ id, name: 'T', behavior: 'run' }] }] },
+		{
+			functions: {
+				run: () => {
+					const result = requireDiagnosticTask(active).phase.add({
+						id: appended,
+						name: 'Extra',
+						behavior: 'missing',
+					})
+					if (!result.success) throw result.error
+					return null
+				},
+			},
+		},
+	)
+	try {
+		await createWorkflowRunner().execute(active)
+		const result = active.phase(id)?.task(appended)?.result?.result
+		if (result === undefined || result.success) throw new Error('expected unresolved behavior')
+		return new WorkflowError('TRANSITION', result.error.message)
+	} finally {
+		active.destroy()
+	}
+}
+
+/** Lists public diagnostic paths with hostile-length caller ids. */
+export const BOUNDED_DIAGNOSTIC_CASES: ReadonlyArray<{
+	readonly name: string
+	readonly run: (workflow: WorkflowInterface) => unknown
+}> = [
+	{ name: 'appended unresolved behavior', run: runDiagnosticAppend },
+	{ name: 'attempt timeout', run: (w) => runDiagnosticAttempt(w, true) },
+	{ name: 'stale attempt report', run: (w) => runDiagnosticAttempt(w, false) },
+	{
+		name: 'unreadable task result',
+		run: (w) =>
+			requireDiagnosticTask(w).complete({
+				get value(): number {
+					throw new Error('unreadable')
+				},
+			}),
+	},
+	{
+		name: 'non-finite task result',
+		run: (w) => requireDiagnosticTask(w).complete({ value: Number.NaN }),
+	},
+	{
+		name: 'unreadable task metadata',
+		run: (w) => {
+			const task = requireDiagnosticTask(w)
+			return new Task(task.context, task.phase, w, () => {}, {
+				get metadata(): JSONRecord {
+					throw new Error('unreadable')
+				},
+			})
+		},
+	},
+	{
+		name: 'non-finite task metadata',
+		run: (w) => {
+			const task = requireDiagnosticTask(w)
+			return new Task(task.context, task.phase, w, () => {}, { metadata: { value: Number.NaN } })
+		},
+	},
+	{ name: 'snapshot storage key', run: (w) => cloneWorkflowSnapshot(w.snapshot(), 'other') },
+	{
+		name: 'recovery override',
+		run: (w) => {
+			w.stop()
+			return createRecoveredWorkflow(w.snapshot())
+		},
+	},
+	{
+		name: 'recovery behavior',
+		run: (w) => {
+			const snapshot = w.snapshot()
+			return createRecoveredWorkflow({
+				...snapshot,
+				phases: snapshot.phases.map((p) => ({
+					...p,
+					tasks: p.tasks.map((t) => ({ ...t, behavior: 'missing' })),
+				})),
+			})
+		},
+	},
+	{
+		name: 'recovery exhausted retries',
+		run: (w) => {
+			const task = requireDiagnosticTask(w)
+			task.start()
+			const snapshot = recoverWorkflowSnapshot(w.snapshot())
+			const message = snapshot.phases.flatMap((p) => p.tasks).find((t) => t.result !== undefined)
+				?.result?.result
+			return message !== undefined && !message.success
+				? new WorkflowError('RESTORE', message.error.message)
+				: undefined
+		},
+	},
+	...['add', 'remove', 'move', 'update'].map((name) => ({
+		name: `terminal workflow ${name}`,
+		run: (w: WorkflowInterface) => {
+			w.stop()
+			const result =
+				name === 'add'
+					? w.add({ id: 'new', name: 'N', tasks: [] })
+					: name === 'remove'
+						? w.remove('missing')
+						: name === 'move'
+							? w.move('missing', 0)
+							: w.update('missing', {})
+			return result.success ? undefined : result.error
+		},
+	})),
+	...['remove', 'move', 'update'].map((name) => ({
+		name: `missing phase ${name}`,
+		run: (w: WorkflowInterface) => {
+			const id = 'y'.repeat(100_000)
+			const result =
+				name === 'remove' ? w.remove(id) : name === 'move' ? w.move(id, 0) : w.update(id, {})
+			return result.success ? undefined : result.error
+		},
+	})),
+	{
+		name: 'workflow add before boundary',
+		run: (w) => {
+			requireDiagnosticTask(w).start()
+			const result = w.add({ id: 'new', name: 'N', tasks: [] }, 0)
+			return result.success ? undefined : result.error
+		},
+	},
+	...['add', 'remove', 'move', 'update', 'patch'].map((name) => ({
+		name: `terminal phase ${name}`,
+		run: (w: WorkflowInterface) => {
+			const phase = requireDiagnosticTask(w).phase
+			phase.stop()
+			if (name === 'patch') return phase.patch({})
+			const result =
+				name === 'add'
+					? phase.add({ id: 'new', name: 'N' })
+					: name === 'remove'
+						? phase.remove('missing')
+						: name === 'move'
+							? phase.move('missing', 0)
+							: phase.update('missing', {})
+			return result.success ? undefined : result.error
+		},
+	})),
+	{
+		name: 'running phase insertion',
+		run: (w) => {
+			const task = requireDiagnosticTask(w)
+			task.start()
+			const result = task.phase.add({ id: 'new', name: 'N' }, 0)
+			return result.success ? undefined : result.error
+		},
+	},
+	{
+		name: 'task retry budget',
+		run: (w) => {
+			const task = requireDiagnosticTask(w)
+			task.start()
+			task.start()
+		},
+	},
+	{ name: 'task transition', run: (w) => requireDiagnosticTask(w).complete(null) },
+	{
+		name: 'task patch',
+		run: (w) => {
+			const task = requireDiagnosticTask(w)
+			task.start()
+			task.patch({})
+		},
+	},
+	{
+		name: 'task report',
+		run: (w) => {
+			const result = requireDiagnosticTask(w).report({})
+			return result.success ? undefined : result.error
+		},
+	},
+	{
+		name: 'runner terminal workflow',
+		run: (w) => {
+			w.stop()
+			return createWorkflowRunner().execute(w)
+		},
+	},
+]
 
 /** Lists the values a run `timeout`, a task `timeout`, and a `silence` window must refuse. */
 export const INVALID_TIMER_BOUNDS: readonly number[] = Object.freeze([

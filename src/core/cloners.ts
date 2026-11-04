@@ -1,5 +1,12 @@
 import type { TaskActivity, WorkflowSnapshot } from './types.js'
-import { attempt, cloneJSONValue, isArray, isContractError, isRecord } from '@orkestrel/contract'
+import {
+	attempt,
+	cloneJSONValue,
+	isArray,
+	isContractError,
+	isRecord,
+	preview,
+} from '@orkestrel/contract'
 import { WorkflowError, isWorkflowError } from './errors.js'
 import { scanSnapshotContext } from './helpers.js'
 import { isOwnedWorkflowSnapshot, isTaskActivity } from './validators.js'
@@ -36,7 +43,7 @@ export function cloneWorkflowSnapshot(input: unknown, id?: string): WorkflowSnap
 	if (id !== undefined && cloned.id !== id) {
 		throw new WorkflowError(
 			'RESTORE',
-			`workflow snapshot '${cloned.id}' does not match storage key '${id}'`,
+			`workflow snapshot ${preview(cloned.id)} does not match storage key ${preview(id)}`,
 			{ requested: id, payload: cloned.id },
 		)
 	}

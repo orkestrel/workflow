@@ -1873,7 +1873,7 @@ describe('workflow recovery', () => {
 			success: false,
 			error: {
 				origin: 'recovery',
-				message: "task 'task' exhausted its retry budget during recovery",
+				message: 'task "task" exhausted its retry budget during recovery',
 			},
 		})
 	})

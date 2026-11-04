@@ -1,5 +1,11 @@
 import type { JSONValue } from '@orkestrel/contract'
-import { attempt as attemptCall, errorToMessage, failure, isBoolean } from '@orkestrel/contract'
+import {
+	attempt as attemptCall,
+	errorToMessage,
+	failure,
+	isBoolean,
+	preview,
+} from '@orkestrel/contract'
 import type { TimeoutInterface } from '@orkestrel/timeout'
 import type {
 	AttemptOutcome,
@@ -250,7 +256,7 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 			(tasks.length === 0 || tasks.some((task) => task.status === 'pending')) &&
 			hasWorkflowHandlers(workflow)
 		if (!runnable || workflow.destroyed || WorkflowRunner.#executions.has(workflow)) {
-			throw new WorkflowError('TRANSITION', `workflow '${workflow.id}' is not drivable`, {
+			throw new WorkflowError('TRANSITION', `workflow ${preview(workflow.id)} is not drivable`, {
 				id: workflow.id,
 				status: workflow.status,
 				destroyed: workflow.destroyed,
@@ -577,7 +583,7 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 			if (task.behavior !== undefined && task.handler === undefined) {
 				const error = new WorkflowError(
 					'TRANSITION',
-					`task '${task.id}' has an unresolved behavior '${task.behavior}'`,
+					`task ${preview(task.id)} has an unresolved behavior '${task.behavior}'`,
 					{ task: task.id, behavior: task.behavior },
 				)
 				task.fail({ origin: 'handler', message: error.message })
@@ -652,7 +658,7 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 						: failure(
 								new WorkflowError(
 									'TRANSITION',
-									`task '${task.id}' attempt '${attempt}' no longer owns activity`,
+									`task ${preview(task.id)} attempt ${preview(attempt)} no longer owns activity`,
 									{ task: task.id, attempt },
 								),
 							),
@@ -841,7 +847,7 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 		bail: boolean,
 	): void {
 		if (!ownsAttempt(execution.owners, task, attempt)) return
-		const error = new Error(`task '${task.id}' timed out`)
+		const error = new Error(`task ${preview(task.id)} timed out`)
 		if (last) task.fail({ origin: 'timeout', message: error.message })
 		if (!last || bail) throw error
 	}

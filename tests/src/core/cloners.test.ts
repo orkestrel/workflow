@@ -121,7 +121,7 @@ describe('workflow snapshot ownership', () => {
 		expect(isWorkflowError(error)).toBe(true)
 		if (!isWorkflowError(error)) throw new Error('expected WorkflowError')
 		expect(error.code).toBe('RESTORE')
-		expect(error.message).toBe("workflow snapshot 'payload' does not match storage key 'requested'")
+		expect(error.message).toBe('workflow snapshot "payload" does not match storage key "requested"')
 		expect(error.context).toEqual({ requested: 'requested', payload: 'payload' })
 	})
 

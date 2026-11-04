@@ -962,7 +962,7 @@ export function recoverWorkflowSnapshot(snapshot: WorkflowSnapshot): WorkflowSna
 						success: false,
 						error: {
 							origin: 'recovery',
-							message: `task '${task.id}' exhausted its retry budget during recovery`,
+							message: `task ${preview(task.id)} exhausted its retry budget during recovery`,
 						},
 					},
 					timestamp: now,

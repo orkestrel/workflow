@@ -469,7 +469,7 @@ describe('WorkflowManager — coordinated durable access', () => {
 			context: { requested: 'requested', payload: 'payload' },
 		})
 		await expect(opening).rejects.toThrow(
-			"workflow snapshot 'payload' does not match storage key 'requested'",
+			'workflow snapshot "payload" does not match storage key "requested"',
 		)
 		expect(manager.workflow('requested')).toBeUndefined()
 		expect(manager.workflow('payload')).toBeUndefined()

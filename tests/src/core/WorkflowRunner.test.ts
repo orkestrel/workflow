@@ -1002,7 +1002,7 @@ describe('WorkflowRunner — a per-task timeout is a FAILURE under bail, and the
 		expect(events).toEqual(['fail'])
 		expect(result.workflow.phase('a')?.task('t0')?.result?.result).toEqual({
 			success: false,
-			error: { origin: 'timeout', message: "task 't0' timed out" },
+			error: { origin: 'timeout', message: 'task "t0" timed out' },
 		})
 	})
 
@@ -1716,7 +1716,7 @@ describe('WorkflowRunner — live task append during a running phase (mid-run mu
 			success: false,
 			error: {
 				origin: 'handler',
-				message: "task 't1' has an unresolved behavior 'missing-handler'",
+				message: 'task "t1" has an unresolved behavior \'missing-handler\'',
 			},
 		})
 	})

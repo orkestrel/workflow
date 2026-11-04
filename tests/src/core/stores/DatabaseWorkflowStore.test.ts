@@ -224,7 +224,7 @@ describe('DatabaseWorkflowStore — delete & absent', () => {
 			context: { requested: 'requested', payload: 'payload' },
 		})
 		await expect(reading).rejects.toThrow(
-			"workflow snapshot 'payload' does not match storage key 'requested'",
+			'workflow snapshot "payload" does not match storage key "requested"',
 		)
 	})
 

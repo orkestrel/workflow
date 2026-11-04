@@ -24,6 +24,7 @@ import {
 	cloneJSONRecord,
 	cloneJSONValue,
 	failure,
+	preview,
 	isContractError,
 	isString,
 	success,
@@ -132,13 +133,17 @@ export class Task implements TaskInterface {
 			if (isContractError(error)) {
 				throw new WorkflowError(
 					'RESTORE',
-					`task '${context.id}' metadata could not be read safely: ${error.message}`,
+					`task ${preview(context.id)} metadata could not be read safely: ${error.message}`,
 					{ task: context.id },
 				)
 			}
-			throw new WorkflowError('RESTORE', `task '${context.id}' metadata could not be read safely`, {
-				task: context.id,
-			})
+			throw new WorkflowError(
+				'RESTORE',
+				`task ${preview(context.id)} metadata could not be read safely`,
+				{
+					task: context.id,
+				},
+			)
 		}
 		const on = options?.on
 		const listenerError = options?.error
@@ -254,12 +259,16 @@ export class Task implements TaskInterface {
 	start(): void {
 		const budget = Math.max(0, this.#retries ?? 0) + 1
 		if ((this.#status !== 'pending' && this.#status !== 'running') || this.#attempts >= budget) {
-			throw new WorkflowError('TRANSITION', `task '${this.id}' cannot start another attempt`, {
-				task: this.id,
-				status: this.#status,
-				attempts: this.#attempts,
-				budget,
-			})
+			throw new WorkflowError(
+				'TRANSITION',
+				`task ${preview(this.id)} cannot start another attempt`,
+				{
+					task: this.id,
+					status: this.#status,
+					attempts: this.#attempts,
+					budget,
+				},
+			)
 		}
 		if (this.#status === 'pending') this.#transition('running')
 		this.#attempts += 1
@@ -278,13 +287,17 @@ export class Task implements TaskInterface {
 			if (isContractError(error)) {
 				throw new WorkflowError(
 					'RESTORE',
-					`task '${this.id}' result could not be read safely: ${error.message}`,
+					`task ${preview(this.id)} result could not be read safely: ${error.message}`,
 					{ task: this.id },
 				)
 			}
-			throw new WorkflowError('RESTORE', `task '${this.id}' result could not be read safely`, {
-				task: this.id,
-			})
+			throw new WorkflowError(
+				'RESTORE',
+				`task ${preview(this.id)} result could not be read safely`,
+				{
+					task: this.id,
+				},
+			)
 		}
 		this.#transition('completed')
 		this.#finish()
@@ -344,10 +357,14 @@ export class Task implements TaskInterface {
 	report(input: TaskActivityInput): Result<TaskActivity, WorkflowError> {
 		if (this.#status !== 'running') {
 			return failure(
-				new WorkflowError('TRANSITION', `task '${this.id}' cannot report while '${this.#status}'`, {
-					task: this.id,
-					status: this.#status,
-				}),
+				new WorkflowError(
+					'TRANSITION',
+					`task ${preview(this.id)} cannot report while '${this.#status}'`,
+					{
+						task: this.id,
+						status: this.#status,
+					},
+				),
 			)
 		}
 		try {
@@ -415,7 +432,7 @@ export class Task implements TaskInterface {
 		if (this.#status !== 'pending') {
 			throw new WorkflowError(
 				'MUTATION',
-				`task '${this.id}' cannot be patched while '${this.#status}'`,
+				`task ${preview(this.id)} cannot be patched while '${this.#status}'`,
 				{ task: this.id, status: this.#status },
 			)
 		}
@@ -454,7 +471,7 @@ export class Task implements TaskInterface {
 		if (!canTransitionTask(this.#status, to)) {
 			throw new WorkflowError(
 				'TRANSITION',
-				`task '${this.id}' cannot transition from '${this.#status}' to '${to}'`,
+				`task ${preview(this.id)} cannot transition from '${this.#status}' to '${to}'`,
 				{ task: this.id, from: this.#status, to },
 			)
 		}
