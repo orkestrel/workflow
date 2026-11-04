@@ -297,9 +297,7 @@ describe('Collection — remove / move / update share the pending gate', () => {
 
 		const rejected = store.update(phase.id, { concurrency: 0 })
 
-		expect(!rejected.success && rejected.error.message).toContain(
-			'Omit the key to leave it unchanged',
-		)
+		expect(!rejected.success && rejected.error.message).toContain('Max tasks in flight at once')
 	})
 
 	it('update refuses an empty patch, which changes nothing, and names the keys it can set', () => {

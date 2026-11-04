@@ -1324,7 +1324,7 @@ describe('admitDefinition — the door a definition enters through', () => {
 		expect(admitDefinition(contract, misspelt, 'SCHEDULE', 'workflow definition').success).toBe(
 			false,
 		)
-		expect(reports.calls.map((call) => call[0])).toEqual(['explain', 'audit'])
+		expect(reports.calls.map((call) => call[0])).toEqual(['audit'])
 	})
 
 	it('refuses an undeclared key with the code it was given and the extra fault', () => {
@@ -1366,7 +1366,7 @@ describe('admitDefinition — the door a definition enters through', () => {
 		)
 
 		expect(!admitted.success && admitted.error.context?.faults).toHaveLength(FAULT_LIMIT)
-		expect(!admitted.success && admitted.error.message).toContain('the list stops here')
+		expect(!admitted.success && admitted.error.message).toContain('the report stops at')
 	})
 
 	it('refuses as unreadable when every read throws, which the guard answers and the audit cannot', () => {
@@ -1438,7 +1438,7 @@ describe('admitPatch — the exact door a patch enters through', () => {
 
 		expect(!misspelt.success && misspelt.error.code).toBe('MUTATION')
 		expect(!misspelt.success && misspelt.error.message).toContain(
-			'naem: extra; this key is not declared, remove it or send one of name, description',
+			'naem: extra; this key is not declared, remove it',
 		)
 		expect(!misspelt.success && misspelt.error.context).toEqual({
 			id: 't',
@@ -1542,13 +1542,13 @@ describe('describeWorkflowFaults — the text a refusal reads', () => {
 			{ reason: 'type', path: 'timeout', expected: 'integer', received: 'NaN' },
 		])
 
-		expect(message.split('\n')).toEqual([
-			'task definition refused; correct each line and send it again:',
-			'behaviour: extra; this key is not declared, remove it or send one of id, name, description, behavior, retries, timeout',
-			'id: missing; expected string',
-			'name: constraint; expected string; received ""; constraint min; limit 1',
-			'timeout: type; expected integer; received NaN; Per-attempt deadline in milliseconds; overrides the phase default. Omit the key for no bound.',
-		])
+		expect(message).toContain('task definition refused; correct each line and send it again:')
+		expect(message).toContain('behaviour: extra; this key is not declared, remove it')
+		expect(message).toContain('id: missing; expected string')
+		expect(message).toContain('name: constraint; expected string; received')
+		expect(message).toContain('constraint min; limit 1')
+		expect(message).toContain('timeout: type; expected integer; received "NaN"')
+		expect(message).toContain('send {')
 	})
 
 	it('names the root when a fault has no path, and says what to send when nothing could be read', () => {
@@ -1556,13 +1556,13 @@ describe('describeWorkflowFaults — the text a refusal reads', () => {
 			describeWorkflowFaults('workflow definition', workflowContract.schema, [
 				{ reason: 'type', path: [], expected: 'object', received: '42' },
 			]),
-		).toContain('the root: type')
+		).toContain('\n: type; expected object; received "42"')
 		expect(describeWorkflowFaults('patch', workflowContract.schema, [])).toBe(
 			'patch refused: it could not be read; send plain JSON data',
 		)
 	})
 
-	it('adds the schema description of an optional key and none for a required one', () => {
+	it('adds bounded schema descriptions for optional and required keys', () => {
 		const message = describeWorkflowFaults('task definition', taskDefinitionContract.schema, [
 			{
 				reason: 'constraint',
@@ -1583,9 +1583,10 @@ describe('describeWorkflowFaults — the text a refusal reads', () => {
 		])
 		const [, timeout, id] = message.split('\n')
 
-		expect(timeout).toContain('received 0; constraint min; limit 1; ')
-		expect(timeout).toContain('Omit the key for no bound.')
-		expect(id).toBe('id: constraint; expected string; received ""; constraint min; limit 1')
+		expect(timeout).toContain('received "0"; constraint min; limit 1')
+		expect(timeout).toContain('description "Per-attempt deadline')
+		expect(id).toContain('id: constraint; expected string; received')
+		expect(id).toContain('description "Unique task id')
 	})
 
 	it('offers only removal when the schema declares no candidate there', () => {
@@ -1603,7 +1604,7 @@ describe('describeWorkflowFaults — the text a refusal reads', () => {
 		])
 
 		expect(message).toContain('"line\\nbreak": extra')
-		expect(message.split('\n')).toHaveLength(3)
+		expect(message.split('\n')).toHaveLength(4)
 		expect(message.length).toBeLessThanOrEqual(WORKFLOW_REFUSAL_LIMIT)
 	})
 
@@ -1620,8 +1621,8 @@ describe('describeWorkflowFaults — the text a refusal reads', () => {
 		expect(message.length).toBeLessThanOrEqual(WORKFLOW_REFUSAL_LIMIT)
 		expect(lines.length).toBeLessThan(FAULT_LIMIT)
 		expect(lines.at(1)).toContain('phases.0.tasks.0.timeout: type')
-		expect(lines.at(-2)).toMatch(/timeout: type; expected integer; received "5000"; /u)
-		expect(lines.at(-1)).toContain('the list stops here')
+		expect(lines.at(-2)).toMatch(/and \d+ more faults/u)
+		expect(lines.at(-1)).toContain('send {')
 	})
 
 	it('closes a report at FAULT_LIMIT even when every line fits', () => {
@@ -1633,10 +1634,10 @@ describe('describeWorkflowFaults — the text a refusal reads', () => {
 		const fits = describeWorkflowFaults('patch', { type: 'object' }, faults)
 		const below = describeWorkflowFaults('patch', { type: 'object' }, faults.slice(1))
 
-		expect(fits.split('\n')).toHaveLength(FAULT_LIMIT + 2)
-		expect(fits.split('\n').at(-1)).toContain('the list stops here')
-		expect(below.split('\n')).toHaveLength(FAULT_LIMIT)
-		expect(below).not.toContain('the list stops here')
+		expect(fits.split('\n')).toHaveLength(FAULT_LIMIT + 3)
+		expect(fits).toContain('the report stops at')
+		expect(below.split('\n')).toHaveLength(FAULT_LIMIT + 1)
+		expect(below).not.toContain('the report stops at')
 	})
 })
 

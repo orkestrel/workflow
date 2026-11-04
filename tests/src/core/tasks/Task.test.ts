@@ -972,7 +972,9 @@ describe('Task — patch (pending-only)', () => {
 			id: 't',
 			faults: [{ reason: 'extra', path: ['naem'] }],
 		})
-		expect(isWorkflowError(error) && error.message).toContain('send one of name, description')
+		expect(isWorkflowError(error) && error.message).toContain(
+			'use a declared key: name, description',
+		)
 		expect(task.name).toBe(before)
 	})
 

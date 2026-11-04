@@ -176,7 +176,7 @@ describe('createWorkflow — the definition door', () => {
 			{ reason: 'extra', path: ['phases', '0', 'tasks', '0', 'behaviour'] },
 		])
 		expect(isWorkflowError(error) && error.message).toContain(
-			'phases.0.tasks.0.behaviour: extra; this key is not declared, remove it or send one of id, name, description, behavior, retries, timeout',
+			'phases.0.tasks.0.behaviour: extra; this key is not declared, remove it or use a declared key: id, name, description, behavior, retries, timeout',
 		)
 	})
 
@@ -272,9 +272,9 @@ describe('createWorkflow — the definition door', () => {
 			}),
 		)
 
-		expect(isWorkflowError(timeout) && timeout.message).toContain('Omit the key for no bound')
+		expect(isWorkflowError(timeout) && timeout.message).toContain('Per-attempt deadline')
 		expect(isWorkflowError(concurrency) && concurrency.message).toContain(
-			'Omit the key for no bound',
+			'Max tasks in flight at once',
 		)
 	})
 

@@ -707,9 +707,7 @@ describe('Phase — patch() gating (pending only)', () => {
 
 			expect(isWorkflowError(error) && error.code).toBe('MUTATION')
 			expect(isWorkflowError(error) && error.context?.id).toBe('p')
-			expect(isWorkflowError(error) && error.message).toContain(
-				'Omit the key to leave it unchanged',
-			)
+			expect(isWorkflowError(error) && error.message).toContain('Max tasks in flight at once')
 			expect(phase.concurrency).toBe(2)
 			expect(phase.name).toBe('P')
 		})
@@ -726,7 +724,7 @@ describe('Phase — patch() gating (pending only)', () => {
 			faults: [{ reason: 'extra', path: ['concurreny'] }],
 		})
 		expect(isWorkflowError(error) && error.message).toContain(
-			'send one of name, description, concurrency, bail',
+			'use a declared key: name, description, concurrency, bail',
 		)
 		expect(phase.concurrency).toBeUndefined()
 	})

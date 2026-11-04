@@ -8,6 +8,41 @@ import {
 } from '@src/core'
 import { describe, expect, it } from 'vitest'
 
+import { buildWorkflowContractCases } from '../../setup.js'
+import { createRestoredWorkflow, createWorkflow, isOwnedWorkflowSnapshot } from '@src/core'
+
+describe('workflow contract standing check', () => {
+	it.each(buildWorkflowContractCases())('$name: $direction', (row) => {
+		expect(row.project).toBeUndefined()
+		expect(row.wire.is(row.positive)).toBe(true)
+		expect(row.guard(row.positive)).toBe(true)
+		expect(row.wire.is(row.negative)).toBe(false)
+		const generated = row.wire.generate()
+		expect(row.wire.is(generated)).toBe(true)
+		expect(row.guard(generated)).toBe(true)
+	})
+
+	it('a task definition requires its identity', () => {
+		const row = buildWorkflowContractCases().find((entry) => entry.name === 'task')
+		if (row === undefined) throw new Error('missing task contract row')
+		expect(row.wire.is({ name: 'T' })).toBe(false)
+	})
+
+	it('an owned snapshot survives restoration', () => {
+		const workflow = createWorkflow({
+			id: 'w',
+			name: 'W',
+			phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T' }] }],
+		})
+		const snapshot = workflow.snapshot()
+		expect(isOwnedWorkflowSnapshot(snapshot)).toBe(true)
+		const restored = createRestoredWorkflow(snapshot)
+		expect(restored.snapshot()).toEqual(snapshot)
+		workflow.destroy()
+		restored.destroy()
+	})
+})
+
 // The compiled contracts each door reads, compared to authored values rather than to their shapes.
 
 describe('the compiled workflow contracts', () => {

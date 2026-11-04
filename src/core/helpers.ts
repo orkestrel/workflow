@@ -20,9 +20,10 @@ import type {
 	WorkflowSnapshot,
 } from './types.js'
 import {
+	admitValue,
 	attempt as attemptCall,
+	describeFaults,
 	failure,
-	FAULT_LIMIT,
 	isArray,
 	isBoolean,
 	isFiniteNumber,
@@ -32,7 +33,6 @@ import {
 	isNonEmptyString,
 	isRecord,
 	isString,
-	matchesLosslessRepair,
 	preview,
 	success,
 } from '@orkestrel/contract'
@@ -537,11 +537,9 @@ export function scanSchemaNode(
  * within `WORKFLOW_REFUSAL_LIMIT`.
  *
  * @remarks
- * A line holds the fault's path and reason, then what to send: the declared keys for an undeclared
- * one, otherwise what the fault expected and received, and for an optional key the schema's
- * `description`, which says what omitting it does. A path segment that is not a plain identifier
- * is JSON-encoded and length-capped, because a key the caller sent is untrusted text. A report at
- * `FAULT_LIMIT`, or one the limit cuts, closes with a line saying that the list stops there.
+ * The workflow subject and unreadable-value wording surround the bounded report from
+ * `describeFaults`. That report encodes caller-controlled text, includes bounded schema
+ * descriptions and a correction summary, and names omitted faults or a saturated audit.
  *
  * @param subject - The value the refusal names, with any id it carries already encoded
  * @param schema - The schema the value is held to, read for the declared keys
@@ -553,8 +551,7 @@ export function scanSchemaNode(
  * describeWorkflowFaults('task definition', taskDefinitionContract.schema, [
  * 	{ reason: 'extra', path: ['behaviour'] },
  * ])
- * // 'task definition refused; correct each line and send it again:\n
- * //  behaviour: extra; this key is not declared, remove it or send one of id, name, ...'
+ * // Begins with 'task definition refused; correct each line and send it again:'
  * ```
  */
 export function describeWorkflowFaults(
@@ -564,47 +561,19 @@ export function describeWorkflowFaults(
 ): string {
 	if (faults.length === 0) return `${subject} refused: it could not be read; send plain JSON data`
 	const head = `${subject} refused; correct each line and send it again:`
-	const final = 'the list stops here; context.faults holds the report, so correct these first'
-	const lines = faults.map((fault) => {
-		const segments = isString(fault.path) ? [fault.path] : fault.path
-		const path = segments
-			.map((segment) => (/^[\w$-]{1,64}$/u.test(segment) ? segment : preview(segment)))
-			.join('.')
-		const parent = scanSchemaNode(schema, segments.slice(0, -1))
-		const key = segments.at(-1) ?? ''
-		const keys = Object.keys(parent?.properties ?? {})
-		const field = parent?.properties?.[key]
-		const optional = !(parent?.required ?? []).includes(key)
-		return [
-			`${path === '' ? 'the root' : path}: ${fault.reason}`,
-			...(fault.reason === 'extra'
-				? [
-						`this key is not declared, remove it${keys.length === 0 ? '' : ` or send one of ${keys.join(', ')}`}`,
-					]
-				: []),
-			...('expected' in fault ? [`expected ${fault.expected}`] : []),
-			...('received' in fault ? [`received ${fault.received}`] : []),
-			...('constraint' in fault ? [`constraint ${fault.constraint}`] : []),
-			...('limit' in fault && fault.limit !== undefined ? [`limit ${fault.limit}`] : []),
-			...(optional && field?.description !== undefined ? [field.description] : []),
-		].join('; ')
-	})
-	const room = WORKFLOW_REFUSAL_LIMIT - head.length - final.length - 2
-	const kept = lines.filter((_line, index) => lines.slice(0, index + 1).join('\n').length <= room)
-	const stopped = kept.length < lines.length || faults.length >= FAULT_LIMIT
-	return [head, ...kept, ...(stopped ? [final] : [])].join('\n')
+	return [
+		head,
+		describeFaults(faults, schema, { limit: WORKFLOW_REFUSAL_LIMIT - head.length - 1 }),
+	].join('\n')
 }
 
 /**
  * Admits a definition through its contract, or refuses it with the faults that name why.
  *
  * @remarks
- * A value the guard accepts has no fault to report, so it skips both reports. Otherwise the refusal
- * lists every `explain` fault and then every undeclared key from `audit`, and an audit at
- * `FAULT_LIMIT` refuses whole, because a full report can hide a key. What is left is a repair
- * `parse` makes; only a repair that passes `matchesLosslessRepair` enters. A read that throws,
- * as a value whose reads change can, refuses as unreadable. The workflow shapes declare no union, so no `variant` or
- * `oneOf` fault reaches this door.
+ * `admitValue` admits readable definitions with only lossless repairs and refuses a saturated
+ * audit. This boundary translates its refusal to the caller's workflow error code and subject,
+ * preserving faults in the error context. Patches use the separate strict `admitPatch` boundary.
  *
  * @typeParam T - The definition the contract describes
  * @param contract - The compiled contract of the definition
@@ -625,26 +594,9 @@ export function admitDefinition<T>(
 	code: WorkflowErrorCode,
 	subject: string,
 ): Result<T, WorkflowError> {
-	// The two reports cost about eight times the guard on a 1000-task definition, and a valid value
-	// is the common case: `audit(v)` is empty iff `is(v)`, and an empty audit implies an empty explain.
-	const report = attemptCall(() => {
-		if (contract.is(value)) return { faults: [], parsed: contract.parse(value) }
-		const explained = contract.explain(value)
-		const audited = contract.audit(value)
-		const faults =
-			audited.length >= FAULT_LIMIT
-				? audited
-				: [...explained, ...audited.filter((fault) => fault.reason === 'extra')]
-		if (faults.length > 0) return { faults, parsed: undefined }
-		const parsed = contract.parse(value)
-		return {
-			faults: audited.filter((fault) => !matchesLosslessRepair(fault, value, parsed)),
-			parsed,
-		}
-	})
-	if (report.success && report.value.faults.length === 0 && report.value.parsed !== undefined)
-		return success(report.value.parsed)
-	const faults = report.success ? report.value.faults : []
+	const admitted = admitValue(contract, value)
+	if (admitted.success) return success(admitted.value.value)
+	const { faults } = admitted.error
 	return failure(
 		new WorkflowError(code, describeWorkflowFaults(subject, contract.schema, faults), { faults }),
 	)
