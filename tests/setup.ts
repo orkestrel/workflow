@@ -1,5 +1,6 @@
 import { createMemoryDriver } from '@orkestrel/database'
 import type { BudgetInterface, TokenUsage } from '@orkestrel/budget'
+import type { ContractInterface } from '@orkestrel/contract'
 import type { RecorderInterface } from '@orkestrel/test'
 import type {
 	LifecycleStatus,
@@ -81,6 +82,24 @@ export function buildMisspeltDefinition(): {
 		id: 'wf',
 		name: 'WF',
 		phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', behaviour: 'compile' }] }],
+	}
+}
+
+/** Wraps a real contract so a recorder sees each report a door asks it for. */
+export function createReportingContract<T>(
+	contract: ContractInterface<T>,
+	reports: RecorderInterface<readonly [string]>,
+): ContractInterface<T> {
+	return {
+		...contract,
+		explain: (value) => {
+			reports.handler('explain')
+			return contract.explain(value)
+		},
+		audit: (value) => {
+			reports.handler('audit')
+			return contract.audit(value)
+		},
 	}
 }
 

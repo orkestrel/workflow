@@ -19,7 +19,7 @@ import type {
 	WorkflowSnapshot,
 } from './types.js'
 import { createAbort } from '@orkestrel/abort'
-import { failure } from '@orkestrel/contract'
+import { failure, preview } from '@orkestrel/contract'
 import { Emitter } from '@orkestrel/emitter'
 import { cloneWorkflowSnapshot } from './cloners.js'
 import { phaseContract } from './contracts.js'
@@ -340,7 +340,7 @@ export class Workflow implements WorkflowInterface {
 			phaseContract,
 			definition,
 			'MUTATION',
-			`phase definition for workflow '${this.id}'`,
+			`phase definition for workflow ${preview(this.id)}`,
 		)
 		if (!admitted.success) return admitted
 		return this.#addTo(this.#mint(admitted.value), index, at)

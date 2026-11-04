@@ -97,6 +97,12 @@ export const DEFAULT_PHASE_CONCURRENCY = 1024
 export const MAX_TIMER_MS = 2_147_483_647
 
 /**
+ * Caps at `2048` the characters of a refusal that lists faults, because that text can reach a model
+ * through a tool. The whole report stays in `context.faults`.
+ */
+export const WORKFLOW_REFUSAL_LIMIT = 2048
+
+/**
  * Lists the {@link WorkflowEventMap} / {@link PhaseEventMap} events that make a durable observer
  * re-persist the live tree, frozen — `start`, `complete`, `fail`, `skip`, `stop`, `move`, and
  * `update`.

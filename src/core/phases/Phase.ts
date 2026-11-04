@@ -19,7 +19,7 @@ import type {
 	WorkflowInterface,
 	WorkflowRegistry,
 } from '../types.js'
-import { failure } from '@orkestrel/contract'
+import { failure, preview } from '@orkestrel/contract'
 import { Emitter } from '@orkestrel/emitter'
 import { taskDefinitionContract } from '../contracts.js'
 import { WorkflowError } from '../errors.js'
@@ -303,7 +303,7 @@ export class Phase implements PhaseInterface {
 			taskDefinitionContract,
 			definition,
 			'MUTATION',
-			`task definition for phase '${this.#id}'`,
+			`task definition for phase ${preview(this.#id)}`,
 		)
 		if (!admitted.success) return admitted
 		const created = this.#mint(admitted.value)

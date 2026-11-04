@@ -177,7 +177,7 @@ describe('Collection — remove / move / update share the pending gate', () => {
 		const rejected = store.update(first.id, { name: '' })
 		expect(rejected.success).toBe(false)
 		expect(!rejected.success && rejected.error.code).toBe('MUTATION')
-		expect(!rejected.success && rejected.error.message).toContain(`task '${first.id}'`)
+		expect(!rejected.success && rejected.error.message).toContain(`task "${first.id}"`)
 		expect(!rejected.success && rejected.error.message).toContain('name:')
 		expect(!rejected.success && rejected.error.context?.faults).toEqual([
 			expect.objectContaining({ reason: 'constraint', path: ['name'] }),

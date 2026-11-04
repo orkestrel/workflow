@@ -20,6 +20,7 @@ import {
 	definitionToSnapshot,
 	isWorkflowError,
 	MAX_TIMER_MS,
+	WORKFLOW_REFUSAL_LIMIT,
 	createRestoredWorkflow,
 } from '@src/core'
 import { describe, expect, it } from 'vitest'
@@ -168,7 +169,9 @@ describe('createWorkflow — the definition door', () => {
 		expect(isWorkflowError(error) && error.context?.faults).toEqual([
 			{ reason: 'extra', path: ['phases', '0', 'tasks', '0', 'behaviour'] },
 		])
-		expect(isWorkflowError(error) && error.message).toContain('phases.0.tasks.0.behaviour')
+		expect(isWorkflowError(error) && error.message).toContain(
+			'phases.0.tasks.0.behaviour: extra; this key is not declared, remove it or send one of id, name, description, behavior, retries, timeout',
+		)
 	})
 
 	it('createWorkflowTree refuses the same definition, the shared path every mint takes', () => {
@@ -215,6 +218,9 @@ describe('createWorkflow — the definition door', () => {
 
 		expect(isWorkflowError(error) && error.code).toBe('SCHEDULE')
 		expect(isWorkflowError(error) && error.context?.faults).toHaveLength(FAULT_LIMIT)
+		expect(isWorkflowError(error) && error.message.length).toBeLessThanOrEqual(
+			WORKFLOW_REFUSAL_LIMIT,
+		)
 
 		const atLimit = captureError(() =>
 			Reflect.apply(createWorkflow, undefined, [buildRepairableDefinition(FAULT_LIMIT)]),

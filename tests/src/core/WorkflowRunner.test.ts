@@ -1247,7 +1247,7 @@ describe('WorkflowRunner — budget / timeout fold', () => {
 		await expect(createPacedRunner().execute(restored)).rejects.toMatchObject({
 			code: 'SCHEDULE',
 			context: { task: 't0' },
-			message: expect.stringMatching(/'t0'.*drop the key/u),
+			message: expect.stringMatching(/"t0".*drop the key/u),
 		})
 		expect(restored.status).toBe('pending')
 	})

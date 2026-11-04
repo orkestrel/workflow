@@ -1,4 +1,10 @@
-import type { AuditFault, ContractInterface, Result } from '@orkestrel/contract'
+import type {
+	AuditFault,
+	ContractInterface,
+	FieldPath,
+	JSONSchema,
+	Result,
+} from '@orkestrel/contract'
 import type {
 	ControllerInterface,
 	LifecycleStatus,
@@ -34,7 +40,13 @@ import {
 	success,
 } from '@orkestrel/contract'
 import { isQueueConcurrency } from '@orkestrel/queue'
-import { DEFAULT_BAIL, MAX_TIMER_MS, TASK_TRANSITIONS, TERMINAL_STATUSES } from './constants.js'
+import {
+	DEFAULT_BAIL,
+	MAX_TIMER_MS,
+	TASK_TRANSITIONS,
+	TERMINAL_STATUSES,
+	WORKFLOW_REFUSAL_LIMIT,
+} from './constants.js'
 import { WorkflowError } from './errors.js'
 import { isLifecycleStatus, isTaskFailure, isTimerBound } from './validators.js'
 
@@ -444,7 +456,7 @@ export function requireConcurrency(value: unknown, phase: string): number {
 	const received = preview(value)
 	throw new WorkflowError(
 		'SCHEDULE',
-		`phase '${phase}' concurrency must be a positive safe integer, received ${received}; drop the key to run every task at once`,
+		`phase ${preview(phase)} concurrency must be a positive safe integer, received ${received}; drop the key to run every task at once`,
 		{ phase, option: 'concurrency', received },
 	)
 }
@@ -474,7 +486,7 @@ export function requireRunnable(workflow: WorkflowInterface, ms: number | undefi
 	if (tasks.length === 0) {
 		throw new WorkflowError(
 			'SCHEDULE',
-			`workflow '${workflow.id}' has no task to run; add a phase with a task before executing it`,
+			`workflow ${preview(workflow.id)} has no task to run; add a phase with a task before executing it`,
 			{ workflow: workflow.id },
 		)
 	}
@@ -493,7 +505,7 @@ export function requireRunnable(workflow: WorkflowInterface, ms: number | undefi
 		const received = preview(task.timeout)
 		throw new WorkflowError(
 			'SCHEDULE',
-			`task '${task.id}' carries timeout ${received}, outside 1 through ${MAX_TIMER_MS} milliseconds; drop the key for no deadline, or set a value in that range`,
+			`task ${preview(task.id)} carries timeout ${received}, outside 1 through ${MAX_TIMER_MS} milliseconds; drop the key for no deadline, or set a value in that range`,
 			{ task: task.id, option: 'timeout', received },
 		)
 	}
@@ -502,41 +514,93 @@ export function requireRunnable(workflow: WorkflowInterface, ms: number | undefi
 // === The definition door
 
 /**
- * Renders the refusal a reader corrects a value from, one entry per fault.
+ * Lists the keys a schema declares on the object that holds a path, the candidates a refusal of an
+ * undeclared key offers.
  *
- * @param subject - The value the refusal names
+ * @param schema - The schema the path walks
+ * @param path - The path of the undeclared key
+ * @returns The declared keys in schema order, empty when the path leaves the schema
+ *
+ * @example
+ * ```ts
+ * scanDeclaredKeys(taskDefinitionContract.schema, ['behaviour'])
+ * // ['id', 'name', 'description', 'behavior', 'retries', 'timeout']
+ * ```
+ */
+export function scanDeclaredKeys(schema: JSONSchema, path: FieldPath): readonly string[] {
+	const parents = isString(path) ? [] : path.slice(0, -1)
+	const parent = parents.reduce<JSONSchema | undefined>(
+		(node, segment) => node?.properties?.[segment] ?? node?.items,
+		schema,
+	)
+	return Object.keys(parent?.properties ?? {})
+}
+
+/**
+ * Renders the refusal a reader corrects a workflow definition or patch from, one line per fault,
+ * within `WORKFLOW_REFUSAL_LIMIT`.
+ *
+ * @remarks
+ * A line holds the fault's path and reason, then what to send: the declared keys for an undeclared
+ * one, otherwise what the fault expected and received. A path segment that is not a plain identifier
+ * is JSON-encoded and length-capped, because a key the caller sent is untrusted text. A report at
+ * `FAULT_LIMIT`, or one the limit cuts, closes with a line saying that the list stops there.
+ *
+ * @param subject - The value the refusal names, with any id it carries already encoded
+ * @param schema - The schema the value is held to, read for the declared keys
  * @param faults - The faults to list, empty when the value could not be read
  * @returns The refusal text
  *
  * @example
  * ```ts
- * describeFaults('workflow definition', [{ reason: 'extra', path: ['bails'] }])
- * // "workflow definition refused; correct each listed path: bails: extra"
+ * describeWorkflowFaults('task definition', taskDefinitionContract.schema, [
+ * 	{ reason: 'extra', path: ['behaviour'] },
+ * ])
+ * // 'task definition refused; correct each line and send it again:\n
+ * //  behaviour: extra; this key is not declared, remove it or send one of id, name, ...'
  * ```
  */
-export function describeFaults(subject: string, faults: readonly AuditFault[]): string {
-	if (faults.length === 0) return `${subject} refused: it could not be read`
-	const listed = faults.map((fault) => {
-		const path = isString(fault.path) ? fault.path : fault.path.join('.')
+export function describeWorkflowFaults(
+	subject: string,
+	schema: JSONSchema,
+	faults: readonly AuditFault[],
+): string {
+	if (faults.length === 0) return `${subject} refused: it could not be read; send plain JSON data`
+	const head = `${subject} refused; correct each line and send it again:`
+	const closing = 'the list stops here; context.faults holds the report, so correct these first'
+	const lines = faults.map((fault) => {
+		const path = (isString(fault.path) ? [fault.path] : fault.path)
+			.map((segment) => (/^[\w$-]{1,64}$/u.test(segment) ? segment : preview(segment)))
+			.join('.')
+		const keys = fault.reason === 'extra' ? scanDeclaredKeys(schema, fault.path) : []
 		return [
 			`${path === '' ? 'the root' : path}: ${fault.reason}`,
+			...(fault.reason === 'extra'
+				? [
+						`this key is not declared, remove it${keys.length === 0 ? '' : ` or send one of ${keys.join(', ')}`}`,
+					]
+				: []),
 			...('expected' in fault ? [`expected ${fault.expected}`] : []),
 			...('received' in fault ? [`received ${fault.received}`] : []),
 			...('constraint' in fault ? [`constraint ${fault.constraint}`] : []),
 			...('limit' in fault && fault.limit !== undefined ? [`limit ${fault.limit}`] : []),
-		].join(', ')
+		].join('; ')
 	})
-	return `${subject} refused; correct each listed path: ${listed.join('; ')}`
+	const room = WORKFLOW_REFUSAL_LIMIT - head.length - closing.length - 2
+	const kept = lines.filter((_line, index) => lines.slice(0, index + 1).join('\n').length <= room)
+	const stopped = kept.length < lines.length || faults.length >= FAULT_LIMIT
+	return [head, ...kept, ...(stopped ? [closing] : [])].join('\n')
 }
 
 /**
  * Admits a definition through its contract, or refuses it with the faults that name why.
  *
  * @remarks
- * An `explain` fault refuses. On a value that parses, an undeclared key from `audit` refuses, and
- * so does an audit at `FAULT_LIMIT`, because a full report can hide one. What is left is a repair
- * `parse` makes, so the parsed value is what enters. The workflow shapes declare no union, so no
- * `variant` or `oneOf` fault reaches this door.
+ * A value the guard accepts has no fault to report, so it skips both reports. Otherwise an
+ * `explain` fault refuses, then an undeclared key from `audit`, then an audit at `FAULT_LIMIT`,
+ * because a full report can hide one. What is left is a repair `parse` makes, so the parsed value
+ * is what enters. The workflow shapes declare no union, so no `variant` or `oneOf` fault reaches
+ * this door.
  *
  * @typeParam T - The definition the contract describes
  * @param contract - The compiled contract of the definition
@@ -557,8 +621,11 @@ export function admitDefinition<T>(
 	code: WorkflowErrorCode,
 	subject: string,
 ): Result<T, WorkflowError> {
-	const explained = contract.explain(value)
-	const audited = explained.length > 0 ? [] : contract.audit(value)
+	// The two reports cost about eight times the guard on a 1000-task definition, and a valid value
+	// is the common case: `audit(v)` is empty iff `is(v)`, and an empty audit implies an empty explain.
+	const strict = contract.is(value)
+	const explained = strict ? [] : contract.explain(value)
+	const audited = strict || explained.length > 0 ? [] : contract.audit(value)
 	const extras = audited.filter((fault) => fault.reason === 'extra')
 	const faults: readonly AuditFault[] =
 		explained.length > 0
@@ -570,7 +637,11 @@ export function admitDefinition<T>(
 					: []
 	const parsed = faults.length === 0 ? contract.parse(value) : undefined
 	return parsed === undefined
-		? failure(new WorkflowError(code, describeFaults(subject, faults), { faults }))
+		? failure(
+				new WorkflowError(code, describeWorkflowFaults(subject, contract.schema, faults), {
+					faults,
+				}),
+			)
 		: success(parsed)
 }
 

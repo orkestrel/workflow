@@ -1,8 +1,8 @@
 import type { ContractInterface, Result } from '@orkestrel/contract'
 import type { CollectionEntry, CollectionInterface } from './types.js'
-import { attempt, failure, isRecord, success } from '@orkestrel/contract'
+import { attempt, failure, isRecord, preview, success } from '@orkestrel/contract'
 import { WorkflowError } from './errors.js'
-import { describeFaults, insertEntry, moveEntry } from './helpers.js'
+import { describeWorkflowFaults, insertEntry, moveEntry } from './helpers.js'
 
 /**
  * Implements the insertion-ordered gated store both lean managers hold — entities keyed by `id`,
@@ -111,10 +111,15 @@ export class Collection<
 			const audited = attempt(() => this.#patch.audit(patch))
 			const faults = audited.success ? audited.value : []
 			return failure(
-				new WorkflowError('MUTATION', describeFaults(`patch for ${this.#noun} '${id}'`, faults), {
-					id,
-					faults,
-				}),
+				new WorkflowError(
+					'MUTATION',
+					describeWorkflowFaults(
+						`patch for ${this.#noun} ${preview(id)}`,
+						this.#patch.schema,
+						faults,
+					),
+					{ id, faults },
+				),
 			)
 		}
 		if (isRecord(patch) && Object.keys(patch).length === 0) {
@@ -122,7 +127,7 @@ export class Collection<
 			return failure(
 				new WorkflowError(
 					'MUTATION',
-					`patch for ${this.#noun} '${id}' changes nothing; set at least one of ${keys}`,
+					`patch for ${this.#noun} ${preview(id)} changes nothing; set at least one of ${keys}`,
 					{ id, faults: [] },
 				),
 			)
