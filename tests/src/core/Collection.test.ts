@@ -173,12 +173,64 @@ describe('Collection — remove / move / update share the pending gate', () => {
 		expect(store.update(first.id, { name: 'Renamed task' }).success).toBe(true)
 		expect(first.name).toBe('Renamed task')
 
-		// The real `taskUpdateShape` guard refuses an empty `name` (`min: 1`).
+		// The real `taskUpdateShape` refuses an empty `name` (`min: 1`), and the refusal names the path.
 		const rejected = store.update(first.id, { name: '' })
 		expect(rejected.success).toBe(false)
 		expect(!rejected.success && rejected.error.code).toBe('MUTATION')
-		expect(!rejected.success && rejected.error.message).toBe(`invalid patch for task '${first.id}'`)
+		expect(!rejected.success && rejected.error.message).toContain(`task '${first.id}'`)
+		expect(!rejected.success && rejected.error.message).toContain('name:')
+		expect(!rejected.success && rejected.error.context?.faults).toEqual([
+			expect.objectContaining({ reason: 'constraint', path: ['name'] }),
+		])
 		expect(first.name).toBe('Renamed task')
+	})
+
+	it('update refuses an undeclared patch key with its extra fault', () => {
+		const [first] = buildTasks()
+		const store = buildCollection()
+		store.append(first)
+		const undeclared = { description: 'Renamed task', nme: 'Renamed task' }
+
+		const rejected = store.update(first.id, undeclared)
+
+		expect(rejected.success).toBe(false)
+		expect(!rejected.success && rejected.error.code).toBe('MUTATION')
+		expect(!rejected.success && rejected.error.context?.faults).toEqual([
+			{ reason: 'extra', path: ['nme'] },
+		])
+		expect(first.description).not.toBe('Renamed task')
+	})
+
+	it('update fails gracefully on a patch it cannot read, with no report to carry', () => {
+		const [first] = buildTasks()
+		const store = buildCollection()
+		store.append(first)
+
+		const rejected = store.update(first.id, {
+			get name(): string {
+				throw new Error('boom')
+			},
+		})
+
+		expect(rejected.success).toBe(false)
+		expect(!rejected.success && rejected.error.code).toBe('MUTATION')
+		expect(!rejected.success && rejected.error.message).toContain('could not be read')
+		expect(!rejected.success && rejected.error.context?.faults).toEqual([])
+	})
+
+	it('update refuses an empty patch, which changes nothing, and names the keys it can set', () => {
+		const [first] = buildTasks()
+		const store = buildCollection()
+		store.append(first)
+		const name = first.name
+
+		const rejected = store.update(first.id, {})
+
+		expect(rejected.success).toBe(false)
+		expect(!rejected.success && rejected.error.code).toBe('MUTATION')
+		expect(!rejected.success && rejected.error.message).toMatch(/name, description/u)
+		expect(!rejected.success && rejected.error.context?.faults).toEqual([])
+		expect(first.name).toBe(name)
 	})
 
 	it('update refuses an absent id and a settled target', () => {

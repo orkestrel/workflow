@@ -52,8 +52,8 @@ export interface TaskDefinition {
 	 * Sets the per-attempt deadline in milliseconds.
 	 *
 	 * @remarks
-	 * The workflow-owned per-attempt deadline in milliseconds, an integer from `0` through
-	 * `MAX_TIMER_MS`. Zero or omission means no deadline. Persisted in a {@link TaskSnapshot},
+	 * The workflow-owned per-attempt deadline in milliseconds, an integer from `1` through
+	 * `MAX_TIMER_MS`. Omission alone means no deadline. Persisted in a {@link TaskSnapshot},
 	 * so `createRestoredWorkflow(snapshot, { functions })` resumes with the same reliability config;
 	 * only the resolved handler itself is runtime-only.
 	 */
@@ -76,7 +76,7 @@ export interface PhaseDefinition {
 	readonly name: string
 	readonly description?: string
 	readonly tasks: readonly TaskDefinition[]
-	/** Caps the tasks in flight at once (a resource throttle); omitted ⇒ unbounded. */
+	/** Caps the tasks in flight at once (a resource throttle), a positive safe integer; omitted ⇒ unbounded. */
 	readonly concurrency?: number
 	/**
 	 * Sets the phase's failure policy.
@@ -320,11 +320,14 @@ export interface PhaseUpdate {
  *   {@link TaskManagerInterface.append} / {@link PhaseManagerInterface.append} duplicate-id
  *   guard (both genuine programmer-error paths). The error `context` names
  *   the offending id / index / status.
- * - `SCHEDULE` — {@link import('./factories.js').createHostSchedule} refused to arm host work
- *   because the caller passed a `signal` that is not a native `AbortSignal`. The refusal
- *   is a rejected promise, never a synchronous throw, so every scheduler backend settles
- *   the same way whatever the caller passed. The error `context` names the offending
- *   parameter (`signal`) and the `typeof` the caller supplied.
+ * - `SCHEDULE` — work that cannot be scheduled: a definition the door refuses (`context.faults`
+ *   lists every fault), a tree with no task, a `timeout` or `silence` outside
+ *   `1..MAX_TIMER_MS`, a `concurrency` that is not a positive safe integer, or a
+ *   {@link import('./factories.js').createHostSchedule} call whose `signal` is not a native
+ *   `AbortSignal`. {@link WorkflowRunnerInterface.execute} and `createHostSchedule` deliver it as a
+ *   rejected promise, so a run and a scheduler backend each settle one way whatever the caller
+ *   passed; a factory or a constructor throws it. The error `context` names the offending
+ *   node or option.
  * - `INVARIANT` — an internal invariant did not hold: a derived
  *   `failed` node whose failing {@link TaskResult} is missing, or a tracked
  *   {@link RunnerInterface} unit whose cancellation handle is absent. It is a programmer-error
@@ -451,7 +454,10 @@ export interface TaskSnapshot {
 	readonly behavior?: string
 	/** Records the extra attempts after the first on failure (a non-negative integer); overrides the phase Runner default. */
 	readonly retries?: number
-	/** Records the workflow-owned per-attempt deadline (`0..MAX_TIMER_MS`); zero or omission means disabled. */
+	/**
+	 * Records the workflow-owned per-attempt deadline (`1..MAX_TIMER_MS`); omission means none. A
+	 * snapshot an earlier version wrote can carry `0`: it restores for inspection, and a run refuses it.
+	 */
 	readonly timeout?: number
 	/** Holds the task's activity: pending omits it; running/completed/failed require it; skipped/stopped may retain it. */
 	readonly activity?: TaskActivity
@@ -743,7 +749,7 @@ export interface TaskOptions {
 	readonly error?: EmitterErrorHandler
 	/** Holds an open consumer bag — stored and snapshotted, never interpreted by the workflow. */
 	readonly metadata?: JSONRecord
-	/** Sets the runtime-only silence window; non-positive, non-finite, or over-`MAX_TIMER_MS` disables inheritance. */
+	/** Sets the runtime-only silence window (`1..MAX_TIMER_MS`) over the workflow default; any other value refuses with `SCHEDULE`. */
 	readonly silence?: number
 }
 
@@ -805,7 +811,7 @@ export interface WorkflowOptions {
 	 * Omitted ⇒ an empty registry; only tasks that also omit `behavior` are executable no-ops.
 	 */
 	readonly functions?: WorkflowRegistry
-	/** Sets the runtime-only default silence; non-positive, non-finite, or over-`MAX_TIMER_MS` disables it. */
+	/** Sets the runtime-only default silence (`1..MAX_TIMER_MS`); any other value refuses with `SCHEDULE`. */
 	readonly silence?: number
 }
 
@@ -881,14 +887,14 @@ export interface TaskInterface {
 	 */
 	readonly retries: number | undefined
 	/**
-	 * Holds the workflow-owned per-attempt deadline in milliseconds (`0..MAX_TIMER_MS`) — persisted
-	 * (mirrors {@link TaskDefinition.timeout} / {@link TaskSnapshot.timeout}). Zero or
-	 * `undefined` means no deadline.
+	 * Holds the workflow-owned per-attempt deadline in milliseconds (`1..MAX_TIMER_MS`) — persisted
+	 * (mirrors {@link TaskDefinition.timeout} / {@link TaskSnapshot.timeout}). `undefined` means no
+	 * deadline; a restored `0` stays readable here, and a run refuses it.
 	 */
 	readonly timeout: number | undefined
 	/** Holds the last accepted reporter claim, absent while pending. */
 	readonly activity: TaskActivity | undefined
-	/** Holds the effective host-safe silence window (`1..MAX_TIMER_MS`), or `undefined` when disabled. */
+	/** Holds the effective silence window (`1..MAX_TIMER_MS`), or `undefined` when neither tier sets one. */
 	readonly silence: number | undefined
 	/** Reports whether no report or pulse was accepted during the current silence window. */
 	readonly silent: boolean
@@ -1088,7 +1094,8 @@ export interface PhaseInterface {
 	 * resolution {@link import('./factories.js').createWorkflow} performs at build time.
 	 * Requires `definition.id` to be unique among this phase's existing
 	 * task ids — a duplicate is a `MUTATION` failure (mirrors
-	 * {@link TaskManagerInterface.add}'s own duplicate-id gate).
+	 * {@link TaskManagerInterface.add}'s own duplicate-id gate). A definition the task contract
+	 * refuses is a `MUTATION` failure too, whose `context.faults` lists every fault.
 	 *
 	 * native gating, purely from this phase's own derived `status` (no
 	 * runner-installed hook), unchanged from the entity-taking predecessor. While
@@ -1156,7 +1163,7 @@ export interface PhaseInterface {
 	 * Defense-in-depth: the owning {@link WorkflowInterface.update} gates
 	 * first, so a direct call here throws a `MUTATION`
 	 * {@link import('./errors.js').WorkflowError} unless this phase's own `status` is
-	 * `pending`.
+	 * `pending`, and a `SCHEDULE` one for a `concurrency` that is not a positive safe integer.
 	 *
 	 * @param value - The {@link PhaseUpdate} fields to apply
 	 * @example
@@ -1248,8 +1255,8 @@ export interface WorkflowInterface {
 	 *
 	 * @remarks
 	 * A no-op unless `status` is `pending` and the tree is genuinely vacuous: zero phases or
-	 * every phase contains zero tasks. Its only legitimate use is settling an executed no-op
-	 * tree. It never overrides pending work or any started/terminal state.
+	 * every phase contains zero tasks. Its only legitimate use is settling a tree emptied
+	 * after its run started. It never overrides pending work or any started/terminal state.
 	 */
 	complete(): void
 	/**
@@ -1327,7 +1334,8 @@ export interface WorkflowInterface {
 	 * phase's effective `bail` resolves exactly as the build path does
 	 * (`definition.bail ?? this.bail`). Requires `definition.id` to be unique among this
 	 * workflow's existing phase ids — a duplicate is a `MUTATION` failure (mirrors
-	 * {@link PhaseManagerInterface.add}'s own duplicate-id gate).
+	 * {@link PhaseManagerInterface.add}'s own duplicate-id gate). A definition the phase contract
+	 * refuses is a `MUTATION` failure too, whose `context.faults` lists every fault.
 	 *
 	 * native gating, purely from this workflow's own derived `status` and the phase list's
 	 * positions (no runner-installed hook), unchanged from the entity-taking
@@ -1473,7 +1481,8 @@ export interface CollectionInterface<TEntry, TPatch> {
 	 * @param id - The entity id to patch
 	 * @param patch - The fields to update
 	 * @returns A {@link Result} boxing the patched entity, or a `MUTATION` failure when `id` is
-	 *   absent, not `pending`, or `patch` fails validation
+	 *   absent or not `pending`, or when `patch` fails validation or is empty, with `context.faults`
+	 *   listing every fault
 	 */
 	update(id: string, patch: TPatch): Result<TEntry, WorkflowError>
 	/**
@@ -1918,12 +1927,12 @@ export interface PhaseExecutionInterface {
  * {@link TaskControllerInterface.signal} fires) and halts the run — the remaining tasks
  * and phases are `skip`ped and the workflow settles `stopped`.
  * - `signal` — an external cancellation (a caller `AbortController`).
- * - `timeout` — a whole-run deadline in milliseconds. A non-positive, non-finite, or
- *   over-`MAX_TIMER_MS` value means no deadline.
+ * - `timeout` — a whole-run deadline in milliseconds, an integer from `1` through
+ *   `MAX_TIMER_MS`. Omission alone means no deadline; any other value rejects `SCHEDULE`.
  * - `budget` — a whole-run cost ceiling (a {@link BudgetInterface} over {@link TokenUsage}
  *   — its `signal` fires when a task-reported usage crosses `max`); the runner folds its
  *   `signal` and `start`s it. (A `max: 0` budget is exhausted from its first `start`, so it
- *   cancels the run at entry — a different primitive from the `timeout: 0` "no deadline" case.)
+ *   cancels the run at entry.)
  *
  * `store` is not a bound. Supplying a {@link WorkflowStoreInterface} makes the run durable: the
  * runner composes a {@link WorkflowPersistenceInterface} over it and writes the live
@@ -2018,12 +2027,13 @@ export interface WorkflowRunnerInterface {
 	 * the run as `stopped` — the cancel supersedes the same-tick failure, and that task's error
 	 * is not recorded.
 	 *
-	 * **Programmer-error exception.** A pathological `definition` (for example, a
-	 * duplicate phase or task `id`) throws synchronously at construction — before any phase
-	 * runs, and before the returned `Promise` is even created — rather than resolving a
-	 * failed/partial {@link WorkflowResult}. Unexpected scheduler or engine-infrastructure
-	 * failures may reject asynchronously after remaining work is stopped, swept, and final
-	 * persistence is attempted. Neither case is a domain task outcome to disguise as a result.
+	 * **Refusals.** A pathological `definition` (a key the contract does not declare, a bound
+	 * out of range, a duplicate phase or task `id`), a tree with no task, and a run `timeout` out
+	 * of range each reject before any phase runs, rather than resolving a failed/partial
+	 * {@link WorkflowResult}. A named task with no handler throws `TRANSITION` synchronously.
+	 * Unexpected scheduler or engine-infrastructure failures may reject asynchronously after
+	 * remaining work is stopped, swept, and final persistence is attempted. None of these is a
+	 * domain task outcome to disguise as a result.
 	 *
 	 * @param definition - The {@link WorkflowDefinition} to build the live tree from and drive
 	 * @param options - The construction options ({@link WorkflowOptions}: `on` / `bail` /
@@ -2055,6 +2065,10 @@ export interface WorkflowRunnerInterface {
 	 * immediately. `options` carries only the per-run run controls — the bounds (`signal` /
 	 * `timeout` / `budget`) and the durable `store` — because the construction half of
 	 * {@link WorkflowRunOptions} does not apply to a tree that already exists.
+	 *
+	 * **Refusals.** A tree with no task, a run `timeout` out of range, and a node that can still run
+	 * carrying a `concurrency` or a `timeout` out of range reject `SCHEDULE` before the tree is
+	 * claimed, so a corrected call can drive the same workflow.
 	 *
 	 * **Run round-trips through the snapshot.** Driving a tree rebuilt by
 	 * {@link import('./factories.js').createRestoredWorkflow} behaves according to whether a

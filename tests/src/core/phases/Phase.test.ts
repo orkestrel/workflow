@@ -1,11 +1,13 @@
 import type { PhaseEventMap, PhaseOptions } from '@src/core'
 import type { PhaseEvent } from '../../../setup.js'
-import { createWorkflow, createRestoredWorkflow } from '@src/core'
+import { createWorkflow, createRestoredWorkflow, isWorkflowError } from '@src/core'
 import { describe, expect, it } from 'vitest'
-import { createRecorder, createRecorders } from '@orkestrel/test'
+import { captureError, createRecorder, createRecorders } from '@orkestrel/test'
 import { Phase } from '../../../../src/core/phases/Phase.js'
 import {
 	buildPhaseWorkflow,
+	INVALID_CONCURRENCIES,
+	INVALID_TIMER_BOUNDS,
 	requireWorkflowPhase,
 	buildMixedBailWorkflow,
 	WorkflowObservation,
@@ -634,6 +636,46 @@ describe('Phase — description membership', () => {
 	})
 })
 
+describe('Phase — add() runs the task definition door', () => {
+	it('fails MUTATION with the extra fault on a misspelt key, minting and emitting nothing', () => {
+		const phase = requireWorkflowPhase(createWorkflow(buildPhaseWorkflow(1)))
+		const added = createRecorder<readonly unknown[]>()
+		phase.emitter.on('add', added.handler)
+		const misspelt = { id: 'late', name: 'Late', behaviour: 'compile' }
+
+		const result = phase.add(misspelt)
+
+		expect(result.success).toBe(false)
+		expect(!result.success && result.error.code).toBe('MUTATION')
+		expect(!result.success && result.error.context?.faults).toEqual([
+			{ reason: 'extra', path: ['behaviour'] },
+		])
+		expect(phase.task('late')).toBeUndefined()
+		expect(added.count).toBe(0)
+	})
+
+	for (const timeout of INVALID_TIMER_BOUNDS) {
+		it(`fails MUTATION on a task timeout of ${timeout}`, () => {
+			const phase = requireWorkflowPhase(createWorkflow(buildPhaseWorkflow(1)))
+
+			const result = phase.add({ id: 'late', name: 'Late', timeout })
+
+			expect(result.success).toBe(false)
+			expect(!result.success && result.error.code).toBe('MUTATION')
+			expect(phase.task('late')).toBeUndefined()
+		})
+	}
+
+	it('mints a valid definition with its bound', () => {
+		const phase = requireWorkflowPhase(createWorkflow(buildPhaseWorkflow(1)))
+
+		const result = phase.add({ id: 'late', name: 'Late', timeout: 1 })
+
+		expect(result.success).toBe(true)
+		expect(phase.task('late')?.timeout).toBe(1)
+	})
+})
+
 describe('Phase — patch() gating (pending only)', () => {
 	it('applies name/description/bail/concurrency while pending', () => {
 		const phase = requireWorkflowPhase(createWorkflow(buildPhaseWorkflow(1)))
@@ -643,6 +685,20 @@ describe('Phase — patch() gating (pending only)', () => {
 		expect(phase.bail).toBe(true)
 		expect(phase.concurrency).toBe(3)
 	})
+
+	for (const concurrency of INVALID_CONCURRENCIES) {
+		it(`throws SCHEDULE for a direct concurrency of ${concurrency} and keeps the old throttle`, () => {
+			const phase = requireWorkflowPhase(createWorkflow(buildPhaseWorkflow(1)))
+			phase.patch({ concurrency: 2 })
+
+			const error = captureError(() => phase.patch({ name: 'Renamed', concurrency }))
+
+			expect(isWorkflowError(error) && error.code).toBe('SCHEDULE')
+			expect(isWorkflowError(error) && error.context?.phase).toBe('p')
+			expect(phase.concurrency).toBe(2)
+			expect(phase.name).toBe('P')
+		})
+	}
 
 	it('throws MUTATION when patched while running', () => {
 		const phase = requireWorkflowPhase(createWorkflow(buildPhaseWorkflow(1)))

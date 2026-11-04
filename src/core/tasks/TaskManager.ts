@@ -1,9 +1,8 @@
 import type { Result } from '@orkestrel/contract'
 import type { TaskInterface, TaskManagerInterface, TaskUpdate } from '../types.js'
 import type { WorkflowError } from '../errors.js'
-import { compileGuard } from '@orkestrel/contract'
 import { Collection } from '../Collection.js'
-import { taskUpdateShape } from '../shapers.js'
+import { taskUpdateContract } from '../contracts.js'
 
 /**
  * Implements the lean child manager of a {@link import('../phases/Phase.js').Phase}'s live
@@ -40,7 +39,7 @@ import { taskUpdateShape } from '../shapers.js'
  * ```
  */
 export class TaskManager implements TaskManagerInterface {
-	readonly #tasks = new Collection<TaskInterface, TaskUpdate>('task', compileGuard(taskUpdateShape))
+	readonly #tasks = new Collection<TaskInterface, TaskUpdate>('task', taskUpdateContract)
 
 	get count(): number {
 		return this.#tasks.count

@@ -32,10 +32,18 @@ import {
 	createRestoredWorkflow,
 	createHostSchedule,
 	taskDefinitionToSnapshot,
+	admitDefinition,
+	describeFaults,
+	MAX_TIMER_MS,
+	requireConcurrency,
+	requireRunnable,
+	requireTimerBound,
+	Workflow,
+	workflowContract,
 } from '@src/core'
 import { describe, expect, it } from 'vitest'
 import { isAbortSignal, linkSignal } from '@orkestrel/abort'
-import { failure, success } from '@orkestrel/contract'
+import { FAULT_LIMIT, failure, success } from '@orkestrel/contract'
 import { captureError, createRecorder, waitForDelay } from '@orkestrel/test'
 import {
 	createErrorRecorder,
@@ -55,6 +63,10 @@ import {
 	RECOVERY_MIXED_FUNCTIONS,
 	buildHostileWorkflow,
 	buildCountedRegistry,
+	buildMisspeltDefinition,
+	buildRepairableDefinition,
+	INVALID_CONCURRENCIES,
+	INVALID_TIMER_BOUNDS,
 } from '../../setup.js'
 
 // The lifecycle logic core: the derivation truth tables under BOTH bail modes, the ONE
@@ -1101,17 +1113,253 @@ describe('deriveBoundary — the index of the first pending status (the pending-
 })
 
 describe('resolveTaskSilence — runtime inheritance', () => {
-	it('inherits only a finite positive default and lets any present invalid task value disable it', () => {
+	it('inherits a bounded default and lets a bounded task value override it', () => {
 		expect(resolveTaskSilence(undefined, 10)).toBe(10)
 		expect(resolveTaskSilence(5, 10)).toBe(5)
-		expect(resolveTaskSilence(0, 10)).toBeUndefined()
-		expect(resolveTaskSilence(-1, 10)).toBeUndefined()
-		expect(resolveTaskSilence(Number.NaN, 10)).toBeUndefined()
-		expect(resolveTaskSilence(Number.POSITIVE_INFINITY, 10)).toBeUndefined()
-		expect(resolveTaskSilence(undefined, Number.NaN)).toBeUndefined()
 		expect(resolveTaskSilence(2_147_483_647, 10)).toBe(2_147_483_647)
-		expect(resolveTaskSilence(2_147_483_648, 10)).toBeUndefined()
-		expect(resolveTaskSilence(undefined, 2_147_483_648)).toBeUndefined()
+		expect(resolveTaskSilence(1, 10)).toBe(1)
+	})
+
+	it('holds no window only when both tiers are undefined', () => {
+		expect(resolveTaskSilence(undefined, undefined)).toBeUndefined()
+	})
+
+	for (const value of INVALID_TIMER_BOUNDS) {
+		it(`refuses a present task value or inherited default of ${value} with SCHEDULE`, () => {
+			const task = captureError(() => resolveTaskSilence(value, 10))
+			const inherited = captureError(() => resolveTaskSilence(undefined, value))
+
+			expect(isWorkflowError(task) && task.code).toBe('SCHEDULE')
+			expect(isWorkflowError(inherited) && inherited.code).toBe('SCHEDULE')
+		})
+	}
+})
+
+describe('requireTimerBound — the one refusal of a timer outside its bound', () => {
+	it('returns a bounded value, both ends included', () => {
+		expect(requireTimerBound(1, 'timeout')).toBe(1)
+		expect(requireTimerBound(MAX_TIMER_MS, 'timeout')).toBe(MAX_TIMER_MS)
+	})
+
+	for (const value of INVALID_TIMER_BOUNDS) {
+		it(`refuses ${value} with SCHEDULE, naming the option and the remedy`, () => {
+			const error = captureError(() => requireTimerBound(value, 'silence'))
+
+			expect(isWorkflowError(error) && error.code).toBe('SCHEDULE')
+			expect(isWorkflowError(error) && error.context?.option).toBe('silence')
+			expect(isWorkflowError(error) && error.message).toContain('silence')
+			expect(isWorkflowError(error) && error.message).toContain(String(MAX_TIMER_MS))
+			expect(isWorkflowError(error) && error.message).toContain('omit it')
+		})
+	}
+})
+
+describe('requireConcurrency — the one refusal of a throttle no queue can take', () => {
+	it('returns a positive safe integer, both ends included', () => {
+		expect(requireConcurrency(1, 'build')).toBe(1)
+		expect(requireConcurrency(Number.MAX_SAFE_INTEGER, 'build')).toBe(Number.MAX_SAFE_INTEGER)
+	})
+
+	for (const value of INVALID_CONCURRENCIES) {
+		it(`refuses ${value} with SCHEDULE, naming the phase and the remedy`, () => {
+			const error = captureError(() => requireConcurrency(value, 'build'))
+
+			expect(isWorkflowError(error) && error.code).toBe('SCHEDULE')
+			expect(isWorkflowError(error) && error.context?.phase).toBe('build')
+			expect(isWorkflowError(error) && error.message).toContain('drop the key')
+		})
+	}
+})
+
+describe('requireRunnable — what refuses a run before it claims the tree', () => {
+	it('passes a tree with a task and no bound, and one with every bound in range', () => {
+		const definition: WorkflowDefinition = {
+			id: 'w',
+			name: 'W',
+			phases: [
+				{
+					id: 'p',
+					name: 'P',
+					concurrency: 1,
+					tasks: [{ id: 't', name: 'T', timeout: MAX_TIMER_MS }],
+				},
+			],
+		}
+
+		expect(requireRunnable(createWorkflow(definition), undefined)).toBeUndefined()
+		expect(requireRunnable(createWorkflow(definition), MAX_TIMER_MS)).toBeUndefined()
+	})
+
+	it('refuses a tree with no task, naming the workflow', () => {
+		const error = captureError(() =>
+			requireRunnable(createWorkflow({ id: 'w', name: 'W', phases: [] }), undefined),
+		)
+
+		expect(isWorkflowError(error) && error.code).toBe('SCHEDULE')
+		expect(isWorkflowError(error) && error.context?.workflow).toBe('w')
+		expect(isWorkflowError(error) && error.message).toContain("'w'")
+	})
+
+	it('refuses a run timeout before reading the tree', () => {
+		const error = captureError(() =>
+			requireRunnable(createWorkflow({ id: 'w', name: 'W', phases: [] }), 0),
+		)
+
+		expect(isWorkflowError(error) && error.context?.option).toBe('timeout')
+	})
+
+	for (const concurrency of INVALID_CONCURRENCIES) {
+		it(`refuses a pending phase carrying a concurrency of ${concurrency}, naming it`, () => {
+			const workflow = new Workflow(
+				definitionToSnapshot({
+					id: 'w',
+					name: 'W',
+					phases: [{ id: 'p', name: 'P', concurrency, tasks: [{ id: 't', name: 'T' }] }],
+				}),
+			)
+			const error = captureError(() => requireRunnable(workflow, undefined))
+
+			expect(isWorkflowError(error) && error.code).toBe('SCHEDULE')
+			expect(isWorkflowError(error) && error.context?.phase).toBe('p')
+		})
+	}
+
+	for (const timeout of INVALID_TIMER_BOUNDS) {
+		it(`refuses a pending task carrying a timeout of ${timeout}, naming it and the remedy`, () => {
+			const workflow = new Workflow(
+				definitionToSnapshot({
+					id: 'w',
+					name: 'W',
+					phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', timeout }] }],
+				}),
+			)
+			const error = captureError(() => requireRunnable(workflow, undefined))
+
+			expect(isWorkflowError(error) && error.code).toBe('SCHEDULE')
+			expect(isWorkflowError(error) && error.context?.task).toBe('t')
+			expect(isWorkflowError(error) && error.message).toContain('drop the key')
+		})
+	}
+
+	it('ignores a settled node, which never runs again', () => {
+		const workflow = new Workflow(
+			definitionToSnapshot({
+				id: 'w',
+				name: 'W',
+				phases: [
+					{
+						id: 'p',
+						name: 'P',
+						concurrency: 0,
+						tasks: [
+							{ id: 't', name: 'T', timeout: 0 },
+							{ id: 'u', name: 'U', timeout: 0 },
+						],
+					},
+					{ id: 'q', name: 'Q', tasks: [{ id: 'v', name: 'V' }] },
+				],
+			}),
+		)
+		workflow.phase('p')?.stop()
+		workflow.phase('p')?.task('t')?.skip()
+		workflow.phase('p')?.task('u')?.skip()
+
+		expect(requireRunnable(workflow, undefined)).toBeUndefined()
+	})
+})
+
+describe('admitDefinition — the door a definition enters through', () => {
+	it('hands the parsed value on for a clean definition', () => {
+		const definition: WorkflowDefinition = { id: 'w', name: 'W', phases: [] }
+		const admitted = admitDefinition(
+			workflowContract,
+			definition,
+			'SCHEDULE',
+			'workflow definition',
+		)
+
+		expect(admitted).toEqual(success(definition))
+	})
+
+	it('refuses an undeclared key with the code it was given and the extra fault', () => {
+		const admitted = admitDefinition(
+			workflowContract,
+			buildMisspeltDefinition(),
+			'MUTATION',
+			'workflow definition',
+		)
+
+		expect(admitted.success).toBe(false)
+		expect(!admitted.success && admitted.error.code).toBe('MUTATION')
+		expect(!admitted.success && admitted.error.message).toContain('workflow definition')
+		expect(!admitted.success && admitted.error.context?.faults).toEqual([
+			{ reason: 'extra', path: ['phases', '0', 'tasks', '0', 'behaviour'] },
+		])
+	})
+
+	it('reports explain faults first, because extras read only on a parseable value', () => {
+		const admitted = admitDefinition(
+			workflowContract,
+			{ id: '', name: 'W', phases: [], undeclared: true },
+			'SCHEDULE',
+			'workflow definition',
+		)
+
+		expect(!admitted.success && admitted.error.context?.faults).toEqual([
+			expect.objectContaining({ reason: 'constraint', path: ['id'] }),
+		])
+	})
+
+	it('refuses an audit at FAULT_LIMIT and repairs one below it', () => {
+		const refused = admitDefinition(
+			workflowContract,
+			buildRepairableDefinition(FAULT_LIMIT),
+			'SCHEDULE',
+			'workflow definition',
+		)
+		const repaired = admitDefinition(
+			workflowContract,
+			buildRepairableDefinition(FAULT_LIMIT - 1),
+			'SCHEDULE',
+			'workflow definition',
+		)
+
+		expect(!refused.success && refused.error.context?.faults).toHaveLength(FAULT_LIMIT)
+		expect(repaired.success && repaired.value.phases[0]?.tasks[0]?.timeout).toBe(5000)
+	})
+})
+
+describe('describeFaults — the text a refusal reads', () => {
+	it('names the subject and every path with what it expected', () => {
+		const message = describeFaults('workflow definition', [
+			{ reason: 'extra', path: ['phases', '0', 'behaviour'] },
+			{ reason: 'missing', path: ['id'], expected: 'string' },
+			{
+				reason: 'constraint',
+				path: ['name'],
+				expected: 'string',
+				constraint: 'min',
+				limit: 1,
+				received: '""',
+			},
+			{ reason: 'type', path: 'concurrency', expected: 'integer', received: 'NaN' },
+		])
+
+		expect(message).toContain('workflow definition')
+		expect(message).toContain('phases.0.behaviour: extra')
+		expect(message).toContain('id: missing, expected string')
+		expect(message).toContain(
+			'name: constraint, expected string, received "", constraint min, limit 1',
+		)
+		expect(message).toContain('concurrency: type, expected integer, received NaN')
+	})
+
+	it('names the root when a fault has no path', () => {
+		expect(
+			describeFaults('workflow definition', [
+				{ reason: 'type', path: [], expected: 'object', received: '42' },
+			]),
+		).toContain('the root: type')
 	})
 })
 

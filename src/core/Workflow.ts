@@ -22,8 +22,10 @@ import { createAbort } from '@orkestrel/abort'
 import { failure } from '@orkestrel/contract'
 import { Emitter } from '@orkestrel/emitter'
 import { cloneWorkflowSnapshot } from './cloners.js'
+import { phaseContract } from './contracts.js'
 import { WorkflowError } from './errors.js'
 import {
+	admitDefinition,
 	buildWorkflowContext,
 	captureWorkflowOptions,
 	collectResults,
@@ -32,6 +34,7 @@ import {
 	findFailure,
 	isTerminalStatus,
 	phaseDefinitionToSnapshot,
+	requireTimerBound,
 } from './helpers.js'
 import { Phase } from './phases/Phase.js'
 import { PhaseManager } from './phases/PhaseManager.js'
@@ -148,7 +151,7 @@ export class Workflow implements WorkflowInterface {
 		// persisted per-phase bail; omitted ⇒ each phase keeps its own persisted policy (identical restore).
 		this.#bailOverride = bail
 		this.#functions = functions
-		this.#silence = silence
+		this.#silence = silence === undefined ? undefined : requireTimerBound(silence, 'silence')
 		this.#emitter = new Emitter<WorkflowEventMap>({
 			...(on === undefined ? {} : { on }),
 			...(error === undefined ? {} : { error }),
@@ -258,10 +261,10 @@ export class Workflow implements WorkflowInterface {
 	complete(): void {
 		// Forces the workflow to `completed` (overriding the derived value), reusing the same #force
 		// override machinery as skip/stop. `completed` is a WorkflowEventMap event, so the emit fires.
-		// Used by the runner to settle an executed no-op tree (no work happened ⇒ vacuously done) —
-		// its only legitimate use, so this is a no-op unless `status` is still `pending` and the
-		// whole tree contains no tasks. Empty phases remain vacuous; any pending task is real work
-		// and cannot be erased by a root override.
+		// Used by the runner to settle a tree emptied after its run started (no work happened ⇒
+		// vacuously done) — its only legitimate use, so this is a no-op unless `status` is still
+		// `pending` and the whole tree contains no tasks. Empty phases remain vacuous; any pending task
+		// is real work and cannot be erased by a root override.
 		if (
 			this.status === 'pending' &&
 			this.#phases.phases().every((phase) => phase.tasks.count === 0)
@@ -333,7 +336,14 @@ export class Workflow implements WorkflowInterface {
 				}),
 			)
 		}
-		return this.#addTo(this.#mint(definition), index, at)
+		const admitted = admitDefinition(
+			phaseContract,
+			definition,
+			'MUTATION',
+			`phase definition for workflow '${this.id}'`,
+		)
+		if (!admitted.success) return admitted
+		return this.#addTo(this.#mint(admitted.value), index, at)
 	}
 
 	remove(id: string): Result<PhaseInterface, WorkflowError> {

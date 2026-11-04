@@ -5,6 +5,7 @@ import {
 	completeTask,
 	buildEmptyWorkflow,
 	buildMultiPhaseWorkflow,
+	INVALID_CONCURRENCIES,
 	WorkflowObservation,
 	buildWorkflowDefinition,
 	createErrorRecorder,
@@ -1246,6 +1247,56 @@ describe('Workflow — structural API: add() mints a live phase', () => {
 		expect(result.success).toBe(false)
 		if (result.success) throw new Error('expected add to fail')
 		expect(result.error.code).toBe('MUTATION')
+	})
+})
+
+describe('Workflow — add() runs the phase definition door', () => {
+	it('fails MUTATION with the extra fault on a misspelt key, minting and emitting nothing', () => {
+		const workflow = createWorkflow(buildEmptyWorkflow(false))
+		const added = createRecorder<readonly unknown[]>()
+		workflow.emitter.on('add', added.handler)
+		const misspelt = {
+			id: 'late',
+			name: 'Late',
+			tasks: [{ id: 't', name: 'T', behaviour: 'compile' }],
+		}
+
+		const result = workflow.add(misspelt)
+
+		expect(result.success).toBe(false)
+		expect(!result.success && result.error.code).toBe('MUTATION')
+		expect(!result.success && result.error.context?.faults).toEqual([
+			{ reason: 'extra', path: ['tasks', '0', 'behaviour'] },
+		])
+		expect(workflow.phase('late')).toBeUndefined()
+		expect(added.count).toBe(0)
+	})
+
+	for (const concurrency of INVALID_CONCURRENCIES) {
+		it(`fails MUTATION on a phase concurrency of ${concurrency}`, () => {
+			const workflow = createWorkflow(buildEmptyWorkflow(false))
+
+			const result = workflow.add({ id: 'late', name: 'Late', tasks: [], concurrency })
+
+			expect(result.success).toBe(false)
+			expect(!result.success && result.error.code).toBe('MUTATION')
+			expect(workflow.phase('late')).toBeUndefined()
+		})
+	}
+
+	it('update fails MUTATION with faults on a concurrency past the safe integers', () => {
+		const workflow = createWorkflow(buildMultiPhaseWorkflow(1))
+		const [phase] = workflow.phases.phases()
+		if (phase === undefined) throw new Error('expected one phase')
+
+		const result = workflow.update(phase.id, { concurrency: Number.MAX_SAFE_INTEGER + 1 })
+
+		expect(result.success).toBe(false)
+		expect(!result.success && result.error.code).toBe('MUTATION')
+		expect(!result.success && result.error.context?.faults).toEqual([
+			expect.objectContaining({ reason: 'constraint', path: ['concurrency'] }),
+		])
+		expect(phase.concurrency).toBeUndefined()
 	})
 })
 

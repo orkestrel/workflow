@@ -21,13 +21,16 @@ import type {
 } from '../types.js'
 import { failure } from '@orkestrel/contract'
 import { Emitter } from '@orkestrel/emitter'
+import { taskDefinitionContract } from '../contracts.js'
 import { WorkflowError } from '../errors.js'
 import {
+	admitDefinition,
 	buildPhaseContext,
 	buildTaskContext,
 	derivePhaseStatus,
 	findFailure,
 	isTerminalStatus,
+	requireConcurrency,
 	taskDefinitionToSnapshot,
 } from '../helpers.js'
 import { Task } from '../tasks/Task.js'
@@ -296,7 +299,14 @@ export class Phase implements PhaseInterface {
 				}),
 			)
 		}
-		const created = this.#mint(definition)
+		const admitted = admitDefinition(
+			taskDefinitionContract,
+			definition,
+			'MUTATION',
+			`task definition for phase '${this.#id}'`,
+		)
+		if (!admitted.success) return admitted
+		const created = this.#mint(admitted.value)
 		if (status === 'running') {
 			// Running: only a pure append is eligible — a live runner subscribed to the `add`
 			// event picks the new task up for same-run execution.
@@ -366,9 +376,13 @@ export class Phase implements PhaseInterface {
 				status: this.status,
 			})
 		}
+		const concurrency =
+			value.concurrency === undefined
+				? this.#concurrency
+				: requireConcurrency(value.concurrency, this.#id)
 		if (value.name !== undefined) this.#name = value.name
 		if (value.description !== undefined) this.#description = value.description
-		if (value.concurrency !== undefined) this.#concurrency = value.concurrency
+		this.#concurrency = concurrency
 		if (value.bail !== undefined) this.#bail = value.bail
 	}
 

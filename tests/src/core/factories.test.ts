@@ -1,5 +1,12 @@
-import type { TaskEventMap, WorkflowDefinition, WorkflowOptions, WorkflowSnapshot } from '@src/core'
+import type {
+	TaskEventMap,
+	WorkflowDefinition,
+	WorkflowInterface,
+	WorkflowOptions,
+	WorkflowSnapshot,
+} from '@src/core'
 import type { TaskEvent } from '../../setup.js'
+import { FAULT_LIMIT } from '@orkestrel/contract'
 import {
 	cloneWorkflowSnapshot,
 	createMemoryWorkflowStore,
@@ -23,6 +30,10 @@ import {
 	TASK_EVENTS,
 	createDurabilityRunner,
 	buildFactoryDefinition,
+	buildMisspeltDefinition,
+	buildRepairableDefinition,
+	INVALID_CONCURRENCIES,
+	INVALID_TIMER_BOUNDS,
 	FACTORY_RESTORE_FUNCTIONS,
 	FACTORY_SHIFTED_FUNCTIONS,
 	ROUND_TRIP_TIMEOUT_MS,
@@ -145,6 +156,112 @@ describe('createWorkflowContract — rejects malformed input', () => {
 		})
 		it(`parse() returns undefined for ${label}`, () => {
 			expect(contract.parse(value)).toBeUndefined()
+		})
+	}
+})
+
+describe('createWorkflow — the definition door', () => {
+	it('refuses a misspelt key with an extra fault at its path, before any tree exists', () => {
+		const error = captureError(() => createWorkflow(buildMisspeltDefinition()))
+
+		expect(isWorkflowError(error) && error.code).toBe('SCHEDULE')
+		expect(isWorkflowError(error) && error.context?.faults).toEqual([
+			{ reason: 'extra', path: ['phases', '0', 'tasks', '0', 'behaviour'] },
+		])
+		expect(isWorkflowError(error) && error.message).toContain('phases.0.tasks.0.behaviour')
+	})
+
+	it('createWorkflowTree refuses the same definition, the shared path every mint takes', () => {
+		const error = captureError(() =>
+			createWorkflowTree(buildMisspeltDefinition(), captureWorkflowOptions()),
+		)
+
+		expect(isWorkflowError(error) && error.code).toBe('SCHEDULE')
+	})
+
+	it('reports every explain fault in one refusal', () => {
+		const error = captureError(() =>
+			createWorkflow({
+				id: '',
+				name: 'W',
+				phases: [{ id: 'p', name: '', tasks: [{ id: 't', name: 'T', timeout: 0 }] }],
+			}),
+		)
+
+		expect(isWorkflowError(error) && error.code).toBe('SCHEDULE')
+		expect(isWorkflowError(error) && error.context?.faults).toEqual([
+			expect.objectContaining({ reason: 'constraint', path: ['id'] }),
+			expect.objectContaining({ reason: 'constraint', path: ['phases', '0', 'name'] }),
+			expect.objectContaining({
+				reason: 'constraint',
+				path: ['phases', '0', 'tasks', '0', 'timeout'],
+				limit: 1,
+			}),
+		])
+	})
+
+	it('refuses a value that is no definition at all', () => {
+		const error = captureError(() => Reflect.apply(createWorkflow, undefined, [42]))
+
+		expect(isWorkflowError(error) && error.code).toBe('SCHEDULE')
+		expect(isWorkflowError(error) && error.context?.faults).toEqual([
+			expect.objectContaining({ reason: 'type', path: [] }),
+		])
+	})
+
+	it('refuses an audit at FAULT_LIMIT, because the report can hide an undeclared key', () => {
+		const hidden = { ...buildRepairableDefinition(FAULT_LIMIT + 6), undeclared: true }
+		const error = captureError(() => Reflect.apply(createWorkflow, undefined, [hidden]))
+
+		expect(isWorkflowError(error) && error.code).toBe('SCHEDULE')
+		expect(isWorkflowError(error) && error.context?.faults).toHaveLength(FAULT_LIMIT)
+
+		const atLimit = captureError(() =>
+			Reflect.apply(createWorkflow, undefined, [buildRepairableDefinition(FAULT_LIMIT)]),
+		)
+		expect(isWorkflowError(atLimit) && atLimit.code).toBe('SCHEDULE')
+	})
+
+	it('hands the parsed definition on, so a repair under the limit reaches the tree', () => {
+		const workflow: WorkflowInterface = Reflect.apply(createWorkflow, undefined, [
+			buildRepairableDefinition(FAULT_LIMIT - 1),
+		])
+
+		expect(workflow.phase('p')?.task('t0')?.timeout).toBe(5000)
+	})
+
+	it('builds a definition with no phase and one with an empty phase, the builder paths', () => {
+		expect(createWorkflow({ id: 'w', name: 'W', phases: [] }).status).toBe('pending')
+		expect(
+			createWorkflow({ id: 'w', name: 'W', phases: [{ id: 'p', name: 'P', tasks: [] }] }).status,
+		).toBe('pending')
+	})
+
+	for (const concurrency of INVALID_CONCURRENCIES) {
+		it(`refuses a phase concurrency of ${concurrency}`, () => {
+			const error = captureError(() =>
+				createWorkflow({
+					id: 'w',
+					name: 'W',
+					phases: [{ id: 'p', name: 'P', tasks: [], concurrency }],
+				}),
+			)
+
+			expect(isWorkflowError(error) && error.code).toBe('SCHEDULE')
+		})
+	}
+
+	for (const timeout of INVALID_TIMER_BOUNDS) {
+		it(`refuses a task timeout of ${timeout}`, () => {
+			const error = captureError(() =>
+				createWorkflow({
+					id: 'w',
+					name: 'W',
+					phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', timeout }] }],
+				}),
+			)
+
+			expect(isWorkflowError(error) && error.code).toBe('SCHEDULE')
 		})
 	}
 })
@@ -498,16 +615,18 @@ describe('createRestoredWorkflow / cloneWorkflowSnapshot — the round-trip inve
 		expect(isWorkflowError(captureError(() => workflow.snapshot()))).toBe(true)
 	})
 
-	it('round-trips the completed override used by an executed no-op workflow', async () => {
+	it('round-trips the completed override of a tree emptied after its run started', async () => {
 		const store = createMemoryWorkflowStore()
-		const result = await createDurabilityRunner().execute(
-			{
-				id: 'empty',
-				name: 'Empty',
-				phases: [{ id: 'phase', name: 'Phase', tasks: [] }],
-			},
-			{ store },
-		)
+		const workflow = createWorkflow({
+			id: 'empty',
+			name: 'Empty',
+			phases: [{ id: 'phase', name: 'Phase', tasks: [{ id: 'task', name: 'Task' }] }],
+		})
+		workflow.pause()
+		const running = createDurabilityRunner().execute(workflow, { store })
+		expect(workflow.phase('phase')?.remove('task').success).toBe(true)
+		workflow.resume()
+		const result = await running
 		expect(result.status).toBe('completed')
 		expect(result.durable).toBe(true)
 		const snapshot = result.workflow.snapshot()

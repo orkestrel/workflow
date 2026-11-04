@@ -46,7 +46,7 @@ await new GuideCommand({
 	reader: readInventory,
 	runner: createVitest,
 }).execute(async ({ files, report, rows }) => {
-	const { compileGuard, isRecord, parseJSON } = await import('@orkestrel/contract')
+	const { isRecord, parseJSON } = await import('@orkestrel/contract')
 	const {
 		computeSymbolKey,
 		createSourceManager,
@@ -68,7 +68,7 @@ await new GuideCommand({
 		derivePhaseStatus,
 		deriveWorkflowStatus,
 		isTerminalStatus,
-		taskUpdateShape,
+		taskUpdateContract,
 	} = await import('@src/core')
 	const { requireValue } = await import('@orkestrel/test')
 	const { describe, expect, it } = await import('vitest')
@@ -289,7 +289,7 @@ await new GuideCommand({
 			const first = requireValue(workflow.phase('build')?.task('compile'), 'expected compile task')
 			const second = requireValue(workflow.phase('build')?.task('lint'), 'expected lint task')
 
-			const store = new Collection<TaskInterface, TaskUpdate>('task', compileGuard(taskUpdateShape))
+			const store = new Collection<TaskInterface, TaskUpdate>('task', taskUpdateContract)
 			store.append(first)
 			store.add(second, 0)
 			store.move(second.id, 1)
@@ -302,7 +302,7 @@ await new GuideCommand({
 
 		it('carries the positional collection fence lines the transcription copies', () => {
 			expect(guideText).toContain(
-				"const store = new Collection<TaskInterface, TaskUpdate>('task', compileGuard(taskUpdateShape))",
+				"const store = new Collection<TaskInterface, TaskUpdate>('task', taskUpdateContract)",
 			)
 			expect(guideText).toContain('store.entries() // [first, second], in positional order')
 			expect(guideText).toContain('store.count // 2')

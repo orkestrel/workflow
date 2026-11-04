@@ -3,12 +3,14 @@ import {
 	RELEASE_FUNCTIONS,
 	WorkflowStoreBoundary,
 	buildReleaseDefinition,
+	buildMisspeltDefinition,
 	WorkflowObservation,
 	buildCompileRegistry,
 	buildWorkflowStore,
 } from '../../setup.js'
 import type { WorkflowInterface, WorkflowManagerInterface, WorkflowSnapshot } from '@src/core'
-import { Workflow, createWorkflowManager, createWorkflowRunner } from '@src/core'
+import { Workflow, createWorkflowManager, createWorkflowRunner, isWorkflowError } from '@src/core'
+import { captureError } from '@orkestrel/test'
 import { describe, expect, it } from 'vitest'
 
 // WorkflowManager (`createWorkflowManager`) is the additive registry over the workflow
@@ -20,6 +22,17 @@ import { describe, expect, it } from 'vitest'
 // RUNNABLE rather than a dead snapshot mirror. Event-free (each Workflow owns its own emitter).
 
 describe('WorkflowManager — add / accessors / count', () => {
+	it('refuses a misspelt definition at the door and leaves the registered workflow in place', () => {
+		const manager = createWorkflowManager()
+		const registered = manager.add({ id: 'wf', name: 'Registered', phases: [] })
+
+		const error = captureError(() => manager.add(buildMisspeltDefinition()))
+
+		expect(isWorkflowError(error) && error.code).toBe('SCHEDULE')
+		expect(manager.count).toBe(1)
+		expect(manager.workflow('wf')).toBe(registered)
+	})
+
 	it('starts empty', () => {
 		const manager = createWorkflowManager()
 

@@ -18,8 +18,10 @@ import type {
 import { createContract, rawShape, stringShape } from '@orkestrel/contract'
 import { createDatabase, createMemoryDriver } from '@orkestrel/database'
 import { cloneWorkflowSnapshot } from './cloners.js'
+import { workflowContract } from './contracts.js'
 import { WorkflowError } from './errors.js'
 import {
+	admitDefinition,
 	captureWorkflowOptions,
 	definitionToSnapshot,
 	hasWorkflowHandlers,
@@ -176,6 +178,8 @@ export function createWorkflowContract(): ContractInterface<WorkflowDefinition> 
  * @param definition - The workflow definition to bring to life
  * @param options - Runtime options (initial listeners, `bail` override, per-node options)
  * @returns The live {@link WorkflowInterface} root
+ * @throws {WorkflowError} Thrown with the `SCHEDULE` code when `definition` fails the door of
+ * {@link createWorkflowTree}, or when a `silence` option is outside `1..MAX_TIMER_MS`
  *
  * @example
  * ```ts
@@ -199,6 +203,12 @@ export function createWorkflow(
  * construction path behind every definition-driven mint.
  *
  * @remarks
+ * The definition door: the {@link import('./contracts.js').workflowContract} `explain` faults
+ * refuse, then the undeclared keys its `audit` reports, then an audit at `FAULT_LIMIT`, and the
+ * value `parse` returns enters. A refusal is a `SCHEDULE` {@link WorkflowError} whose
+ * `context.faults` lists every fault. A definition with no phase or no task is a builder path and
+ * passes; a run refuses it.
+ *
  * Seeds an initial all-`pending` {@link WorkflowSnapshot} from the definition and constructs the
  * live {@link WorkflowInterface} over it. `bail` is the caller's own override, forwarded to
  * {@link definitionToSnapshot} so it reaches both tiers: the workflow snapshot and the inheritance
@@ -232,7 +242,9 @@ export function createWorkflowTree(
 	definition: WorkflowDefinition,
 	captured: WorkflowOptions,
 ): WorkflowInterface {
-	return new Workflow(definitionToSnapshot(definition, captured.bail), captured)
+	const admitted = admitDefinition(workflowContract, definition, 'SCHEDULE', 'workflow definition')
+	if (!admitted.success) throw admitted.error
+	return new Workflow(definitionToSnapshot(admitted.value, captured.bail), captured)
 }
 
 /**
@@ -421,7 +433,7 @@ export function createDatabaseWorkflowStore(
  * External integrations remain application-owned: a caller wires an ordinary
  * {@link import('./types.js').WorkflowFunction} into its own {@link WorkflowOptions.functions}
  * registry. Only a task that omits `behavior` auto-completes; unresolved named work is rejected
- * before dispatch.
+ * before dispatch, and a tree with no task rejects `SCHEDULE` rather than settling `completed`.
  *
  * @param options - An optional pacing `scheduler` (default the shipped cross-environment one).
  *   See {@link WorkflowRunnerOptions}.

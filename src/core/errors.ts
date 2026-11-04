@@ -15,9 +15,9 @@ import { holds, INTRINSICS, isFunction, isObject } from '@orkestrel/contract'
  * @remarks
  * Raised for an illegal lifecycle transition
  * (`TRANSITION`), a structurally invalid {@link import('./types.js').WorkflowSnapshot}
- * boundary (`RESTORE`), a refused structural/activity edit (`MUTATION`), a host
- * schedule refused before arming because the caller's `signal` is not a native
- * `AbortSignal` (`SCHEDULE`, delivered as a rejected promise), or a broken internal
+ * boundary (`RESTORE`), a refused structural/activity edit (`MUTATION`), work that cannot be
+ * scheduled — a definition the door refuses, a tree with no task, a bound out of range, or a host
+ * schedule whose `signal` is not a native `AbortSignal` (`SCHEDULE`) — or a broken internal
  * invariant (`INVARIANT`).
  */
 export class WorkflowError extends Error {

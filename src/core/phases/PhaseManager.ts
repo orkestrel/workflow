@@ -1,9 +1,8 @@
 import type { Result } from '@orkestrel/contract'
 import type { PhaseInterface, PhaseManagerInterface, PhaseUpdate } from '../types.js'
 import type { WorkflowError } from '../errors.js'
-import { compileGuard } from '@orkestrel/contract'
 import { Collection } from '../Collection.js'
-import { phaseUpdateShape } from '../shapers.js'
+import { phaseUpdateContract } from '../contracts.js'
 
 /**
  * Implements the lean child manager of a {@link import('../Workflow.js').Workflow}'s live
@@ -38,10 +37,7 @@ import { phaseUpdateShape } from '../shapers.js'
  * ```
  */
 export class PhaseManager implements PhaseManagerInterface {
-	readonly #phases = new Collection<PhaseInterface, PhaseUpdate>(
-		'phase',
-		compileGuard(phaseUpdateShape),
-	)
+	readonly #phases = new Collection<PhaseInterface, PhaseUpdate>('phase', phaseUpdateContract)
 
 	get count(): number {
 		return this.#phases.count

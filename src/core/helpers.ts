@@ -1,3 +1,4 @@
+import type { AuditFault, ContractInterface, Result } from '@orkestrel/contract'
 import type {
 	ControllerInterface,
 	LifecycleStatus,
@@ -11,12 +12,15 @@ import type {
 	TaskSnapshot,
 	WorkflowContext,
 	WorkflowDefinition,
+	WorkflowErrorCode,
 	WorkflowInterface,
 	WorkflowOptions,
 	WorkflowRegistry,
 	WorkflowSnapshot,
 } from './types.js'
 import {
+	failure,
+	FAULT_LIMIT,
 	isArray,
 	isBoolean,
 	isFiniteNumber,
@@ -26,9 +30,13 @@ import {
 	isNonEmptyString,
 	isRecord,
 	isString,
+	preview,
+	success,
 } from '@orkestrel/contract'
+import { isQueueConcurrency } from '@orkestrel/queue'
 import { DEFAULT_BAIL, MAX_TIMER_MS, TASK_TRANSITIONS, TERMINAL_STATUSES } from './constants.js'
-import { isLifecycleStatus, isTaskFailure } from './validators.js'
+import { WorkflowError } from './errors.js'
+import { isLifecycleStatus, isTaskFailure, isTimerBound } from './validators.js'
 
 /**
  * Captures every top-level {@link WorkflowOptions} value exactly once into an owned plain bag.
@@ -162,8 +170,9 @@ export function isStoppable(workflow: WorkflowInterface): boolean {
  * Tests whether a naturally-finished run may force its workflow `completed`.
  *
  * @remarks
- * A run that walked every phase and still derives `pending` executed nothing — zero phases, or
- * every phase empty — so it is vacuously done and the run settles it `completed`. Gated on
+ * A run that walked every phase and still derives `pending` executed nothing, because a caller
+ * removed its tasks after it started (a run refuses a tree that starts with none), so it is
+ * vacuously done and the run settles it `completed`. Gated on
  * exactly `pending` so a real `completed`, a `bail: true` `failed`, a `stopped`, or a derived
  * `skipped` is never overridden. The tree-is-empty half of the rule is
  * {@link WorkflowInterface.complete}'s own guard, which refuses a pending tree that still holds
@@ -376,26 +385,193 @@ export function canTransitionTask(from: LifecycleStatus, to: LifecycleStatus): b
 }
 
 /**
- * Resolves a task's runtime silence window against its workflow default, to a host-safe
- * `1..MAX_TIMER_MS` window or to `undefined` where the task disables it.
+ * Resolves a task's runtime silence window against its workflow default, or refuses one outside
+ * `1..MAX_TIMER_MS`.
  *
- * @param value - The task-level override; any present non-positive or non-finite value disables
+ * @param value - The task-level override
  * @param fallback - The workflow-level default
- * @returns A host-safe effective window (`1..MAX_TIMER_MS`), or `undefined`
+ * @returns The effective window (`1..MAX_TIMER_MS`), or `undefined` when both tiers omit it
+ * @throws {WorkflowError} Thrown with the `SCHEDULE` code when the effective window is out of range
  */
 export function resolveTaskSilence(
 	value: number | undefined,
 	fallback: number | undefined,
 ): number | undefined {
-	if (value !== undefined) {
-		return isFiniteNumber(value) && value > 0 && value <= MAX_TIMER_MS ? value : undefined
+	const window = value ?? fallback
+	return window === undefined ? undefined : requireTimerBound(window, 'silence')
+}
+
+/**
+ * Returns a timer bound, or refuses a value the host timer cannot arm as one.
+ *
+ * @param value - The value to check
+ * @param label - The option name the refusal reports
+ * @returns `value`, an integer from `1` through `MAX_TIMER_MS`
+ * @throws {WorkflowError} Thrown with the `SCHEDULE` code when `value` is outside that range
+ *
+ * @example
+ * ```ts
+ * requireTimerBound(5_000, 'timeout') // 5000
+ * requireTimerBound(0, 'timeout') // throws SCHEDULE
+ * ```
+ */
+export function requireTimerBound(value: unknown, label: string): number {
+	if (isTimerBound(value)) return value
+	const received = preview(value)
+	throw new WorkflowError(
+		'SCHEDULE',
+		`${label} must be an integer from 1 through ${MAX_TIMER_MS} milliseconds, received ${received}; omit it for no bound`,
+		{ option: label, received },
+	)
+}
+
+/**
+ * Returns a phase concurrency, or refuses a value that is not a positive safe integer.
+ *
+ * @param value - The value to check
+ * @param phase - The phase id the refusal names
+ * @returns `value`, a positive safe integer
+ * @throws {WorkflowError} Thrown with the `SCHEDULE` code when `value` is anything else
+ *
+ * @example
+ * ```ts
+ * requireConcurrency(4, 'build') // 4
+ * requireConcurrency(0, 'build') // throws SCHEDULE
+ * ```
+ */
+export function requireConcurrency(value: unknown, phase: string): number {
+	if (isQueueConcurrency(value)) return value
+	const received = preview(value)
+	throw new WorkflowError(
+		'SCHEDULE',
+		`phase '${phase}' concurrency must be a positive safe integer, received ${received}; drop the key to run every task at once`,
+		{ phase, option: 'concurrency', received },
+	)
+}
+
+/**
+ * Refuses a run that cannot start, before anything claims the tree.
+ *
+ * @remarks
+ * Reads the run `timeout`, then the tree: a tree with no task has nothing to run, and a node that
+ * can still run must carry a `concurrency` and a `timeout` in range. A settled node never runs
+ * again, so what it carries refuses nothing.
+ *
+ * @param workflow - The live workflow a run would drive
+ * @param ms - The run's `timeout`, or `undefined` for no deadline
+ * @throws {WorkflowError} Thrown with the `SCHEDULE` code naming the first refusal
+ *
+ * @example
+ * ```ts
+ * requireRunnable(createWorkflow(definition), 5_000) // passes for a tree with a task
+ * requireRunnable(createWorkflow({ id: 'empty', name: 'Empty', phases: [] }), undefined) // throws SCHEDULE
+ * ```
+ */
+export function requireRunnable(workflow: WorkflowInterface, ms: number | undefined): void {
+	if (ms !== undefined) requireTimerBound(ms, 'timeout')
+	const phases = workflow.phases.phases()
+	const tasks = phases.flatMap((phase) => phase.tasks.tasks())
+	if (tasks.length === 0) {
+		throw new WorkflowError(
+			'SCHEDULE',
+			`workflow '${workflow.id}' has no task to run; add a phase with a task before executing it`,
+			{ workflow: workflow.id },
+		)
 	}
-	return fallback !== undefined &&
-		isFiniteNumber(fallback) &&
-		fallback > 0 &&
-		fallback <= MAX_TIMER_MS
-		? fallback
-		: undefined
+	for (const phase of phases) {
+		if (!isTerminalStatus(phase.status) && phase.concurrency !== undefined) {
+			requireConcurrency(phase.concurrency, phase.id)
+		}
+	}
+	const task = tasks.find(
+		(candidate) =>
+			!isTerminalStatus(candidate.status) &&
+			candidate.timeout !== undefined &&
+			!isTimerBound(candidate.timeout),
+	)
+	if (task !== undefined) {
+		const received = preview(task.timeout)
+		throw new WorkflowError(
+			'SCHEDULE',
+			`task '${task.id}' carries timeout ${received}, outside 1 through ${MAX_TIMER_MS} milliseconds; drop the key for no deadline, or set a value in that range`,
+			{ task: task.id, option: 'timeout', received },
+		)
+	}
+}
+
+// === The definition door
+
+/**
+ * Renders the refusal a reader corrects a value from, one entry per fault.
+ *
+ * @param subject - The value the refusal names
+ * @param faults - The faults to list, empty when the value could not be read
+ * @returns The refusal text
+ *
+ * @example
+ * ```ts
+ * describeFaults('workflow definition', [{ reason: 'extra', path: ['bails'] }])
+ * // "workflow definition refused; correct each listed path: bails: extra"
+ * ```
+ */
+export function describeFaults(subject: string, faults: readonly AuditFault[]): string {
+	if (faults.length === 0) return `${subject} refused: it could not be read`
+	const listed = faults.map((fault) => {
+		const path = isString(fault.path) ? fault.path : fault.path.join('.')
+		return [
+			`${path === '' ? 'the root' : path}: ${fault.reason}`,
+			...('expected' in fault ? [`expected ${fault.expected}`] : []),
+			...('received' in fault ? [`received ${fault.received}`] : []),
+			...('constraint' in fault ? [`constraint ${fault.constraint}`] : []),
+			...('limit' in fault && fault.limit !== undefined ? [`limit ${fault.limit}`] : []),
+		].join(', ')
+	})
+	return `${subject} refused; correct each listed path: ${listed.join('; ')}`
+}
+
+/**
+ * Admits a definition through its contract, or refuses it with the faults that name why.
+ *
+ * @remarks
+ * An `explain` fault refuses. On a value that parses, an undeclared key from `audit` refuses, and
+ * so does an audit at `FAULT_LIMIT`, because a full report can hide one. What is left is a repair
+ * `parse` makes, so the parsed value is what enters. The workflow shapes declare no union, so no
+ * `variant` or `oneOf` fault reaches this door.
+ *
+ * @typeParam T - The definition the contract describes
+ * @param contract - The compiled contract of the definition
+ * @param value - The value to admit
+ * @param code - The code a refusal carries
+ * @param subject - The name a refusal gives the value
+ * @returns The parsed definition, or a failure whose `context.faults` lists every fault
+ *
+ * @example
+ * ```ts
+ * const admitted = admitDefinition(workflowContract, definition, 'SCHEDULE', 'workflow definition')
+ * if (!admitted.success) throw admitted.error
+ * ```
+ */
+export function admitDefinition<T>(
+	contract: ContractInterface<T>,
+	value: unknown,
+	code: WorkflowErrorCode,
+	subject: string,
+): Result<T, WorkflowError> {
+	const explained = contract.explain(value)
+	const audited = explained.length > 0 ? [] : contract.audit(value)
+	const extras = audited.filter((fault) => fault.reason === 'extra')
+	const faults: readonly AuditFault[] =
+		explained.length > 0
+			? explained
+			: extras.length > 0
+				? extras
+				: audited.length >= FAULT_LIMIT
+					? audited
+					: []
+	const parsed = faults.length === 0 ? contract.parse(value) : undefined
+	return parsed === undefined
+		? failure(new WorkflowError(code, describeFaults(subject, faults), { faults }))
+		: success(parsed)
 }
 
 // === Result-tree collection
@@ -872,8 +1048,7 @@ export function scanSnapshotContext(value: unknown): Readonly<Record<string, unk
 		const phaseContext = isNonEmptyString(phase.id) ? { phase: phase.id } : undefined
 		if (
 			!isBoolean(phase.bail) ||
-			(phase.concurrency !== undefined &&
-				(!isInteger(phase.concurrency) || phase.concurrency < 1)) ||
+			(phase.concurrency !== undefined && !isQueueConcurrency(phase.concurrency)) ||
 			!isArray(phase.tasks)
 		) {
 			return phaseContext

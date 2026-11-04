@@ -53,7 +53,7 @@ export const taskDefinitionShape = objectShape({
 	),
 	timeout: optionalShape(
 		integerShape({
-			min: 0,
+			min: 1,
 			max: MAX_TIMER_MS,
 			description:
 				'Per-attempt deadline in milliseconds; overrides the phase default. Omitted means no deadline.',
@@ -63,7 +63,7 @@ export const taskDefinitionShape = objectShape({
 
 /**
  * Describes the shape of a {@link import('./types.js').PhaseDefinition} — identity, its ordered
- * {@link taskDefinitionShape} tasks, and an optional positive-integer `concurrency` throttle
+ * {@link taskDefinitionShape} tasks, and an optional positive safe integer `concurrency` throttle
  * (max tasks in flight; omitted ⇒ unbounded).
  */
 export const phaseShape = objectShape({
@@ -76,6 +76,7 @@ export const phaseShape = objectShape({
 	concurrency: optionalShape(
 		integerShape({
 			min: 1,
+			max: Number.MAX_SAFE_INTEGER,
 			description: 'Max tasks in flight at once (a resource throttle); omitted means unbounded.',
 		}),
 	),
@@ -145,6 +146,7 @@ export const phaseUpdateShape = objectShape({
 	concurrency: optionalShape(
 		integerShape({
 			min: 1,
+			max: Number.MAX_SAFE_INTEGER,
 			description:
 				'Max tasks in flight at once (a resource throttle); omitted leaves it unchanged.',
 		}),

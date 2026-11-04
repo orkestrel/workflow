@@ -1,4 +1,4 @@
-import { EVERY_STATUS, INVALID_LIFECYCLE_VALUES } from '../../setup.js'
+import { EVERY_STATUS, INVALID_LIFECYCLE_VALUES, INVALID_TIMER_BOUNDS } from '../../setup.js'
 import type { WorkflowRegistry } from '@src/core'
 import {
 	createWorkflow,
@@ -9,8 +9,10 @@ import {
 	isTaskActivityInput,
 	isTaskFailure,
 	isTaskResult,
+	isTimerBound,
 	isWorkflowSnapshot,
 	matchesDescription,
+	MAX_TIMER_MS,
 	recoverWorkflowSnapshot,
 	scanSnapshotContext,
 } from '@src/core'
@@ -21,6 +23,19 @@ import {
 	buildActivityStamp,
 } from '../../setup.js'
 import { describe, expect, it } from 'vitest'
+
+describe('isTimerBound', () => {
+	it('accepts an integer from 1 through MAX_TIMER_MS, both ends included', () => {
+		expect(isTimerBound(1)).toBe(true)
+		expect(isTimerBound(MAX_TIMER_MS)).toBe(true)
+	})
+
+	for (const value of [...INVALID_TIMER_BOUNDS, '5000', null, undefined]) {
+		it(`refuses ${String(value)}`, () => {
+			expect(isTimerBound(value)).toBe(false)
+		})
+	}
+})
 
 describe('task activity validators', () => {
 	it('accepts valid input and persisted frames', () => {
@@ -441,7 +456,57 @@ describe('snapshot logical leaves', () => {
 				],
 			}),
 		).toEqual({ phase: 'phase', task: 'task' })
+		expect(
+			scanSnapshotContext({
+				...snapshot,
+				phases: [{ ...phase, concurrency: Number.MAX_SAFE_INTEGER + 1 }],
+			}),
+		).toEqual({ phase: 'phase' })
 		expect(scanSnapshotContext(null)).toBeUndefined()
+	})
+
+	it('reads a persisted timeout of 0 so an earlier snapshot stays inspectable, and no lower', () => {
+		const snapshot = createWorkflow({
+			id: 'workflow',
+			name: 'Workflow',
+			phases: [{ id: 'phase', name: 'Phase', tasks: [{ id: 'task', name: 'Task' }] }],
+		}).snapshot()
+		const phase = snapshot.phases[0]
+		const task = phase?.tasks[0]
+		if (phase === undefined || task === undefined) throw new Error('expected one task')
+
+		expect(
+			isWorkflowSnapshot({ ...snapshot, phases: [{ ...phase, tasks: [{ ...task, timeout: 0 }] }] }),
+		).toBe(true)
+		expect(
+			isWorkflowSnapshot({
+				...snapshot,
+				phases: [{ ...phase, tasks: [{ ...task, timeout: -1 }] }],
+			}),
+		).toBe(false)
+	})
+
+	it('refuses a persisted concurrency past the safe integers', () => {
+		const snapshot = createWorkflow({
+			id: 'workflow',
+			name: 'Workflow',
+			phases: [{ id: 'phase', name: 'Phase', tasks: [] }],
+		}).snapshot()
+		const phase = snapshot.phases[0]
+		if (phase === undefined) throw new Error('expected one phase')
+
+		expect(
+			isWorkflowSnapshot({
+				...snapshot,
+				phases: [{ ...phase, concurrency: Number.MAX_SAFE_INTEGER + 1 }],
+			}),
+		).toBe(false)
+		expect(
+			isWorkflowSnapshot({
+				...snapshot,
+				phases: [{ ...phase, concurrency: Number.MAX_SAFE_INTEGER }],
+			}),
+		).toBe(true)
 	})
 
 	it('projects retryable and exhausted running work directly', () => {

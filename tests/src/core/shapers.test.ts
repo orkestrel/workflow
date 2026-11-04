@@ -1,10 +1,11 @@
 import { buildFieldDefinition } from '../../setup.js'
 import type { WorkflowDefinition } from '@src/core'
-import { literalShape } from '@orkestrel/contract'
+import { createContract, literalShape } from '@orkestrel/contract'
 import {
 	createWorkflowContract,
 	MAX_TIMER_MS,
 	phaseShape,
+	phaseUpdateShape,
 	taskDefinitionShape,
 	workflowShape,
 } from '@src/core'
@@ -28,19 +29,20 @@ describe('taskDefinitionShape', () => {
 		})
 	})
 
-	it('carries optional non-negative-integer retries / timeout reliability settings', () => {
-		const keys: ReadonlyArray<'retries' | 'timeout'> = ['retries', 'timeout']
-		for (const key of keys) {
-			const field = taskDefinitionShape.properties[key]
-			expect(field.category).toBe('optional')
-			expect(field.category === 'optional' && field.inner).toMatchObject({
-				category: 'number',
-				integer: true,
-				min: 0,
-			})
-		}
+	it('carries optional integer retries from 0 and a timeout from 1 through the host maximum', () => {
+		const retries = taskDefinitionShape.properties.retries
+		expect(retries.category === 'optional' && retries.inner).toMatchObject({
+			category: 'number',
+			integer: true,
+			min: 0,
+		})
 		const timeout = taskDefinitionShape.properties.timeout
-		expect(timeout.category === 'optional' && timeout.inner).toMatchObject({ max: MAX_TIMER_MS })
+		expect(timeout.category === 'optional' && timeout.inner).toMatchObject({
+			category: 'number',
+			integer: true,
+			min: 1,
+			max: MAX_TIMER_MS,
+		})
 	})
 })
 
@@ -141,9 +143,38 @@ describe('the added optional fields flow through the compiled contract', () => {
 		expect(contract.parse(definition)).toEqual(definition)
 	})
 
-	it('accepts retries / timeout of 0 (the min:0 boundary is inclusive)', () => {
-		const definition = buildFieldDefinition({ retries: 0, timeout: 0 })
-		expect(contract.is(definition)).toBe(true)
+	it('accepts retries of 0 (the min:0 boundary is inclusive)', () => {
+		expect(contract.is(buildFieldDefinition({ retries: 0 }))).toBe(true)
+	})
+
+	it('refuses timeout 0 and accepts timeout 1 (the min:1 boundary, the schema an LLM reads)', () => {
+		expect(contract.is(buildFieldDefinition({ timeout: 0 }))).toBe(false)
+		expect(contract.parse(buildFieldDefinition({ timeout: 0 }))).toBeUndefined()
+		expect(contract.is(buildFieldDefinition({ timeout: 1 }))).toBe(true)
+		expect(createContract(taskDefinitionShape).schema.properties?.timeout).toMatchObject({
+			minimum: 1,
+			maximum: MAX_TIMER_MS,
+		})
+	})
+
+	it('refuses a concurrency past the safe integers on both the definition and the patch', () => {
+		const definition: WorkflowDefinition = {
+			id: 'w',
+			name: 'W',
+			phases: [{ id: 'p', name: 'P', tasks: [], concurrency: Number.MAX_SAFE_INTEGER + 1 }],
+		}
+		expect(contract.is(definition)).toBe(false)
+		expect(createContract(phaseUpdateShape).is({ concurrency: Number.MAX_SAFE_INTEGER + 1 })).toBe(
+			false,
+		)
+		expect(createContract(phaseUpdateShape).is({ concurrency: Number.MAX_SAFE_INTEGER })).toBe(true)
+	})
+
+	it('generates a concurrency a phase can actually run', () => {
+		const generated = createContract(phaseShape).generate()
+		expect(
+			generated.concurrency === undefined || generated.concurrency <= Number.MAX_SAFE_INTEGER,
+		).toBe(true)
 	})
 
 	it('rejects a NEGATIVE retries (the min:0 refinement)', () => {

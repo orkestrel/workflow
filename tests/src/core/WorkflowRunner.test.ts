@@ -13,7 +13,10 @@ import {
 	createPacedRunner,
 	buildFunctionTask,
 	buildHostileString,
+	buildMisspeltDefinition,
 	buildRunnerDefinition,
+	INVALID_CONCURRENCIES,
+	INVALID_TIMER_BOUNDS,
 	createOrderFunction,
 	buildReliableTask,
 	createAbortSibling,
@@ -38,11 +41,14 @@ import type { TaskEvent } from '../../setup.js'
 import { createTokenBudget } from '@orkestrel/budget'
 import {
 	createMemoryWorkflowStore,
+	createRestoredWorkflow,
 	createScheduler,
 	createWorkflow,
 	createWorkflowRunner,
+	definitionToSnapshot,
 	isWorkflowError,
 	MAX_TIMER_MS,
+	Workflow,
 } from '@src/core'
 import { describe, expect, it, vi } from 'vitest'
 import { createRecorder, createRecorders, waitForDelay } from '@orkestrel/test'
@@ -147,7 +153,10 @@ describe('WorkflowRunner — phases sequential, tasks concurrent', () => {
 				},
 			},
 		})
-		const result = await createPacedRunner().execute(buildRunnerDefinition([]), options)
+		const result = await createPacedRunner().execute(
+			buildRunnerDefinition([{ id: 'a', tasks: [{ id: 't0', name: 't0' }] }]),
+			options,
+		)
 		expect(result.status).toBe('completed')
 		expect(result.durable).toBe(true)
 		expect(signalReads.value).toBe(1)
@@ -391,31 +400,79 @@ describe('WorkflowRunner — per-phase throttle', () => {
 	})
 })
 
-describe('WorkflowRunner — an executed no-op tree settles completed (F1)', () => {
-	it('a zero-phase definition settles completed (not pending)', async () => {
+describe('WorkflowRunner — a tree with no task refuses at run start', () => {
+	it('a zero-phase definition rejects SCHEDULE instead of settling completed', async () => {
 		const definition = buildRunnerDefinition([])
-		const result = await createPacedRunner().execute(definition)
-		expect(result.status).toBe('completed')
-		expect(result.workflow.status).toBe('completed')
-		expect(result.results).toEqual([])
+		await expect(createPacedRunner().execute(definition)).rejects.toMatchObject({
+			code: 'SCHEDULE',
+			context: { workflow: 'wf' },
+		})
 	})
 
-	it('a single empty-task phase settles completed', async () => {
+	it('a single empty-task phase rejects SCHEDULE', async () => {
 		const definition = buildRunnerDefinition([{ id: 'a', tasks: [] }])
-		const result = await createPacedRunner().execute(definition)
-		expect(result.status).toBe('completed')
-		expect(result.workflow.status).toBe('completed')
-		expect(result.workflow.phase('a')?.status).toBe('pending')
+		await expect(createPacedRunner().execute(definition)).rejects.toMatchObject({
+			code: 'SCHEDULE',
+		})
 	})
 
-	it('multiple empty phases settle completed', async () => {
+	it('multiple empty phases reject SCHEDULE', async () => {
 		const definition = buildRunnerDefinition([
 			{ id: 'a', tasks: [] },
 			{ id: 'b', tasks: [] },
 		])
-		const result = await createPacedRunner().execute(definition)
+		await expect(createPacedRunner().execute(definition)).rejects.toMatchObject({
+			code: 'SCHEDULE',
+		})
+	})
+
+	it('a live workflow emptied by removal rejects the same and stays drivable once work lands', async () => {
+		const workflow = createWorkflow(
+			buildRunnerDefinition([{ id: 'a', tasks: [{ id: 't0', name: 't0' }] }]),
+		)
+		expect(workflow.phase('a')?.remove('t0').success).toBe(true)
+		const runner = createPacedRunner()
+
+		await expect(runner.execute(workflow)).rejects.toMatchObject({ code: 'SCHEDULE' })
+		expect(workflow.status).toBe('pending')
+
+		expect(workflow.phase('a')?.add({ id: 't1', name: 't1' }).success).toBe(true)
+		const result = await runner.execute(workflow)
 		expect(result.status).toBe('completed')
-		expect(result.workflow.status).toBe('completed')
+	})
+
+	it('a builder path refuses until its task lands, then runs', async () => {
+		const workflow = createWorkflow({ id: 'built', name: 'Built', phases: [] })
+		const runner = createPacedRunner()
+
+		await expect(runner.execute(workflow)).rejects.toMatchObject({ code: 'SCHEDULE' })
+
+		expect(workflow.add({ id: 'a', name: 'A', tasks: [{ id: 't0', name: 't0' }] }).success).toBe(
+			true,
+		)
+		const result = await runner.execute(workflow)
+		expect(result.status).toBe('completed')
+		expect(result.workflow.phase('a')?.task('t0')?.status).toBe('completed')
+	})
+
+	it('a terminal empty workflow stays a TRANSITION refusal, the state speaking first', () => {
+		const workflow = createWorkflow({ id: 'built', name: 'Built', phases: [] })
+		workflow.stop()
+		expect(() => createPacedRunner().execute(workflow)).toThrow(/not drivable/)
+	})
+
+	it('a tree emptied while parked mid-run settles completed, the vacuous end of a started run', async () => {
+		const workflow = createWorkflow(
+			buildRunnerDefinition([{ id: 'a', tasks: [{ id: 't0', name: 't0' }] }]),
+		)
+		workflow.pause()
+		const running = createPacedRunner().execute(workflow)
+		expect(workflow.phase('a')?.remove('t0').success).toBe(true)
+		workflow.resume()
+
+		const result = await running
+		expect(result.status).toBe('completed')
+		expect(result.results).toEqual([])
 	})
 
 	it('a normal completed run is unchanged (the gate does not double-force)', async () => {
@@ -444,11 +501,11 @@ describe('WorkflowRunner — an executed no-op tree settles completed (F1)', () 
 		expect(result.workflow.phase('a')?.task('t0')?.status).toBe('failed')
 	})
 
-	it('a cancelled empty-ish run settles stopped (the cancel path wins, never completed)', async () => {
+	it('a run cancelled at entry settles stopped (the cancel path wins, never completed)', async () => {
 		const budget = createTokenBudget({ max: 0 })
 		const definition = buildRunnerDefinition([
-			{ id: 'a', tasks: [] },
-			{ id: 'b', tasks: [] },
+			{ id: 'a', tasks: [{ id: 't0', name: 't0' }] },
+			{ id: 'b', tasks: [{ id: 't1', name: 't1' }] },
 		])
 		const result = await createPacedRunner().execute(definition, { budget })
 		expect(result.status).toBe('stopped')
@@ -475,14 +532,51 @@ describe('WorkflowRunner — an executed no-op tree settles completed (F1)', () 
 	})
 })
 
-describe('WorkflowRunner — non-positive phase concurrency is clamped (F2)', () => {
-	it('a concurrency:0 phase runs every task and completes (clamped to the default)', async () => {
-		const ran = createRecorder<readonly [string]>()
+describe('WorkflowRunner — a phase concurrency outside the positive safe integers refuses', () => {
+	for (const concurrency of INVALID_CONCURRENCIES) {
+		it(`a concurrency of ${concurrency} rejects SCHEDULE before any task runs`, async () => {
+			const ran = createRecorder<readonly [string]>()
+			const definition = buildRunnerDefinition([
+				{
+					id: 'a',
+					concurrency,
+					tasks: [buildFunctionTask('t0', 'fn'), buildFunctionTask('t1', 'fn')],
+				},
+			])
 
+			await expect(
+				createPacedRunner().execute(definition, {
+					functions: {
+						fn: (controller) => {
+							ran.handler(controller.task.id)
+							return controller.task.id
+						},
+					},
+				}),
+			).rejects.toMatchObject({ code: 'SCHEDULE' })
+			expect(ran.count).toBe(0)
+		})
+
+		it(`a hand-built tree carrying a concurrency of ${concurrency} refuses at run start, naming the phase`, async () => {
+			const workflow = new Workflow(
+				definitionToSnapshot(
+					buildRunnerDefinition([{ id: 'a', concurrency, tasks: [{ id: 't0', name: 't0' }] }]),
+				),
+			)
+
+			await expect(createPacedRunner().execute(workflow)).rejects.toMatchObject({
+				code: 'SCHEDULE',
+				context: { phase: 'a' },
+			})
+			expect(workflow.status).toBe('pending')
+		})
+	}
+
+	it('an omitted concurrency runs every task at once', async () => {
+		const ran = createRecorder<readonly [string]>()
 		const definition = buildRunnerDefinition([
 			{
 				id: 'a',
-				concurrency: 0,
 				tasks: [
 					buildFunctionTask('t0', 'fn'),
 					buildFunctionTask('t1', 'fn'),
@@ -500,35 +594,35 @@ describe('WorkflowRunner — non-positive phase concurrency is clamped (F2)', ()
 		})
 		expect(result.status).toBe('completed')
 		expect([...ran.calls].map((c) => c[0]).sort()).toEqual(['t0', 't1', 't2'])
-		expect(result.workflow.phase('a')?.task('t0')?.status).toBe('completed')
-		expect(result.workflow.phase('a')?.task('t1')?.status).toBe('completed')
-		expect(result.workflow.phase('a')?.task('t2')?.status).toBe('completed')
+	})
+})
+
+describe('WorkflowRunner — the definition door', () => {
+	it('a misspelt key rejects SCHEDULE with its extra fault and runs nothing', async () => {
+		const ran = createRecorder<readonly [string]>()
+		await expect(
+			createPacedRunner().execute(buildMisspeltDefinition(), {
+				functions: {
+					compile: (controller) => {
+						ran.handler(controller.task.id)
+						return controller.task.id
+					},
+				},
+			}),
+		).rejects.toMatchObject({
+			code: 'SCHEDULE',
+			context: {
+				faults: [{ reason: 'extra', path: ['phases', '0', 'tasks', '0', 'behaviour'] }],
+			},
+		})
+		expect(ran.count).toBe(0)
 	})
 
-	it('a concurrency:-1 phase runs every task and completes (clamped to the default)', async () => {
-		const ran = createRecorder<readonly [string]>()
-
-		const definition = buildRunnerDefinition([
-			{
-				id: 'a',
-				concurrency: -1,
-				tasks: [
-					buildFunctionTask('t0', 'fn'),
-					buildFunctionTask('t1', 'fn'),
-					buildFunctionTask('t2', 'fn'),
-				],
-			},
-		])
-		const result = await createPacedRunner().execute(definition, {
-			functions: {
-				fn: (controller) => {
-					ran.handler(controller.task.id)
-					return controller.task.id
-				},
-			},
+	it('a run-time silence outside its bound rejects rather than throwing', async () => {
+		const definition = buildRunnerDefinition([{ id: 'a', tasks: [{ id: 't0', name: 't0' }] }])
+		await expect(createPacedRunner().execute(definition, { silence: 0 })).rejects.toMatchObject({
+			code: 'SCHEDULE',
 		})
-		expect(result.status).toBe('completed')
-		expect([...ran.calls].map((c) => c[0]).sort()).toEqual(['t0', 't1', 't2'])
 	})
 })
 
@@ -1027,7 +1121,9 @@ describe('WorkflowRunner — budget / timeout fold', () => {
 				return Promise.resolve()
 			},
 		})
-		const workflow = createWorkflow(buildRunnerDefinition([]))
+		const workflow = createWorkflow(
+			buildRunnerDefinition([{ id: 'a', tasks: [{ id: 't0', name: 't0' }] }]),
+		)
 		const before = process
 			.getActiveResourcesInfo()
 			.filter((resource) => resource === 'Timeout').length
@@ -1080,39 +1176,108 @@ describe('WorkflowRunner — budget / timeout fold', () => {
 		expect(result.workflow.phase('a')?.task('t0')?.status).toBe('skipped')
 	})
 
-	it('a non-positive timeout (0) arms NO deadline — the run completes normally', async () => {
+	for (const timeout of INVALID_TIMER_BOUNDS) {
+		it(`a run timeout of ${timeout} rejects SCHEDULE and runs nothing`, async () => {
+			const order: string[] = []
+			const definition = buildRunnerDefinition([
+				{ id: 'a', tasks: [buildFunctionTask('t0', 'f')] },
+				{ id: 'b', tasks: [buildFunctionTask('t1', 'f')] },
+			])
+			await expect(
+				createPacedRunner().execute(definition, {
+					functions: { f: createOrderFunction(order) },
+					timeout,
+				}),
+			).rejects.toMatchObject({ code: 'SCHEDULE', context: { option: 'timeout' } })
+			expect(order).toEqual([])
+		})
+
+		it(`a task timeout of ${timeout} rejects SCHEDULE and runs nothing`, async () => {
+			const order: string[] = []
+			const definition = buildRunnerDefinition([
+				{ id: 'a', tasks: [{ ...buildFunctionTask('t0', 'f'), timeout }] },
+			])
+			await expect(
+				createPacedRunner().execute(definition, { functions: { f: createOrderFunction(order) } }),
+			).rejects.toMatchObject({ code: 'SCHEDULE' })
+			expect(order).toEqual([])
+		})
+	}
+
+	it('a run timeout at the host maximum arms and the run completes', async () => {
 		const order: string[] = []
-		const definition = buildRunnerDefinition([
-			{ id: 'a', tasks: [buildFunctionTask('t0', 'f')] },
-			{ id: 'b', tasks: [buildFunctionTask('t1', 'f')] },
-		])
+		const definition = buildRunnerDefinition([{ id: 'a', tasks: [buildFunctionTask('t0', 'f')] }])
 		const result = await createPacedRunner().execute(definition, {
 			functions: { f: createOrderFunction(order) },
-			timeout: 0,
+			timeout: MAX_TIMER_MS,
 		})
 		expect(result.status).toBe('completed')
-		expect(order).toEqual(['t0', 't1'])
-		expect(result.workflow.phase('b')?.task('t1')?.status).toBe('completed')
+		expect(order).toEqual(['t0'])
 	})
 
-	it('an over-max run timeout is disabled instead of overflowing into immediate cancellation', async () => {
-		const completed = createRecorder<readonly [string]>()
+	it('a refused run timeout leaves a live workflow unclaimed, so a corrected call runs it', async () => {
+		const workflow = createWorkflow(
+			buildRunnerDefinition([{ id: 'a', tasks: [{ id: 't0', name: 't0' }] }]),
+		)
+		const runner = createPacedRunner()
 
-		const definition = buildRunnerDefinition([
-			{ id: 'a', tasks: [buildFunctionTask('t0', 'delayed')] },
-		])
-		const result = await createPacedRunner().execute(definition, {
-			functions: {
-				delayed: async (controller) => {
-					await waitForDelay(10)
-					completed.handler(controller.task.id)
-					return controller.task.id
-				},
-			},
-			timeout: MAX_TIMER_MS + 1,
+		await expect(runner.execute(workflow, { timeout: 0 })).rejects.toMatchObject({
+			code: 'SCHEDULE',
 		})
+		expect(workflow.status).toBe('pending')
+
+		const result = await runner.execute(workflow, { timeout: MAX_TIMER_MS })
 		expect(result.status).toBe('completed')
-		expect(completed.calls.map((call) => call[0])).toEqual(['t0'])
+	})
+
+	it('a restored snapshot carrying timeout 0 stays readable and refuses at run, naming the task and the remedy', async () => {
+		const snapshot = createWorkflow(
+			buildRunnerDefinition([{ id: 'a', tasks: [{ id: 't0', name: 't0' }] }]),
+		).snapshot()
+		const carried: unknown = {
+			...snapshot,
+			phases: snapshot.phases.map((phase) => ({
+				...phase,
+				tasks: phase.tasks.map((task) => ({ ...task, timeout: 0 })),
+			})),
+		}
+		const restored = createRestoredWorkflow(carried)
+		expect(restored.phase('a')?.task('t0')?.timeout).toBe(0)
+
+		await expect(createPacedRunner().execute(restored)).rejects.toMatchObject({
+			code: 'SCHEDULE',
+			context: { task: 't0' },
+			message: expect.stringMatching(/'t0'.*drop the key/u),
+		})
+		expect(restored.status).toBe('pending')
+	})
+
+	it('a settled task carrying timeout 0 refuses nothing, because it never runs again', async () => {
+		const workflow = createWorkflow(
+			buildRunnerDefinition([
+				{
+					id: 'a',
+					tasks: [
+						{ id: 't0', name: 't0' },
+						{ id: 't1', name: 't1' },
+					],
+				},
+			]),
+		)
+		workflow.phase('a')?.task('t0')?.start()
+		workflow.phase('a')?.task('t0')?.complete('done')
+		const snapshot = workflow.snapshot()
+		const carried: unknown = {
+			...snapshot,
+			phases: snapshot.phases.map((phase) => ({
+				...phase,
+				tasks: phase.tasks.map((task) => (task.id === 't0' ? { ...task, timeout: 0 } : task)),
+			})),
+		}
+
+		const result = await createPacedRunner().execute(createRestoredWorkflow(carried))
+		expect(result.status).toBe('completed')
+		expect(result.workflow.phase('a')?.task('t1')?.status).toBe('completed')
 	})
 })
 

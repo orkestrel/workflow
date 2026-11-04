@@ -1,8 +1,8 @@
-import type { Guard, Result } from '@orkestrel/contract'
+import type { ContractInterface, Result } from '@orkestrel/contract'
 import type { CollectionEntry, CollectionInterface } from './types.js'
-import { failure, success } from '@orkestrel/contract'
+import { attempt, failure, isRecord, success } from '@orkestrel/contract'
 import { WorkflowError } from './errors.js'
-import { insertEntry, moveEntry } from './helpers.js'
+import { describeFaults, insertEntry, moveEntry } from './helpers.js'
 
 /**
  * Implements the insertion-ordered gated store both lean managers hold — entities keyed by `id`,
@@ -27,11 +27,10 @@ import { insertEntry, moveEntry } from './helpers.js'
  *
  * @example
  * ```ts
- * import { compileGuard } from '@orkestrel/contract'
- * import { Collection, taskUpdateShape } from '@orkestrel/workflow'
+ * import { Collection, taskUpdateContract } from '@orkestrel/workflow'
  * import type { TaskInterface, TaskUpdate } from '@orkestrel/workflow'
  *
- * const tasks = new Collection<TaskInterface, TaskUpdate>('task', compileGuard(taskUpdateShape))
+ * const tasks = new Collection<TaskInterface, TaskUpdate>('task', taskUpdateContract)
  * tasks.append(task) // a live Task
  * tasks.entry(task.id) // the same task
  * tasks.entries() // [task]
@@ -50,12 +49,12 @@ export class Collection<
 	// The entity noun every refusal message names, so a task store and a phase store report the
 	// same gate in their own vocabulary.
 	readonly #noun: string
-	// The compiled guard validating a patch before it reaches the entity's own `patch`.
-	readonly #isPatch: Guard<TPatch>
+	// The compiled contract validating a patch before it reaches the entity's own `patch`.
+	readonly #patch: ContractInterface<TPatch>
 
-	constructor(noun: string, patch: Guard<TPatch>) {
+	constructor(noun: string, patch: ContractInterface<TPatch>) {
 		this.#noun = noun
-		this.#isPatch = patch
+		this.#patch = patch
 	}
 
 	get count(): number {
@@ -107,9 +106,25 @@ export class Collection<
 	update(id: string, patch: TPatch): Result<TEntry, WorkflowError> {
 		const target = this.#pending(id)
 		if (target === undefined) return this.#refuse(id)
-		if (!this.#isPatch(patch)) {
+		if (!this.#patch.is(patch)) {
+			// The guard is total; the audit reads the patch again, and an unreadable one has no report.
+			const audited = attempt(() => this.#patch.audit(patch))
+			const faults = audited.success ? audited.value : []
 			return failure(
-				new WorkflowError('MUTATION', `invalid patch for ${this.#noun} '${id}'`, { id }),
+				new WorkflowError('MUTATION', describeFaults(`patch for ${this.#noun} '${id}'`, faults), {
+					id,
+					faults,
+				}),
+			)
+		}
+		if (isRecord(patch) && Object.keys(patch).length === 0) {
+			const keys = Object.keys(this.#patch.schema.properties ?? {}).join(', ')
+			return failure(
+				new WorkflowError(
+					'MUTATION',
+					`patch for ${this.#noun} '${id}' changes nothing; set at least one of ${keys}`,
+					{ id, faults: [] },
+				),
 			)
 		}
 		target.patch(patch)

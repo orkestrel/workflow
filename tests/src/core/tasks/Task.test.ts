@@ -10,6 +10,7 @@ import {
 	requireWorkflowTask,
 	readWorkflowCode,
 	buildWorkflowClaim,
+	INVALID_TIMER_BOUNDS,
 	WorkflowObservation,
 	createErrorRecorder,
 	TASK_EVENTS,
@@ -315,13 +316,31 @@ describe('Task — activity, liveness, and cooperative control', () => {
 		expect(events.silence.count).toBe(3)
 	})
 
-	it('allows a task override to disable inherited silence and releases pause on stop', async () => {
+	for (const silence of INVALID_TIMER_BOUNDS) {
+		it(`refuses a silence of ${silence} at both tiers instead of running unsupervised`, () => {
+			const inherited = captureError(() =>
+				createWorkflow({ id: 'wf', name: 'WF', phases: [] }, { silence }),
+			)
+			const override = captureError(() =>
+				createWorkflow(buildSingleTaskWorkflow(), {
+					silence: 10,
+					phases: { p: { tasks: { t: { silence } } } },
+				}),
+			)
+
+			expect(isWorkflowError(inherited) && inherited.code).toBe('SCHEDULE')
+			expect(isWorkflowError(inherited) && inherited.context?.option).toBe('silence')
+			expect(isWorkflowError(override) && override.code).toBe('SCHEDULE')
+		})
+	}
+
+	it('lets a task override widen inherited silence and releases pause on stop', async () => {
 		const workflow = createWorkflow(buildSingleTaskWorkflow(), {
 			silence: 10,
-			phases: { p: { tasks: { t: { silence: 0 } } } },
+			phases: { p: { tasks: { t: { silence: MAX_TIMER_MS } } } },
 		})
 		const task = requireWorkflowTask(workflow)
-		expect(task.silence).toBeUndefined()
+		expect(task.silence).toBe(MAX_TIMER_MS)
 		task.pause()
 		const waiting = task.wait()
 		expect(task.paused).toBe(true)
@@ -335,7 +354,7 @@ describe('Task — activity, liveness, and cooperative control', () => {
 		expect(skipped.signal.aborted).toBe(true)
 	})
 
-	it('accepts the host timer maximum and disables overflow without immediate silence', async () => {
+	it('accepts the host timer maximum without an immediate silence', async () => {
 		const maximum = requireWorkflowTask(
 			createWorkflow(buildSingleTaskWorkflow(), { silence: MAX_TIMER_MS }),
 		)
@@ -346,17 +365,10 @@ describe('Task — activity, liveness, and cooperative control', () => {
 		expect(maximum.silent).toBe(false)
 		expect(maximumEvents.silence.count).toBe(0)
 		maximum.stop()
+	})
 
-		const overflow = requireWorkflowTask(
-			createWorkflow(buildSingleTaskWorkflow(), { silence: MAX_TIMER_MS + 1 }),
-		)
-		const overflowEvents = createRecorders<TaskEventMap, TaskEvent>(overflow.emitter, TASK_EVENTS)
-		overflow.start()
-		await waitForDelay(2)
-		expect(overflow.silence).toBeUndefined()
-		expect(overflow.silent).toBe(false)
-		expect(overflowEvents.silence.count).toBe(0)
-		overflow.stop()
+	it('holds no silence window only when both tiers omit it', () => {
+		expect(requireWorkflowTask(createWorkflow(buildSingleTaskWorkflow())).silence).toBeUndefined()
 	})
 })
 

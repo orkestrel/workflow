@@ -6,9 +6,8 @@ import type {
 	WorkflowPersistenceInterface,
 	WorkflowRunOptions,
 } from './types.js'
-import { isFiniteNumber } from '@orkestrel/contract'
 import { createTimeout } from '@orkestrel/timeout'
-import { MAX_TIMER_MS } from './constants.js'
+import { requireTimerBound } from './helpers.js'
 import { WorkflowPersistence } from './WorkflowPersistence.js'
 
 /** Owns the bounds, durability, and live phase cursor of one workflow execution. */
@@ -36,9 +35,7 @@ export class WorkflowExecution implements WorkflowExecutionInterface {
 		store: WorkflowRunOptions['store'],
 	): AbortSignal {
 		this.#timeout =
-			ms !== undefined && isFiniteNumber(ms) && ms > 0 && ms <= MAX_TIMER_MS
-				? createTimeout({ ms })
-				: undefined
+			ms === undefined ? undefined : createTimeout({ ms: requireTimerBound(ms, 'timeout') })
 		this.#timeout?.start()
 		budget?.start()
 		this.#signal = this.#fold(workflow, signal, budget)

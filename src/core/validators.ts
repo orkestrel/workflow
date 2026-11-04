@@ -21,6 +21,7 @@ import {
 	isRecord,
 	isString,
 } from '@orkestrel/contract'
+import { isQueueConcurrency } from '@orkestrel/queue'
 import { LIFECYCLE_STATUSES, MAX_TIMER_MS } from './constants.js'
 import { derivePhaseStatus, deriveWorkflowStatus, isTaskResult } from './helpers.js'
 
@@ -42,6 +43,22 @@ import { derivePhaseStatus, deriveWorkflowStatus, isTaskResult } from './helpers
  */
 export function isLifecycleStatus(value: unknown): value is LifecycleStatus {
 	return LIFECYCLE_STATUSES.some((status) => status === value)
+}
+
+/**
+ * Checks whether a value is a usable timer bound, an integer from `1` through `MAX_TIMER_MS`.
+ *
+ * @param value - The value to test
+ * @returns True if a host timer can arm `value` as a deadline; false otherwise
+ *
+ * @example
+ * ```ts
+ * isTimerBound(5_000) // true
+ * isTimerBound(0) // false
+ * ```
+ */
+export function isTimerBound(value: unknown): value is number {
+	return isInteger(value) && value >= 1 && value <= MAX_TIMER_MS
 }
 
 /**
@@ -190,8 +207,7 @@ export function isOwnedWorkflowSnapshot(value: unknown): value is WorkflowSnapsh
 					phase.override !== 'skipped' &&
 					phase.override !== 'stopped') ||
 				!isBoolean(phase.bail) ||
-				(phase.concurrency !== undefined &&
-					(!isInteger(phase.concurrency) || phase.concurrency < 1)) ||
+				(phase.concurrency !== undefined && !isQueueConcurrency(phase.concurrency)) ||
 				!isArray(phase.tasks)
 			) {
 				return false
@@ -242,6 +258,7 @@ export function isOwnedWorkflowSnapshot(value: unknown): value is WorkflowSnapsh
 					task.attempts < 0 ||
 					(task.behavior !== undefined && !isNonEmptyString(task.behavior)) ||
 					(task.retries !== undefined && (!isInteger(task.retries) || task.retries < 0)) ||
+					// A persisted 0 stays readable so an earlier snapshot can be inspected; the run refuses it.
 					(task.timeout !== undefined &&
 						(!isInteger(task.timeout) || task.timeout < 0 || task.timeout > MAX_TIMER_MS))
 				) {

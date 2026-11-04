@@ -24,7 +24,7 @@ import type {
 	WorkflowSnapshot,
 	WorkflowStoreInterface,
 } from '@src/core'
-import { compileGuard, failure, success } from '@orkestrel/contract'
+import { failure, success } from '@orkestrel/contract'
 import { createAbort } from '@orkestrel/abort'
 import { createRecorder, requireValue } from '@orkestrel/test'
 import {
@@ -36,10 +36,72 @@ import {
 	createWorkflow,
 	createWorkflowRunner,
 	isWorkflowError,
-	taskUpdateShape,
+	MAX_TIMER_MS,
+	taskUpdateContract,
 } from '@src/core'
 import { Controller } from '../src/core/Controller.js'
 import { TaskController } from '../src/core/tasks/TaskController.js'
+
+/** Lists the values a run `timeout`, a task `timeout`, and a `silence` window must refuse. */
+export const INVALID_TIMER_BOUNDS: readonly number[] = Object.freeze([
+	0,
+	-1,
+	0.5,
+	1.5,
+	Number.NaN,
+	Number.POSITIVE_INFINITY,
+	MAX_TIMER_MS + 1,
+])
+
+/** Lists the values a phase `concurrency` must refuse, each outside the positive safe integers. */
+export const INVALID_CONCURRENCIES: readonly number[] = Object.freeze([
+	0,
+	-1,
+	1.5,
+	Number.NaN,
+	Number.POSITIVE_INFINITY,
+	Number.MAX_SAFE_INTEGER + 1,
+])
+
+/** Builds a definition whose one misspelt task key `behaviour` the door must refuse. */
+export function buildMisspeltDefinition(): {
+	readonly id: string
+	readonly name: string
+	readonly phases: ReadonlyArray<{
+		readonly id: string
+		readonly name: string
+		readonly tasks: ReadonlyArray<{
+			readonly id: string
+			readonly name: string
+			readonly behaviour: string
+		}>
+	}>
+} {
+	return {
+		id: 'wf',
+		name: 'WF',
+		phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', behaviour: 'compile' }] }],
+	}
+}
+
+/** Builds a definition of `count` tasks whose string `timeout` each earn one repairable audit fault. */
+export function buildRepairableDefinition(count: number): Readonly<Record<string, unknown>> {
+	return {
+		id: 'wf',
+		name: 'WF',
+		phases: [
+			{
+				id: 'p',
+				name: 'P',
+				tasks: Array.from({ length: count }, (_unused, index) => ({
+					id: `t${index}`,
+					name: `T${index}`,
+					timeout: '5000',
+				})),
+			},
+		],
+	}
+}
 
 /** Builds an activity fixture with an own enumerable timestamp getter. */
 export function buildActivityStamp(
@@ -949,7 +1011,7 @@ export function buildTasks(): readonly [TaskInterface, TaskInterface, TaskInterf
  * @returns A fresh collection holding no entries
  */
 export function buildCollection(noun = 'task'): Collection<TaskInterface, TaskUpdate> {
-	return new Collection<TaskInterface, TaskUpdate>(noun, compileGuard(taskUpdateShape))
+	return new Collection<TaskInterface, TaskUpdate>(noun, taskUpdateContract)
 }
 
 /**

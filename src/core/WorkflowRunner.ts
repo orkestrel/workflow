@@ -1,5 +1,5 @@
 import type { JSONValue } from '@orkestrel/contract'
-import { errorToMessage, failure, isBoolean, isFiniteNumber } from '@orkestrel/contract'
+import { attempt as attemptCall, errorToMessage, failure, isBoolean } from '@orkestrel/contract'
 import type { TimeoutInterface } from '@orkestrel/timeout'
 import type {
 	AttemptOutcome,
@@ -19,7 +19,7 @@ import type {
 	WorkflowRunnerInterface,
 } from './types.js'
 import { createTimeout } from '@orkestrel/timeout'
-import { DEFAULT_PHASE_CONCURRENCY, MAX_TIMER_MS } from './constants.js'
+import { DEFAULT_PHASE_CONCURRENCY } from './constants.js'
 import { WorkflowError } from './errors.js'
 import { createWorkflowTree } from './factories.js'
 import {
@@ -31,6 +31,7 @@ import {
 	isStoppable,
 	isTerminalStatus,
 	ownsAttempt,
+	requireRunnable,
 } from './helpers.js'
 import { isWorkflowInterface } from './validators.js'
 import { RunHolder } from './RunHolder.js'
@@ -156,7 +157,8 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 	 * and `stop`s the run. `execute` resolves (never rejects) on a cancel — the partial outcome
 	 * is read from the returned {@link WorkflowResult} (its `workflow` / `status` / `results`).
 	 * An unexpected scheduler or engine-infrastructure failure rejects after remaining work is
-	 * stopped, swept, and final persistence is attempted.
+	 * stopped, swept, and final persistence is attempted. A refused definition, a tree with no
+	 * task, and a bound out of range reject before any task runs.
 	 *
 	 * @param definition - The {@link WorkflowDefinition} to build the live tree from and drive
 	 * @param options - The construction options ({@link WorkflowOptions}: `on` / `bail` /
@@ -212,8 +214,7 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 			const timeout = options?.timeout
 			const budget = options?.budget
 			const store = options?.store
-			this.#acquire(target)
-			return this.#execute(target, signal, timeout, budget, store)
+			return this.#acquire(target, signal, timeout, budget, store)
 		}
 		const captured = captureWorkflowOptions(options)
 		const signal = options?.signal
@@ -227,12 +228,21 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 		// bounds (signal/timeout/budget) feed the fold in `#execute`. The tree goes through the one
 		// shared `createWorkflowTree` path `createWorkflow` and `WorkflowManager` also take, so a
 		// definition run and a hand-built tree can never diverge.
-		const workflow = createWorkflowTree(target, captured)
-		this.#acquire(workflow)
-		return this.#execute(workflow, signal, timeout, budget, store)
+		// A refused definition rejects, the one settlement path a refused run bound also takes.
+		const built = attemptCall(() => createWorkflowTree(target, captured))
+		if (!built.success) return Promise.reject(built.error)
+		return this.#acquire(built.value, signal, timeout, budget, store)
 	}
 
-	#acquire(workflow: WorkflowInterface): void {
+	// The state refusal throws; a refused bound or a tree with no task rejects before the claim, so a
+	// caller can correct the call and drive the same workflow.
+	#acquire(
+		workflow: WorkflowInterface,
+		signal: AbortSignal | undefined,
+		ms: number | undefined,
+		budget: WorkflowRunOptions['budget'],
+		store: WorkflowRunOptions['store'],
+	): Promise<WorkflowResult> {
 		const tasks = workflow.phases.phases().flatMap((phase) => phase.tasks.tasks())
 		const runnable =
 			(workflow.status === 'pending' || workflow.status === 'running') &&
@@ -246,7 +256,10 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 				destroyed: workflow.destroyed,
 			})
 		}
+		const refused = attemptCall(() => requireRunnable(workflow, ms))
+		if (!refused.success) return Promise.reject(refused.error)
 		WorkflowRunner.#executions.add(workflow)
+		return this.#execute(workflow, signal, ms, budget, store)
 	}
 
 	// Drive the whole tree: arm the run-level bounds (the folded abort), run the phases
@@ -265,8 +278,6 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 		// Arm the deadline + budget and fold every present bound — including the live workflow's
 		// own `signal` (fires on `destroy`) — into one run signal the tasks race against, the same
 		// fold the agent runtime uses. A fire of any cancels every in-flight task.
-		// Arm only a host-safe deadline. Non-positive, non-finite, and over-max values disable
-		// the bound instead of clamping into an immediate host-timer cancellation.
 		// On a run-level cancel, abort the active phase's Runner (cancelling its in-flight tasks).
 		// The active Runner is swapped per phase through this run's own holder; a closure over the
 		// holder always fires the current one. A one-shot listener (the run halts once); cleared
@@ -396,13 +407,10 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 			// The effective per-phase failure policy and resource throttle are read straight off the
 			// live phase (V7): `phase.bail` is already the resolved `phase.bail ?? workflow.bail`, and
 			// `phase.concurrency` mirrors the definition/mint it was built from — no definition
-			// correlation needed. Clamp a non-positive concurrency (unbounded / not validated) to the
-			// default — a non-positive throttle means "no throttle declared" ⇒ run them all.
+			// correlation needed. Every entrance refuses a value out of range, so only omission reaches
+			// the default.
 			const bail = phase.bail
-			const concurrency =
-				phase.concurrency !== undefined && phase.concurrency > 0
-					? phase.concurrency
-					: DEFAULT_PHASE_CONCURRENCY
+			const concurrency = phase.concurrency ?? DEFAULT_PHASE_CONCURRENCY
 			// The substrate Queue retries a failed task by re-invoking its handler (`#runTask`), so the
 			// leaf must survive a failed attempt to recover on a later one. This run-local map counts each
 			// task's attempts (by id) so `#runTask` can defer the leaf `fail` until the final attempt
@@ -549,10 +557,7 @@ export class WorkflowRunner implements WorkflowRunnerInterface {
 			return
 		}
 		const ms = task.timeout
-		const deadline =
-			ms !== undefined && isFiniteNumber(ms) && ms > 0 && ms <= MAX_TIMER_MS
-				? createTimeout({ ms })
-				: undefined
+		const deadline = ms === undefined ? undefined : createTimeout({ ms })
 		const signal = this.#taskSignal(task, controller.signal, runSignal, deadline)
 		try {
 			// After the attempt owns its slot, start/reset activity before racing every pause gate
