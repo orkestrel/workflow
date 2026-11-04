@@ -1,6 +1,6 @@
 import type { ContractInterface, Result } from '@orkestrel/contract'
 import type { CollectionEntry, CollectionInterface } from './types.js'
-import { failure, success } from '@orkestrel/contract'
+import { failure, preview, success } from '@orkestrel/contract'
 import { WorkflowError } from './errors.js'
 import { admitPatch, insertEntry, moveEntry } from './helpers.js'
 
@@ -63,7 +63,7 @@ export class Collection<
 
 	append(entry: TEntry): void {
 		if (this.#entries.has(entry.id)) {
-			throw new WorkflowError('MUTATION', `duplicate ${this.#noun} id '${entry.id}'`, {
+			throw new WorkflowError('MUTATION', `duplicate ${this.#noun} id ${preview(entry.id)}`, {
 				id: entry.id,
 			})
 		}
@@ -73,7 +73,7 @@ export class Collection<
 	add(entry: TEntry, index?: number): Result<TEntry, WorkflowError> {
 		if (this.#entries.has(entry.id)) {
 			return failure(
-				new WorkflowError('MUTATION', `duplicate ${this.#noun} id '${entry.id}'`, {
+				new WorkflowError('MUTATION', `duplicate ${this.#noun} id ${preview(entry.id)}`, {
 					id: entry.id,
 				}),
 			)
@@ -129,7 +129,9 @@ export class Collection<
 
 	#refuse(id: string): Result<TEntry, WorkflowError> {
 		return failure(
-			new WorkflowError('MUTATION', `${this.#noun} '${id}' is not a pending ${this.#noun}`, { id }),
+			new WorkflowError('MUTATION', `${this.#noun} ${preview(id)} is not a pending ${this.#noun}`, {
+				id,
+			}),
 		)
 	}
 

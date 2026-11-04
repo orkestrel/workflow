@@ -1055,6 +1055,20 @@ export function buildTasks(): readonly [TaskInterface, TaskInterface, TaskInterf
 	]
 }
 
+/** Supplies oversized and multiline ids for collection refusal diagnostics. */
+export const COLLECTION_REFUSAL_IDS = Object.freeze([
+	{
+		title: 'bounds long ids in duplicate and pending refusals while preserving context',
+		id: 'x'.repeat(5000),
+		text: '"xxxx',
+	},
+	{
+		title: 'escapes line breaks in duplicate and pending refusal ids',
+		id: 'first\nsecond',
+		text: '"first\\nsecond"',
+	},
+])
+
 /**
  * Returns an empty {@link Collection} over live tasks, gated by the shipped `taskUpdateShape`
  * compiled through the real {@link compileGuard} — the gated store the

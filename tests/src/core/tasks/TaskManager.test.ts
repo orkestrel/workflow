@@ -183,6 +183,6 @@ describe('TaskManager — add/remove/move/update Result matrix, through Phase', 
 		const error = captureError(() => phase.tasks.append(task))
 
 		expect(isWorkflowError(error) && error.code).toBe('MUTATION')
-		expect(isWorkflowError(error) && error.message).toBe("duplicate task id 't'")
+		expect(isWorkflowError(error) && error.message).toBe('duplicate task id "t"')
 	})
 })

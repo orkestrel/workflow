@@ -32,6 +32,7 @@ import {
 	isNonEmptyString,
 	isRecord,
 	isString,
+	matchesLosslessRepair,
 	preview,
 	success,
 } from '@orkestrel/contract'
@@ -601,8 +602,8 @@ export function describeWorkflowFaults(
  * A value the guard accepts has no fault to report, so it skips both reports. Otherwise the refusal
  * lists every `explain` fault and then every undeclared key from `audit`, and an audit at
  * `FAULT_LIMIT` refuses whole, because a full report can hide a key. What is left is a repair
- * `parse` makes, so the parsed value is what enters. A read that throws, as a value whose reads
- * change can, refuses as unreadable. The workflow shapes declare no union, so no `variant` or
+ * `parse` makes; only a repair that passes `matchesLosslessRepair` enters. A read that throws,
+ * as a value whose reads change can, refuses as unreadable. The workflow shapes declare no union, so no `variant` or
  * `oneOf` fault reaches this door.
  *
  * @typeParam T - The definition the contract describes
@@ -626,19 +627,24 @@ export function admitDefinition<T>(
 ): Result<T, WorkflowError> {
 	// The two reports cost about eight times the guard on a 1000-task definition, and a valid value
 	// is the common case: `audit(v)` is empty iff `is(v)`, and an empty audit implies an empty explain.
-	const report = attemptCall((): readonly AuditFault[] => {
-		if (contract.is(value)) return []
+	const report = attemptCall(() => {
+		if (contract.is(value)) return { faults: [], parsed: contract.parse(value) }
 		const explained = contract.explain(value)
 		const audited = contract.audit(value)
-		return audited.length >= FAULT_LIMIT
-			? audited
-			: [...explained, ...audited.filter((fault) => fault.reason === 'extra')]
+		const faults =
+			audited.length >= FAULT_LIMIT
+				? audited
+				: [...explained, ...audited.filter((fault) => fault.reason === 'extra')]
+		if (faults.length > 0) return { faults, parsed: undefined }
+		const parsed = contract.parse(value)
+		return {
+			faults: audited.filter((fault) => !matchesLosslessRepair(fault, value, parsed)),
+			parsed,
+		}
 	})
-	const parsed = attemptCall(() =>
-		report.success && report.value.length === 0 ? contract.parse(value) : undefined,
-	)
-	if (parsed.success && parsed.value !== undefined) return success(parsed.value)
-	const faults = report.success ? report.value : []
+	if (report.success && report.value.faults.length === 0 && report.value.parsed !== undefined)
+		return success(report.value.parsed)
+	const faults = report.success ? report.value.faults : []
 	return failure(
 		new WorkflowError(code, describeWorkflowFaults(subject, contract.schema, faults), { faults }),
 	)

@@ -6,6 +6,7 @@ import {
 	buildCollection,
 	buildPhaseWorkflow,
 	buildTasks,
+	COLLECTION_REFUSAL_IDS,
 	WorkflowObservation,
 } from '../../setup.js'
 
@@ -15,6 +16,31 @@ import {
 // here is the store's own rather than an owning entity's.
 
 describe('Collection — append (the build-time wiring path)', () => {
+	it.each(COLLECTION_REFUSAL_IDS)('$title', (fixture) => {
+		const id = fixture.id
+		const phase = createWorkflow({
+			id: 'w',
+			name: 'W',
+			phases: [{ id, name: 'P', tasks: [] }],
+		}).phase(id)
+		if (phase === undefined) throw new Error('expected one phase')
+		const store = new Collection<PhaseInterface, PhaseUpdate>('phase', phaseUpdateContract)
+		store.append(phase)
+		const thrown = captureError(() => store.append(phase))
+		const duplicate = store.add(phase)
+		phase.skip()
+		const pending = store.remove(id)
+		if (!isWorkflowError(thrown) || duplicate.success || pending.success)
+			throw new Error('expected refusals')
+		for (const error of [thrown, duplicate.error, pending.error]) {
+			expect(error.code).toBe('MUTATION')
+			expect(error.message.length).toBeLessThan(300)
+			expect(error.message).not.toContain('\n')
+			expect(error.message).toContain(fixture.text)
+			expect(error.context?.id).toBe(id)
+		}
+	})
+
 	it('appends in call order and reads back through entry / entries / count', () => {
 		const [first, second] = buildTasks()
 		const store = buildCollection()
@@ -38,7 +64,7 @@ describe('Collection — append (the build-time wiring path)', () => {
 
 		expect(isWorkflowError(error)).toBe(true)
 		expect(isWorkflowError(error) && error.code).toBe('MUTATION')
-		expect(isWorkflowError(error) && error.message).toBe(`duplicate task id '${first.id}'`)
+		expect(isWorkflowError(error) && error.message).toBe(`duplicate task id "${first.id}"`)
 	})
 
 	it('names the noun the constructor was given, not a hard-coded one', () => {
@@ -50,7 +76,7 @@ describe('Collection — append (the build-time wiring path)', () => {
 			store.append(first)
 		})
 
-		expect(isWorkflowError(error) && error.message).toBe(`duplicate phase id '${first.id}'`)
+		expect(isWorkflowError(error) && error.message).toBe(`duplicate phase id "${first.id}"`)
 	})
 })
 
@@ -77,7 +103,7 @@ describe('Collection — add (the graceful insert)', () => {
 
 		expect(outcome.success).toBe(false)
 		expect(!outcome.success && outcome.error.code).toBe('MUTATION')
-		expect(!outcome.success && outcome.error.message).toBe(`duplicate task id '${first.id}'`)
+		expect(!outcome.success && outcome.error.message).toBe(`duplicate task id "${first.id}"`)
 		expect(store.entries()).toEqual([first, second])
 	})
 
@@ -112,7 +138,7 @@ describe('Collection — remove / move / update share the pending gate', () => {
 
 		const missing = store.remove('absent')
 		expect(missing.success).toBe(false)
-		expect(!missing.success && missing.error.message).toBe(`task 'absent' is not a pending task`)
+		expect(!missing.success && missing.error.message).toBe(`task "absent" is not a pending task`)
 	})
 
 	it('remove refuses a target that is no longer pending', () => {
@@ -126,7 +152,7 @@ describe('Collection — remove / move / update share the pending gate', () => {
 		expect(outcome.success).toBe(false)
 		expect(!outcome.success && outcome.error.code).toBe('MUTATION')
 		expect(!outcome.success && outcome.error.message).toBe(
-			`task '${first.id}' is not a pending task`,
+			`task "${first.id}" is not a pending task`,
 		)
 		expect(store.entry(first.id)).toBe(first)
 	})
@@ -143,13 +169,13 @@ describe('Collection — remove / move / update share the pending gate', () => {
 
 		const missing = store.move('absent', 0)
 		expect(missing.success).toBe(false)
-		expect(!missing.success && missing.error.message).toBe(`task 'absent' is not a pending task`)
+		expect(!missing.success && missing.error.message).toBe(`task "absent" is not a pending task`)
 
 		second.skip()
 		const settled = store.move(second.id, 2)
 		expect(settled.success).toBe(false)
 		expect(!settled.success && settled.error.message).toBe(
-			`task '${second.id}' is not a pending task`,
+			`task "${second.id}" is not a pending task`,
 		)
 	})
 
@@ -298,13 +324,13 @@ describe('Collection — remove / move / update share the pending gate', () => {
 
 		const missing = store.update('absent', { name: 'Renamed task' })
 		expect(missing.success).toBe(false)
-		expect(!missing.success && missing.error.message).toBe(`task 'absent' is not a pending task`)
+		expect(!missing.success && missing.error.message).toBe(`task "absent" is not a pending task`)
 
 		first.skip()
 		const settled = store.update(first.id, { name: 'Renamed again' })
 		expect(settled.success).toBe(false)
 		expect(!settled.success && settled.error.message).toBe(
-			`task '${first.id}' is not a pending task`,
+			`task "${first.id}" is not a pending task`,
 		)
 	})
 })

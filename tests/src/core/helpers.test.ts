@@ -1274,6 +1274,32 @@ describe('requireRunnable — what refuses a run before it claims the tree', () 
 })
 
 describe('admitDefinition — the door a definition enters through', () => {
+	it('refuses a meaning-changing hexadecimal timeout repair and preserves a decimal timeout', () => {
+		const definition = {
+			id: 'w',
+			name: 'W',
+			phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', timeout: '0x10' }] }],
+		}
+		const refused = admitDefinition(workflowContract, definition, 'SCHEDULE', 'workflow definition')
+		expect(refused.success).toBe(false)
+		expect(!refused.success && refused.error.code).toBe('SCHEDULE')
+		expect(!refused.success && refused.error.context?.faults).toEqual([
+			expect.objectContaining({ reason: 'type', path: ['phases', '0', 'tasks', '0', 'timeout'] }),
+		])
+		expect(!refused.success && refused.error.message).toContain('phases.0.tasks.0.timeout')
+		expect(!refused.success && refused.error.message).toContain('expected integer')
+		const admitted = admitDefinition(
+			workflowContract,
+			{
+				...definition,
+				phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', timeout: '5' }] }],
+			},
+			'SCHEDULE',
+			'workflow definition',
+		)
+		expect(admitted.success && admitted.value.phases[0]?.tasks[0]?.timeout).toBe(5)
+	})
+
 	it('hands the parsed value on for a clean definition', () => {
 		const definition: WorkflowDefinition = { id: 'w', name: 'W', phases: [] }
 		const admitted = admitDefinition(
