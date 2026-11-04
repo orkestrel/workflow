@@ -359,7 +359,7 @@ describe('buildCollection', () => {
 		})
 
 		// The noun reached the real constructor, so a caller reads its own vocabulary back.
-		expect(error instanceof Error && error.message).toBe(`duplicate phase id '${first.id}'`)
+		expect(error instanceof Error && error.message).toBe(`duplicate phase id "${first.id}"`)
 	})
 
 	it('defaults the noun to the task vocabulary and wires the real compiled guard', () => {
@@ -371,7 +371,7 @@ describe('buildCollection', () => {
 			store.append(first)
 		})
 
-		expect(duplicate instanceof Error && duplicate.message).toBe(`duplicate task id '${first.id}'`)
+		expect(duplicate instanceof Error && duplicate.message).toBe(`duplicate task id "${first.id}"`)
 		// A permissive stand-in guard would accept the empty `name` the real `taskUpdateShape`
 		// refuses, so this reads the wiring rather than the store's gate.
 		expect(store.update(first.id, { name: '' }).success).toBe(false)

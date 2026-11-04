@@ -12,14 +12,18 @@ import { buildWorkflowContractCases } from '../../setup.js'
 import { createRestoredWorkflow, createWorkflow, isOwnedWorkflowSnapshot } from '@src/core'
 
 describe('workflow contract standing check', () => {
-	it.each(buildWorkflowContractCases())('$name: $direction', (row) => {
-		expect(row.project).toBeUndefined()
-		expect(row.wire.is(row.positive)).toBe(true)
-		expect(row.guard(row.positive)).toBe(true)
-		expect(row.wire.is(row.negative)).toBe(false)
-		const generated = row.wire.generate()
-		expect(row.wire.is(generated)).toBe(true)
-		expect(row.guard(generated)).toBe(true)
+	it.each(buildWorkflowContractCases())('$name: authored admissions and refusals', (row) => {
+		for (const value of row.positives) expect(row.wire.is(value)).toBe(true)
+		for (const value of [
+			...row.negatives,
+			{ undeclared: true },
+			null,
+			undefined,
+			[],
+			new Date(0),
+		]) {
+			expect(row.wire.is(value)).toBe(false)
+		}
 	})
 
 	it('a task definition requires its identity', () => {

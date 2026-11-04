@@ -58,23 +58,62 @@ import {
 	taskDefinitionContract,
 	workflowContract,
 } from '@src/core'
-import { isJSONValue } from '@orkestrel/contract'
 
-/** Pairs each exported contract with the structural JSON guard; workflow has no definition guards. */
+/** Lists authored admissions and refusals independently of the compiled shapes. */
 export function buildWorkflowContractCases() {
 	return [
-		{ name: 'workflow', wire: workflowContract, positive: { id: 'w', name: 'W', phases: [] } },
-		{ name: 'phase', wire: phaseContract, positive: { id: 'p', name: 'P', tasks: [] } },
-		{ name: 'task', wire: taskDefinitionContract, positive: { id: 't', name: 'T' } },
-		{ name: 'task patch', wire: taskUpdateContract, positive: { name: 'T' } },
-		{ name: 'phase patch', wire: phaseUpdateContract, positive: { concurrency: 2 } },
-	].map((row) => ({
-		...row,
-		guard: isJSONValue,
-		direction: 'is implies structural JSON guard',
-		project: undefined,
-		negative: { undeclared: true },
-	}))
+		{
+			name: 'workflow',
+			wire: workflowContract,
+			positives: [
+				{ id: 'w', name: 'W', phases: [] },
+				{ id: 'w', name: 'W', phases: [], bail: false },
+			],
+			negatives: [
+				{ name: 'W', phases: [] },
+				{ id: '', name: 'W', phases: [] },
+				{ id: 'w', name: 'W', phases: [], bail: 1 },
+			],
+		},
+		{
+			name: 'phase',
+			wire: phaseContract,
+			positives: [
+				{ id: 'p', name: 'P', tasks: [] },
+				{ id: 'p', name: 'P', tasks: [], concurrency: 1 },
+			],
+			negatives: [
+				{ name: 'P', tasks: [] },
+				{ id: 'p', name: 'P', tasks: [], concurrency: 0 },
+			],
+		},
+		{
+			name: 'task',
+			wire: taskDefinitionContract,
+			positives: [
+				{ id: 't', name: 'T' },
+				{ id: 't', name: 'T', retries: 0, timeout: MAX_TIMER_MS },
+			],
+			negatives: [
+				{ name: 'T' },
+				{ id: '', name: 'T' },
+				{ id: 't', name: 'T', retries: -1 },
+				{ id: 't', name: 'T', timeout: 0 },
+			],
+		},
+		{
+			name: 'task patch',
+			wire: taskUpdateContract,
+			positives: [{}, { name: 'T' }, { description: '' }],
+			negatives: [{ name: '' }, { timeout: 1 }, { name: 1 }],
+		},
+		{
+			name: 'phase patch',
+			wire: phaseUpdateContract,
+			positives: [{}, { concurrency: 2 }, { bail: false }],
+			negatives: [{ concurrency: 0 }, { tasks: [] }, { bail: 1 }],
+		},
+	]
 }
 
 /** Builds a tree with hostile-length ids at every level. */
