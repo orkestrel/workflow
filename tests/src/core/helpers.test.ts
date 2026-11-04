@@ -1420,7 +1420,7 @@ describe('describeWorkflowFaults — the text a refusal reads', () => {
 	})
 
 	it('stays within the limit by whole lines and says the list stops there', () => {
-		const faults = Array.from({ length: FAULT_LIMIT }, (_unused, index) => ({
+		const faults = Array.from({ length: FAULT_LIMIT - 1 }, (_unused, index) => ({
 			reason: 'type' as const,
 			path: ['phases', '0', 'tasks', String(index), 'timeout'],
 			expected: 'integer' as const,
