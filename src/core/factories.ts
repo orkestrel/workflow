@@ -26,6 +26,7 @@ import {
 	definitionToSnapshot,
 	hasWorkflowHandlers,
 	recoverWorkflowSnapshot,
+	scanDuplicateIds,
 } from './helpers.js'
 import { Scheduler } from './Scheduler.js'
 import { DatabaseWorkflowStore } from './stores/DatabaseWorkflowStore.js'
@@ -206,8 +207,8 @@ export function createWorkflow(
  * The definition door: the {@link import('./contracts.js').workflowContract} `explain` faults
  * refuse, then the undeclared keys its `audit` reports, then an audit at `FAULT_LIMIT`, and the
  * value `parse` returns enters. A refusal is a `SCHEDULE` {@link WorkflowError} whose
- * `context.faults` lists every fault. A definition with no phase or no task is a builder path and
- * passes; a run refuses it.
+ * `context.faults` lists every fault. A repeated id, which a schema cannot say, is a `MUTATION`
+ * one. A definition with no phase or no task is a builder path and passes; a run refuses it.
  *
  * Seeds an initial all-`pending` {@link WorkflowSnapshot} from the definition and constructs the
  * live {@link WorkflowInterface} over it. `bail` is the caller's own override, forwarded to
@@ -244,6 +245,8 @@ export function createWorkflowTree(
 ): WorkflowInterface {
 	const admitted = admitDefinition(workflowContract, definition, 'SCHEDULE', 'workflow definition')
 	if (!admitted.success) throw admitted.error
+	const repeated = scanDuplicateIds(admitted.value.phases)
+	if (repeated !== undefined) throw repeated
 	return new Workflow(definitionToSnapshot(admitted.value, captured.bail), captured)
 }
 
@@ -283,9 +286,7 @@ export function createRestoredWorkflow(
 	snapshot: unknown,
 	options?: WorkflowOptions,
 ): WorkflowInterface {
-	const captured = captureWorkflowOptions(options)
-	const owned = cloneWorkflowSnapshot(snapshot)
-	return new Workflow(owned, captured)
+	return new Workflow(snapshot, options)
 }
 
 /**
@@ -320,8 +321,7 @@ export function createRecoveredWorkflow(
 			workflow: owned.id,
 		})
 	}
-	const recovered = cloneWorkflowSnapshot(recoverWorkflowSnapshot(owned))
-	const workflow = new Workflow(recovered, captured)
+	const workflow = new Workflow(recoverWorkflowSnapshot(owned), captured)
 	if (!hasWorkflowHandlers(workflow)) {
 		throw new WorkflowError('RESTORE', `workflow '${owned.id}' has an unresolved behavior`, {
 			workflow: owned.id,

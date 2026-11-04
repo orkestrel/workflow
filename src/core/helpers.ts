@@ -3,6 +3,7 @@ import type {
 	ControllerInterface,
 	LifecycleStatus,
 	PhaseContext,
+	PhaseDefinition,
 	PhaseDerivation,
 	PhaseInterface,
 	PhaseSnapshot,
@@ -641,6 +642,84 @@ export function admitDefinition<T>(
 	return failure(
 		new WorkflowError(code, describeWorkflowFaults(subject, contract.schema, faults), { faults }),
 	)
+}
+
+/**
+ * Admits a patch through its contract with no repair, or refuses it with the faults that name why.
+ *
+ * @remarks
+ * A patch edits live state, so it is held to `is` exactly: an undeclared key refuses rather than
+ * doing nothing, and so does an empty patch, which changes nothing. The guard is total, and each
+ * later read can throw or change, so a failed read refuses too and the caller receives the owned
+ * copy `parse` returns.
+ *
+ * @typeParam T - The patch the contract describes
+ * @param contract - The compiled contract of the patch
+ * @param value - The value to admit
+ * @param noun - The entity noun a refusal names
+ * @param id - The entity id a refusal names
+ * @returns The owned patch, or a `MUTATION` failure whose `context.faults` lists every fault
+ *
+ * @example
+ * ```ts
+ * admitPatch(taskUpdateContract, { name: 'Compile again' }, 'task', 'compile').success // true
+ * admitPatch(taskUpdateContract, { naem: 'Compile again' }, 'task', 'compile').success // false
+ * ```
+ */
+export function admitPatch<T>(
+	contract: ContractInterface<T>,
+	value: unknown,
+	noun: string,
+	id: string,
+): Result<T, WorkflowError> {
+	const subject = `patch for ${noun} ${preview(id)}`
+	const report = attemptCall(() => (contract.is(value) ? [] : contract.audit(value)))
+	const owned = attemptCall(() =>
+		report.success && report.value.length === 0 ? contract.parse(value) : undefined,
+	)
+	if (!owned.success || owned.value === undefined) {
+		const faults = report.success ? report.value : []
+		return failure(
+			new WorkflowError('MUTATION', describeWorkflowFaults(subject, contract.schema, faults), {
+				id,
+				faults,
+			}),
+		)
+	}
+	if (isRecord(owned.value) && Object.keys(owned.value).length === 0) {
+		const keys = Object.keys(contract.schema.properties ?? {}).join(', ')
+		return failure(
+			new WorkflowError('MUTATION', `${subject} changes nothing; set at least one of ${keys}`, {
+				id,
+				faults: [],
+			}),
+		)
+	}
+	return success(owned.value)
+}
+
+/**
+ * Finds the first id a list of phase definitions repeats, among the phases or within one phase's
+ * tasks, which a schema cannot say.
+ *
+ * @param phases - The phase definitions to read
+ * @returns The `MUTATION` refusal naming the repeated id, or `undefined` when each id is unique
+ *
+ * @example
+ * ```ts
+ * scanDuplicateIds([{ id: 'build', name: 'Build', tasks: [] }]) // undefined
+ * ```
+ */
+export function scanDuplicateIds(phases: readonly PhaseDefinition[]): WorkflowError | undefined {
+	const lists = [
+		{ noun: 'phase', ids: phases.map((phase) => phase.id) },
+		...phases.map((phase) => ({ noun: 'task', ids: phase.tasks.map((task) => task.id) })),
+	]
+	const repeated = lists.find(({ ids }) => new Set(ids).size < ids.length)
+	const id = repeated?.ids.find((candidate, index) => repeated.ids.indexOf(candidate) !== index)
+	return repeated === undefined || id === undefined
+		? undefined
+		: new WorkflowError('MUTATION', `duplicate ${repeated.noun} id ${preview(id)}`, { id })
 }
 
 // === Result-tree collection

@@ -35,6 +35,7 @@ import {
 	isTerminalStatus,
 	phaseDefinitionToSnapshot,
 	requireTimerBound,
+	scanDuplicateIds,
 } from './helpers.js'
 import { Phase } from './phases/Phase.js'
 import { PhaseManager } from './phases/PhaseManager.js'
@@ -45,7 +46,9 @@ import { PhaseManager } from './phases/PhaseManager.js'
  * recomputed reactively as the cascade propagates up from a task transition.
  *
  * @remarks
- * - **Construction.** Built from a {@link WorkflowSnapshot} (the unified input —
+ * - **Construction.** The constructor is the exact snapshot boundary: it owns its input through
+ *   {@link cloneWorkflowSnapshot} and throws `RESTORE` on anything else, so a key no snapshot
+ *   declares never becomes a task that succeeds. Built from a {@link WorkflowSnapshot} (the unified input —
  *   {@link import('./factories.js').createWorkflow} seeds an initial snapshot from a
  *   {@link import('./types.js').WorkflowDefinition}, {@link import('./factories.js').createRestoredWorkflow}
  *   passes a persisted one). Each child {@link Phase} is wired to escalate to `#recompute`.
@@ -135,18 +138,19 @@ export class Workflow implements WorkflowInterface {
 	// runtime-only (never persisted): whether `destroy` has torn this workflow down.
 	#destroyed: boolean
 
-	constructor(snapshot: WorkflowSnapshot, options?: WorkflowOptions) {
+	constructor(snapshot: unknown, options?: WorkflowOptions) {
 		const captured = captureWorkflowOptions(options)
+		const owned = cloneWorkflowSnapshot(snapshot)
 		const on = captured.on
 		const bail = captured.bail
 		const error = captured.error
 		const phases = captured.phases
 		const functions = captured.functions
 		const silence = captured.silence
-		this.#context = buildWorkflowContext(snapshot)
+		this.#context = buildWorkflowContext(owned)
 		// The snapshot carries the policy it ran under (the self-contained durable payload), so the
 		// snapshot's `bail` is the source of truth; an explicit `options.bail` still wins when given.
-		this.#bail = bail ?? snapshot.bail
+		this.#bail = bail ?? owned.bail
 		// The explicit override (only when supplied) — cascaded to every phase so it overrides their
 		// persisted per-phase bail; omitted ⇒ each phase keeps its own persisted policy (identical restore).
 		this.#bailOverride = bail
@@ -156,8 +160,8 @@ export class Workflow implements WorkflowInterface {
 			...(on === undefined ? {} : { on }),
 			...(error === undefined ? {} : { error }),
 		})
-		this.#created = snapshot.created
-		this.#updated = snapshot.updated
+		this.#created = owned.created
+		this.#updated = owned.updated
 		this.#abort = createAbort()
 		this.#paused = false
 		this.#gate = undefined
@@ -166,14 +170,14 @@ export class Workflow implements WorkflowInterface {
 		// workflow on a derived-status change, carrying its own per-phase options + restore state,
 		// and the workflow-level `#functions` registry, so each of its tasks resolves its `behavior`
 		// name into a runtime handler once at construction.
-		for (const phase of snapshot.phases) {
+		for (const phase of owned.phases) {
 			const phaseOptions = phases?.[phase.id]
 			this.#append(phase, phaseOptions)
 		}
 		// Restore the override directly from the snapshot's own field (present when whole-workflow
 		// skip / stop or vacuous completion forced it) — no fragile status-divergence guess. Then
 		// seed the baseline from the effective status so a recompute diffs against the right value.
-		this.#override = snapshot.override
+		this.#override = owned.override
 		this.#status = this.status
 	}
 
@@ -343,6 +347,8 @@ export class Workflow implements WorkflowInterface {
 			`phase definition for workflow ${preview(this.id)}`,
 		)
 		if (!admitted.success) return admitted
+		const repeated = scanDuplicateIds([admitted.value])
+		if (repeated !== undefined) return failure(repeated)
 		return this.#addTo(this.#mint(admitted.value), index, at)
 	}
 

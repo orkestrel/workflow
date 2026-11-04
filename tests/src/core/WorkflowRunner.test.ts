@@ -12,6 +12,7 @@ import {
 	buildWorkflowStore,
 	createPacedRunner,
 	buildFunctionTask,
+	buildAppendedWorkflow,
 	buildHostileString,
 	buildMisspeltDefinition,
 	buildRepairableDefinition,
@@ -47,7 +48,6 @@ import {
 	createScheduler,
 	createWorkflow,
 	createWorkflowRunner,
-	definitionToSnapshot,
 	isWorkflowError,
 	MAX_TIMER_MS,
 	Workflow,
@@ -560,11 +560,9 @@ describe('WorkflowRunner — a phase concurrency outside the positive safe integ
 		})
 
 		it(`a hand-built tree carrying a concurrency of ${concurrency} refuses at run start, naming the phase`, async () => {
-			const workflow = new Workflow(
-				definitionToSnapshot(
-					buildRunnerDefinition([{ id: 'a', concurrency, tasks: [{ id: 't0', name: 't0' }] }]),
-				),
-			)
+			const workflow = buildAppendedWorkflow([
+				{ id: 'a', name: 'A', concurrency, tasks: [{ id: 't0', name: 't0' }] },
+			])
 
 			await expect(createPacedRunner().execute(workflow)).rejects.toMatchObject({
 				code: 'SCHEDULE',
@@ -600,6 +598,37 @@ describe('WorkflowRunner — a phase concurrency outside the positive safe integ
 })
 
 describe('WorkflowRunner — the definition door', () => {
+	it('a hand-built snapshot with a misspelt key never reaches a run', () => {
+		const snapshot = createWorkflow(
+			buildRunnerDefinition([{ id: 'a', tasks: [{ id: 't0', name: 't0' }] }]),
+		).snapshot()
+		const carried = {
+			...snapshot,
+			phases: snapshot.phases.map((phase) => ({
+				...phase,
+				tasks: phase.tasks.map((task) => ({ ...task, behaviour: 'work' })),
+			})),
+		}
+
+		expect(() => new Workflow(carried)).toThrow(/inconsistent/u)
+	})
+
+	it('a repeated task id rejects, so a definition run settles one way', async () => {
+		await expect(
+			createPacedRunner().execute(
+				buildRunnerDefinition([
+					{
+						id: 'a',
+						tasks: [
+							{ id: 't0', name: 'one' },
+							{ id: 't0', name: 'two' },
+						],
+					},
+				]),
+			),
+		).rejects.toMatchObject({ code: 'MUTATION', message: 'duplicate task id "t0"' })
+	})
+
 	it('a misspelt key rejects SCHEDULE with its extra fault and runs nothing', async () => {
 		const ran = createRecorder<readonly [string]>()
 		await expect(

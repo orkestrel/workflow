@@ -4,6 +4,7 @@ import type { ContractInterface } from '@orkestrel/contract'
 import type { RecorderInterface } from '@orkestrel/test'
 import type {
 	LifecycleStatus,
+	PhaseDefinition,
 	PhaseDerivation,
 	TaskControllerInterface,
 	TaskDefinition,
@@ -38,9 +39,11 @@ import {
 	createWorkflowRunner,
 	isWorkflowError,
 	MAX_TIMER_MS,
+	phaseDefinitionToSnapshot,
 	taskUpdateContract,
 } from '@src/core'
 import { Controller } from '../src/core/Controller.js'
+import { Phase } from '../src/core/phases/Phase.js'
 import { TaskController } from '../src/core/tasks/TaskController.js'
 
 /** Lists the values a run `timeout`, a task `timeout`, and a `silence` window must refuse. */
@@ -83,6 +86,17 @@ export function buildMisspeltDefinition(): {
 		name: 'WF',
 		phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', behaviour: 'compile' }] }],
 	}
+}
+
+/** Builds a live tree of appended phases, the one path a bound out of range can still reach a run by. */
+export function buildAppendedWorkflow(phases: readonly PhaseDefinition[]): WorkflowInterface {
+	const workflow = createWorkflow({ id: 'w', name: 'W', phases: [] })
+	for (const phase of phases) {
+		workflow.phases.append(
+			new Phase(phaseDefinitionToSnapshot(phase, false), workflow, () => undefined),
+		)
+	}
+	return workflow
 }
 
 /** Builds a task whose `timeout` reads 5 once and throws after, a definition whose reads change. */

@@ -139,6 +139,70 @@ describe('Workflow — direct construction option ownership', () => {
 	})
 })
 
+describe('Workflow — the constructor is the snapshot boundary', () => {
+	it('refuses a pending task carrying an undeclared key with RESTORE, as a restore does', () => {
+		const snapshot = createWorkflow(buildTwoPhaseWorkflow(false)).snapshot()
+		const carried = {
+			...snapshot,
+			phases: snapshot.phases.map((phase) => ({
+				...phase,
+				tasks: phase.tasks.map((task) => ({ ...task, behaviour: 'work' })),
+			})),
+		}
+
+		const error = captureError(() => new Workflow(carried))
+
+		expect(isWorkflowError(error) && error.code).toBe('RESTORE')
+		expect(isWorkflowError(captureError(() => createRestoredWorkflow(carried)))).toBe(true)
+	})
+
+	it('refuses what the definition door would, on a snapshot that came around it', () => {
+		const error = captureError(
+			() =>
+				new Workflow(
+					definitionToSnapshot({
+						id: 'w',
+						name: 'W',
+						phases: [{ id: 'p', name: 'P', tasks: [], concurrency: 0 }],
+					}),
+				),
+		)
+
+		expect(isWorkflowError(error) && error.code).toBe('RESTORE')
+		expect(isWorkflowError(error) && error.context).toEqual({ phase: 'p' })
+	})
+
+	it('refuses a value that is no snapshot, and one that cannot be read', () => {
+		for (const value of [42, null, {}]) {
+			const error = captureError(() => Reflect.construct(Workflow, [value]))
+
+			expect(isWorkflowError(error) && error.code).toBe('RESTORE')
+		}
+
+		const unreadable = captureError(
+			() =>
+				new Workflow({
+					get id(): string {
+						throw new Error('unreadable')
+					},
+				}),
+		)
+		expect(isWorkflowError(unreadable) && unreadable.code).toBe('RESTORE')
+	})
+
+	it('owns what it read, so a later change to the input reaches nothing', () => {
+		const snapshot = createWorkflow(buildTwoPhaseWorkflow(false)).snapshot()
+		const held = { ...snapshot, name: 'Held', phases: [...snapshot.phases] }
+		const workflow = new Workflow(held)
+
+		held.name = 'Changed'
+		held.phases.length = 0
+
+		expect(workflow.name).toBe('Held')
+		expect(workflow.phases.count).toBe(snapshot.phases.length)
+	})
+})
+
 describe('Workflow — construction from a definition', () => {
 	it('builds the whole live tree with lineage + bail from the definition', () => {
 		const workflow = createWorkflow(buildWorkflowDefinition())
@@ -1284,6 +1348,23 @@ describe('Workflow — add() runs the phase definition door', () => {
 			expect(workflow.phase('late')).toBeUndefined()
 		})
 	}
+
+	it('fails MUTATION on a phase repeating a task id, a Result and never a throw', () => {
+		const workflow = createWorkflow(buildEmptyWorkflow(false))
+
+		const result = workflow.add({
+			id: 'late',
+			name: 'Late',
+			tasks: [
+				{ id: 't', name: 'One' },
+				{ id: 't', name: 'Two' },
+			],
+		})
+
+		expect(!result.success && result.error.code).toBe('MUTATION')
+		expect(!result.success && result.error.message).toBe('duplicate task id "t"')
+		expect(workflow.phase('late')).toBeUndefined()
+	})
 
 	it('fails MUTATION on a definition whose read changes, a Result and never a throw', () => {
 		const workflow = createWorkflow(buildEmptyWorkflow(false))

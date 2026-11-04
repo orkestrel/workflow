@@ -21,16 +21,16 @@ import type {
 } from '../types.js'
 import { failure, preview } from '@orkestrel/contract'
 import { Emitter } from '@orkestrel/emitter'
-import { taskDefinitionContract } from '../contracts.js'
+import { phaseUpdateContract, taskDefinitionContract } from '../contracts.js'
 import { WorkflowError } from '../errors.js'
 import {
 	admitDefinition,
+	admitPatch,
 	buildPhaseContext,
 	buildTaskContext,
 	derivePhaseStatus,
 	findFailure,
 	isTerminalStatus,
-	requireConcurrency,
 	taskDefinitionToSnapshot,
 } from '../helpers.js'
 import { Task } from '../tasks/Task.js'
@@ -69,8 +69,9 @@ import { TaskManager } from '../tasks/TaskManager.js'
  *   substrate); while terminal, everything is refused.
  * - **Patch.** `patch` applies a validated {@link PhaseUpdate} to self
  *   (`name` / `description` / `concurrency` / `bail`) — defense-in-depth: it throws a
- *   `MUTATION` {@link WorkflowError} unless this phase's own `status` is `pending`, mirroring
- *   the owning {@link WorkflowInterface.update}'s gate.
+ *   `MUTATION` {@link WorkflowError} unless this phase's own `status` is `pending` and the patch
+ *   passes the exact {@link import('../contracts.js').phaseUpdateContract}, mirroring the owning
+ *   {@link WorkflowInterface.update}'s gate.
  * - **Minting.** {@link add} mints a live {@link Task} from a {@link TaskDefinition}
  *   (converts it to a {@link TaskSnapshot}, builds the task wired to this phase) — the same
  *   construction path {@link #append} uses at build time, so a live mint and a restored/built
@@ -376,14 +377,12 @@ export class Phase implements PhaseInterface {
 				status: this.status,
 			})
 		}
-		const concurrency =
-			value.concurrency === undefined
-				? this.#concurrency
-				: requireConcurrency(value.concurrency, this.#id)
-		if (value.name !== undefined) this.#name = value.name
-		if (value.description !== undefined) this.#description = value.description
-		this.#concurrency = concurrency
-		if (value.bail !== undefined) this.#bail = value.bail
+		const admitted = admitPatch(phaseUpdateContract, value, 'phase', this.#id)
+		if (!admitted.success) throw admitted.error
+		if (admitted.value.name !== undefined) this.#name = admitted.value.name
+		if (admitted.value.description !== undefined) this.#description = admitted.value.description
+		if (admitted.value.concurrency !== undefined) this.#concurrency = admitted.value.concurrency
+		if (admitted.value.bail !== undefined) this.#bail = admitted.value.bail
 	}
 
 	snapshot(): PhaseSnapshot {

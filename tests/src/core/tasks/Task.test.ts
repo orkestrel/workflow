@@ -961,6 +961,55 @@ describe('Task — patch (pending-only)', () => {
 		expect(task.snapshot().description).toBe('only desc')
 	})
 
+	it('throws MUTATION on a misspelt key, naming the keys to send and changing nothing', () => {
+		const task = requireWorkflowTask(createWorkflow(buildSingleTaskWorkflow()))
+		const before = task.name
+
+		const error = captureError(() => Reflect.apply(task.patch, task, [{ naem: 'changed' }]))
+
+		expect(readWorkflowCode(error)).toBe('MUTATION')
+		expect(isWorkflowError(error) && error.context).toEqual({
+			id: 't',
+			faults: [{ reason: 'extra', path: ['naem'] }],
+		})
+		expect(isWorkflowError(error) && error.message).toContain('send one of name, description')
+		expect(task.name).toBe(before)
+	})
+
+	it('reads the owned patch and never the caller object again', () => {
+		const task = requireWorkflowTask(createWorkflow(buildSingleTaskWorkflow()))
+		const reads = new WorkflowObservation(0)
+
+		task.patch({
+			get name(): string {
+				reads.value += 1
+				if (reads.value > 2) throw new Error('the read changed')
+				return 'Renamed'
+			},
+		})
+
+		expect(task.name).toBe('Renamed')
+	})
+
+	it('applies nothing when one key of a patch fails, so a patch lands whole', () => {
+		const task = requireWorkflowTask(createWorkflow(buildSingleTaskWorkflow()))
+		const before = task.name
+		const mixed = { name: 'Renamed', description: 'kept out', naem: 'changed' }
+
+		const error = captureError(() => task.patch(mixed))
+
+		expect(readWorkflowCode(error)).toBe('MUTATION')
+		expect(task.name).toBe(before)
+		expect(task.description).toBeUndefined()
+	})
+
+	it('throws MUTATION on an empty name and on an empty patch, as the manager refuses them', () => {
+		const task = requireWorkflowTask(createWorkflow(buildSingleTaskWorkflow()))
+
+		expect(readWorkflowCode(captureError(() => task.patch({ name: '' })))).toBe('MUTATION')
+		expect(readWorkflowCode(captureError(() => task.patch({})))).toBe('MUTATION')
+	})
+
 	it('throws MUTATION when patched while running', () => {
 		const task = requireWorkflowTask(createWorkflow(buildSingleTaskWorkflow()))
 		task.start()

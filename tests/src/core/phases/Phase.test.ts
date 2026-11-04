@@ -699,18 +699,60 @@ describe('Phase — patch() gating (pending only)', () => {
 	})
 
 	for (const concurrency of INVALID_CONCURRENCIES) {
-		it(`throws SCHEDULE for a direct concurrency of ${concurrency} and keeps the old throttle`, () => {
+		it(`throws MUTATION for a direct concurrency of ${concurrency} and keeps the old throttle`, () => {
 			const phase = requireWorkflowPhase(createWorkflow(buildPhaseWorkflow(1)))
 			phase.patch({ concurrency: 2 })
 
 			const error = captureError(() => phase.patch({ name: 'Renamed', concurrency }))
 
-			expect(isWorkflowError(error) && error.code).toBe('SCHEDULE')
-			expect(isWorkflowError(error) && error.context?.phase).toBe('p')
+			expect(isWorkflowError(error) && error.code).toBe('MUTATION')
+			expect(isWorkflowError(error) && error.context?.id).toBe('p')
+			expect(isWorkflowError(error) && error.message).toContain(
+				'Omit the key to leave it unchanged',
+			)
 			expect(phase.concurrency).toBe(2)
 			expect(phase.name).toBe('P')
 		})
 	}
+
+	it('throws MUTATION on a misspelt key, naming the keys to send and changing nothing', () => {
+		const phase = requireWorkflowPhase(createWorkflow(buildPhaseWorkflow(1)))
+
+		const error = captureError(() => Reflect.apply(phase.patch, phase, [{ concurreny: 1 }]))
+
+		expect(isWorkflowError(error) && error.code).toBe('MUTATION')
+		expect(isWorkflowError(error) && error.context).toEqual({
+			id: 'p',
+			faults: [{ reason: 'extra', path: ['concurreny'] }],
+		})
+		expect(isWorkflowError(error) && error.message).toContain(
+			'send one of name, description, concurrency, bail',
+		)
+		expect(phase.concurrency).toBeUndefined()
+	})
+
+	it('reads the owned patch and never the caller object again', () => {
+		const phase = requireWorkflowPhase(createWorkflow(buildPhaseWorkflow(1)))
+		const reads = new WorkflowObservation(0)
+
+		phase.patch({
+			get concurrency(): number {
+				reads.value += 1
+				if (reads.value > 2) throw new Error('the read changed')
+				return 2
+			},
+		})
+
+		expect(phase.concurrency).toBe(2)
+	})
+
+	it('throws MUTATION on an empty patch, as the manager refuses it', () => {
+		const phase = requireWorkflowPhase(createWorkflow(buildPhaseWorkflow(1)))
+
+		const error = captureError(() => phase.patch({}))
+
+		expect(isWorkflowError(error) && error.code).toBe('MUTATION')
+	})
 
 	it('throws MUTATION when patched while running', () => {
 		const phase = requireWorkflowPhase(createWorkflow(buildPhaseWorkflow(1)))

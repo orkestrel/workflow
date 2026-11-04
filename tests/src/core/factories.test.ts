@@ -209,6 +209,22 @@ describe('createWorkflow — the definition door', () => {
 		])
 	})
 
+	it('refuses a repeated id by name, which a snapshot refusal could not say', () => {
+		const phases = captureError(() =>
+			createWorkflow({
+				id: 'w',
+				name: 'W',
+				phases: [
+					{ id: 'p', name: 'P', tasks: [] },
+					{ id: 'p', name: 'Q', tasks: [] },
+				],
+			}),
+		)
+
+		expect(isWorkflowError(phases) && phases.code).toBe('MUTATION')
+		expect(isWorkflowError(phases) && phases.message).toBe('duplicate phase id "p"')
+	})
+
 	it('refuses a definition whose read changes, instead of leaking the contract error', () => {
 		const error = captureError(() => createWorkflow(buildShiftingDefinition()))
 

@@ -201,11 +201,11 @@ export class WorkflowManager implements WorkflowManagerInterface {
 		return createWorkflowTree(definition, captured)
 	}
 
-	// Rebuild the live tree from an already-owned snapshot exactly as `createRestoredWorkflow`
-	// does — the hostile-boundary clone stays, so a hydrated tree is owned by this manager rather
-	// than sharing the store's payload.
+	// Rebuild the live tree from a snapshot exactly as `createRestoredWorkflow` does — the
+	// constructor is the boundary, so a hydrated tree is owned by this manager rather than sharing
+	// the store's payload.
 	#restore(snapshot: WorkflowSnapshot): WorkflowInterface {
-		return new Workflow(cloneWorkflowSnapshot(snapshot), this.#captured())
+		return new Workflow(snapshot, this.#captured())
 	}
 
 	// The owned construction options every mint and hydrate carries — this manager's retained

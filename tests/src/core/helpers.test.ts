@@ -41,7 +41,10 @@ import {
 	requireConcurrency,
 	requireRunnable,
 	requireTimerBound,
-	Workflow,
+	admitPatch,
+	phaseUpdateContract,
+	scanDuplicateIds,
+	taskUpdateContract,
 	workflowContract,
 } from '@src/core'
 import { describe, expect, it } from 'vitest'
@@ -66,6 +69,7 @@ import {
 	RECOVERY_MIXED_FUNCTIONS,
 	buildHostileWorkflow,
 	buildCountedRegistry,
+	buildAppendedWorkflow,
 	buildMisspeltDefinition,
 	buildRepairableDefinition,
 	createRecordedContract,
@@ -1225,13 +1229,9 @@ describe('requireRunnable — what refuses a run before it claims the tree', () 
 
 	for (const concurrency of INVALID_CONCURRENCIES) {
 		it(`refuses a pending phase carrying a concurrency of ${concurrency}, naming it`, () => {
-			const workflow = new Workflow(
-				definitionToSnapshot({
-					id: 'w',
-					name: 'W',
-					phases: [{ id: 'p', name: 'P', concurrency, tasks: [{ id: 't', name: 'T' }] }],
-				}),
-			)
+			const workflow = buildAppendedWorkflow([
+				{ id: 'p', name: 'P', concurrency, tasks: [{ id: 't', name: 'T' }] },
+			])
 			const error = captureError(() => requireRunnable(workflow, undefined))
 
 			expect(isWorkflowError(error) && error.code).toBe('SCHEDULE')
@@ -1241,13 +1241,9 @@ describe('requireRunnable — what refuses a run before it claims the tree', () 
 
 	for (const timeout of INVALID_TIMER_BOUNDS) {
 		it(`refuses a pending task carrying a timeout of ${timeout}, naming it and the remedy`, () => {
-			const workflow = new Workflow(
-				definitionToSnapshot({
-					id: 'w',
-					name: 'W',
-					phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', timeout }] }],
-				}),
-			)
+			const workflow = buildAppendedWorkflow([
+				{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', timeout }] },
+			])
 			const error = captureError(() => requireRunnable(workflow, undefined))
 
 			expect(isWorkflowError(error) && error.code).toBe('SCHEDULE')
@@ -1257,24 +1253,18 @@ describe('requireRunnable — what refuses a run before it claims the tree', () 
 	}
 
 	it('ignores a settled node, which never runs again', () => {
-		const workflow = new Workflow(
-			definitionToSnapshot({
-				id: 'w',
-				name: 'W',
-				phases: [
-					{
-						id: 'p',
-						name: 'P',
-						concurrency: 0,
-						tasks: [
-							{ id: 't', name: 'T', timeout: 0 },
-							{ id: 'u', name: 'U', timeout: 0 },
-						],
-					},
-					{ id: 'q', name: 'Q', tasks: [{ id: 'v', name: 'V' }] },
+		const workflow = buildAppendedWorkflow([
+			{
+				id: 'p',
+				name: 'P',
+				concurrency: 0,
+				tasks: [
+					{ id: 't', name: 'T', timeout: 0 },
+					{ id: 'u', name: 'U', timeout: 0 },
 				],
-			}),
-		)
+			},
+			{ id: 'q', name: 'Q', tasks: [{ id: 'v', name: 'V' }] },
+		])
 		workflow.phase('p')?.stop()
 		workflow.phase('p')?.task('t')?.skip()
 		workflow.phase('p')?.task('u')?.skip()
@@ -1404,6 +1394,94 @@ describe('admitDefinition — the door a definition enters through', () => {
 
 		expect(!refused.success && refused.error.context?.faults).toHaveLength(FAULT_LIMIT)
 		expect(repaired.success && repaired.value.phases[0]?.tasks[0]?.timeout).toBe(5000)
+	})
+})
+
+describe('admitPatch — the exact door a patch enters through', () => {
+	it('hands on an owned copy of a valid patch', () => {
+		const patch = { name: 'Renamed task' }
+		const admitted = admitPatch(taskUpdateContract, patch, 'task', 't')
+
+		expect(admitted).toEqual(success(patch))
+		expect(admitted.success && admitted.value).not.toBe(patch)
+	})
+
+	it('refuses an undeclared key, naming the keys to send, with no repair', () => {
+		const misspelt = admitPatch(taskUpdateContract, { naem: 'changed' }, 'task', 't')
+		const coercible = admitPatch(phaseUpdateContract, { concurrency: '4' }, 'phase', 'p')
+
+		expect(!misspelt.success && misspelt.error.code).toBe('MUTATION')
+		expect(!misspelt.success && misspelt.error.message).toContain(
+			'naem: extra; this key is not declared, remove it or send one of name, description',
+		)
+		expect(!misspelt.success && misspelt.error.context).toEqual({
+			id: 't',
+			faults: [{ reason: 'extra', path: ['naem'] }],
+		})
+		expect(coercible.success).toBe(false)
+	})
+
+	it('refuses an empty patch, naming the keys it can set', () => {
+		const empty = admitPatch(taskUpdateContract, {}, 'task', 't')
+
+		expect(!empty.success && empty.error.message).toBe(
+			'patch for task "t" changes nothing; set at least one of name, description',
+		)
+		expect(!empty.success && empty.error.context).toEqual({ id: 't', faults: [] })
+	})
+
+	it('refuses as unreadable when a read throws', () => {
+		const unreadable = admitPatch(
+			taskUpdateContract,
+			{
+				get name(): string {
+					throw new Error('unreadable')
+				},
+			},
+			'task',
+			't',
+		)
+
+		expect(!unreadable.success && unreadable.error.message).toContain('could not be read')
+	})
+})
+
+describe('scanDuplicateIds — what a schema cannot say about a definition', () => {
+	it('finds nothing among distinct ids, whatever other phases reuse', () => {
+		expect(
+			scanDuplicateIds([
+				{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T' }] },
+				{ id: 'q', name: 'Q', tasks: [{ id: 't', name: 'T' }] },
+			]),
+		).toBeUndefined()
+		expect(scanDuplicateIds([])).toBeUndefined()
+	})
+
+	it('refuses a repeated phase id with MUTATION, naming it', () => {
+		const repeated = scanDuplicateIds([
+			{ id: 'p', name: 'P', tasks: [] },
+			{ id: 'p', name: 'Q', tasks: [] },
+		])
+
+		expect(repeated?.code).toBe('MUTATION')
+		expect(repeated?.message).toBe('duplicate phase id "p"')
+		expect(repeated?.context).toEqual({ id: 'p' })
+	})
+
+	it('refuses a repeated task id within one phase', () => {
+		const repeated = scanDuplicateIds([
+			{
+				id: 'p',
+				name: 'P',
+				tasks: [
+					{ id: 'a', name: 'A' },
+					{ id: 'b', name: 'B' },
+					{ id: 'a', name: 'C' },
+				],
+			},
+		])
+
+		expect(repeated?.message).toBe('duplicate task id "a"')
 	})
 })
 

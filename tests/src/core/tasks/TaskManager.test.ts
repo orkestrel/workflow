@@ -1,6 +1,7 @@
-import { buildPhaseTasks } from '../../../setup.js'
-import { createWorkflow } from '@src/core'
+import { buildPhaseTasks, buildSingleTaskWorkflow } from '../../../setup.js'
+import { createWorkflow, isWorkflowError } from '@src/core'
 import { describe, expect, it } from 'vitest'
+import { captureError } from '@orkestrel/test'
 
 // The lean task child manager: a positional accessor + count, order preserved
 // across an interior skip. Exercised through a live tree (the manager is populated by the
@@ -151,8 +152,8 @@ describe('TaskManager — add/remove/move/update Result matrix, through Phase', 
 		expect(result.error.code).toBe('MUTATION')
 	})
 
-	it('append throws MUTATION on a duplicate id (through a duplicate task id in the same phase definition)', () => {
-		expect(() =>
+	it('a phase definition repeating a task id refuses MUTATION before a tree exists', () => {
+		const error = captureError(() =>
 			createWorkflow({
 				id: 'wf',
 				name: 'WF',
@@ -167,6 +168,21 @@ describe('TaskManager — add/remove/move/update Result matrix, through Phase', 
 					},
 				],
 			}),
-		).toThrow(/duplicate task id/)
+		)
+
+		expect(isWorkflowError(error) && error.code).toBe('MUTATION')
+		expect(isWorkflowError(error) && error.message).toBe('duplicate task id "dup"')
+	})
+
+	it('append throws MUTATION on a duplicate id', () => {
+		const workflow = createWorkflow(buildSingleTaskWorkflow())
+		const phase = workflow.phase('p')
+		const task = phase?.task('t')
+		if (phase === undefined || task === undefined) throw new Error('expected one task')
+
+		const error = captureError(() => phase.tasks.append(task))
+
+		expect(isWorkflowError(error) && error.code).toBe('MUTATION')
+		expect(isWorkflowError(error) && error.message).toBe("duplicate task id 't'")
 	})
 })

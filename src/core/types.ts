@@ -318,7 +318,8 @@ export interface PhaseUpdate {
  *   it never throws for this code except {@link TaskInterface.patch} /
  *   {@link PhaseInterface.patch}'s defense-in-depth self-check and the build-time
  *   {@link TaskManagerInterface.append} / {@link PhaseManagerInterface.append} duplicate-id
- *   guard (both genuine programmer-error paths). The error `context` names
+ *   guard, and a definition that repeats an id at construction (all genuine programmer-error
+ *   paths). The error `context` names
  *   the offending id / index / status.
  * - `SCHEDULE` — work that cannot be scheduled: a definition the door refuses (`context.faults`
  *   lists every fault), a tree with no task, a `timeout` or `silence` outside
@@ -955,7 +956,8 @@ export interface TaskInterface {
 	 * Defense-in-depth: the owning {@link TaskManagerInterface.update} gates
 	 * first (target exists + `pending`), so a direct call here is the second, redundant
 	 * check — it throws a `MUTATION` {@link import('./errors.js').WorkflowError} unless
-	 * this task's own `status` is `pending`.
+	 * this task's own `status` is `pending` and the patch is exact: an undeclared key, an empty
+	 * patch, and a value out of range refuse, and a patch lands whole or not at all.
 	 *
 	 * @param value - The {@link TaskUpdate} fields to apply
 	 * @example
@@ -1163,7 +1165,8 @@ export interface PhaseInterface {
 	 * Defense-in-depth: the owning {@link WorkflowInterface.update} gates
 	 * first, so a direct call here throws a `MUTATION`
 	 * {@link import('./errors.js').WorkflowError} unless this phase's own `status` is
-	 * `pending`, and a `SCHEDULE` one for a `concurrency` that is not a positive safe integer.
+	 * `pending` and the patch is exact: an undeclared key, an empty patch, and a value out of range
+	 * refuse, and a patch lands whole or not at all.
 	 *
 	 * @param value - The {@link PhaseUpdate} fields to apply
 	 * @example

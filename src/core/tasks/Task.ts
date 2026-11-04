@@ -31,8 +31,9 @@ import {
 import { Emitter } from '@orkestrel/emitter'
 import { createTimeout } from '@orkestrel/timeout'
 import { cloneTaskActivity } from '../cloners.js'
+import { taskUpdateContract } from '../contracts.js'
 import { WorkflowError, isWorkflowError } from '../errors.js'
-import { buildTaskContext, canTransitionTask, resolveTaskSilence } from '../helpers.js'
+import { admitPatch, buildTaskContext, canTransitionTask, resolveTaskSilence } from '../helpers.js'
 
 /**
  * Implements the live leaf state machine (W-b) for one task — an observable, guarded
@@ -400,7 +401,9 @@ export class Task implements TaskInterface {
 	 * Defense-in-depth: the owning
 	 * {@link import('../types.js').TaskManagerInterface.update} gates first (target
 	 * exists + `pending`), so this is the second, redundant check — it throws a
-	 * `MUTATION` {@link WorkflowError} unless this task's own `status` is `pending`.
+	 * `MUTATION` {@link WorkflowError} unless this task's own `status` is `pending` and the patch
+	 * passes the exact {@link import('../contracts.js').taskUpdateContract}, so a misspelt key
+	 * refuses and a patch lands whole or not at all.
 	 *
 	 * @param value - The {@link TaskUpdate} fields to apply
 	 * @example
@@ -416,8 +419,10 @@ export class Task implements TaskInterface {
 				{ task: this.id, status: this.#status },
 			)
 		}
-		if (value.name !== undefined) this.#name = value.name
-		if (value.description !== undefined) this.#description = value.description
+		const admitted = admitPatch(taskUpdateContract, value, 'task', this.id)
+		if (!admitted.success) throw admitted.error
+		if (admitted.value.name !== undefined) this.#name = admitted.value.name
+		if (admitted.value.description !== undefined) this.#description = admitted.value.description
 	}
 
 	snapshot(): TaskSnapshot {

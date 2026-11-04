@@ -1,8 +1,8 @@
 import type { ContractInterface, Result } from '@orkestrel/contract'
 import type { CollectionEntry, CollectionInterface } from './types.js'
-import { attempt, failure, isRecord, preview, success } from '@orkestrel/contract'
+import { failure, success } from '@orkestrel/contract'
 import { WorkflowError } from './errors.js'
-import { describeWorkflowFaults, insertEntry, moveEntry } from './helpers.js'
+import { admitPatch, insertEntry, moveEntry } from './helpers.js'
 
 /**
  * Implements the insertion-ordered gated store both lean managers hold — entities keyed by `id`,
@@ -106,37 +106,9 @@ export class Collection<
 	update(id: string, patch: TPatch): Result<TEntry, WorkflowError> {
 		const target = this.#pending(id)
 		if (target === undefined) return this.#refuse(id)
-		// The guard is total, and each later read can throw or change, so a failed read refuses too
-		// and the entity receives the owned value.
-		const report = attempt(() => (this.#patch.is(patch) ? [] : this.#patch.audit(patch)))
-		const owned = attempt(() =>
-			report.success && report.value.length === 0 ? this.#patch.parse(patch) : undefined,
-		)
-		if (!owned.success || owned.value === undefined) {
-			const faults = report.success ? report.value : []
-			return failure(
-				new WorkflowError(
-					'MUTATION',
-					describeWorkflowFaults(
-						`patch for ${this.#noun} ${preview(id)}`,
-						this.#patch.schema,
-						faults,
-					),
-					{ id, faults },
-				),
-			)
-		}
-		if (isRecord(owned.value) && Object.keys(owned.value).length === 0) {
-			const keys = Object.keys(this.#patch.schema.properties ?? {}).join(', ')
-			return failure(
-				new WorkflowError(
-					'MUTATION',
-					`patch for ${this.#noun} ${preview(id)} changes nothing; set at least one of ${keys}`,
-					{ id, faults: [] },
-				),
-			)
-		}
-		target.patch(owned.value)
+		const admitted = admitPatch(this.#patch, patch, this.#noun, id)
+		if (!admitted.success) return admitted
+		target.patch(admitted.value)
 		return success(target)
 	}
 
