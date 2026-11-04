@@ -1619,6 +1619,23 @@ describe('describeWorkflowFaults — the text a refusal reads', () => {
 // handler registries throughout.
 
 describe('workflow recovery', () => {
+	it('refuses a terminal override at either tier with its own message, naming the workflow', () => {
+		const forced = createWorkflow(RECOVERY_DEFINITION, { functions: VALIDATED_FUNCTIONS })
+		forced.stop()
+		const phased = createWorkflow(RECOVERY_DEFINITION, { functions: VALIDATED_FUNCTIONS })
+		phased.phases.phases()[0]?.stop()
+
+		for (const source of [forced, phased]) {
+			const error = captureError(() =>
+				createRecoveredWorkflow(source.snapshot(), { functions: VALIDATED_FUNCTIONS }),
+			)
+
+			expect(isWorkflowError(error) && error.code).toBe('RESTORE')
+			expect(isWorkflowError(error) && error.message).toContain('has a terminal override')
+			expect(isWorkflowError(error) && error.context).toEqual({ workflow: source.id })
+		}
+	})
+
 	it('uses the exact once-read functions registry for validation and recovered handlers', () => {
 		const source = createWorkflow(RECOVERY_DEFINITION, { functions: VALIDATED_FUNCTIONS })
 		const task = source.phase('phase')?.task('task')
