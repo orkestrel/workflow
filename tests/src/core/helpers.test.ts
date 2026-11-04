@@ -1547,7 +1547,7 @@ describe('describeWorkflowFaults — the text a refusal reads', () => {
 		expect(message).toContain('id: missing; expected string')
 		expect(message).toContain('name: constraint; expected string; received')
 		expect(message).toContain('constraint min; limit 1')
-		expect(message).toContain('timeout: type; expected integer; received "NaN"')
+		expect(message).toContain('timeout: type; expected integer; received NaN')
 		expect(message).toContain('send {')
 	})
 
@@ -1556,7 +1556,7 @@ describe('describeWorkflowFaults — the text a refusal reads', () => {
 			describeWorkflowFaults('workflow definition', workflowContract.schema, [
 				{ reason: 'type', path: [], expected: 'object', received: '42' },
 			]),
-		).toContain('\n: type; expected object; received "42"')
+		).toContain('\nvalue: type; expected object; received 42')
 		expect(describeWorkflowFaults('patch', workflowContract.schema, [])).toBe(
 			'patch refused: it could not be read; send plain JSON data',
 		)
@@ -1583,7 +1583,7 @@ describe('describeWorkflowFaults — the text a refusal reads', () => {
 		])
 		const [, timeout, id] = message.split('\n')
 
-		expect(timeout).toContain('received "0"; constraint min; limit 1')
+		expect(timeout).toContain('received 0; constraint min; limit 1')
 		expect(timeout).toContain('description "Per-attempt deadline')
 		expect(id).toContain('id: constraint; expected string; received')
 		expect(id).toContain('description "Unique task id')
