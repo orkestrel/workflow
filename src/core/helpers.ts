@@ -21,7 +21,6 @@ import type {
 } from './types.js'
 import {
 	admitValue,
-	attempt as attemptCall,
 	describeFaults,
 	failure,
 	isArray,
@@ -573,7 +572,7 @@ export function describeWorkflowFaults(
  * @remarks
  * `admitValue` admits readable definitions with only lossless repairs and refuses a saturated
  * audit. This boundary translates its refusal to the caller's workflow error code and subject,
- * preserving faults in the error context. Patches use the separate strict `admitPatch` boundary.
+ * preserving faults in the error context. Patches admit through the same function in `admitPatch`, which adds an empty-patch refusal.
  *
  * @typeParam T - The definition the contract describes
  * @param contract - The compiled contract of the definition
@@ -603,13 +602,14 @@ export function admitDefinition<T>(
 }
 
 /**
- * Admits a patch through its contract with no repair, or refuses it with the faults that name why.
+ * Admits a patch through its contract with only lossless repairs, or refuses it with the faults
+ * that name why.
  *
  * @remarks
- * A patch edits live state, so it is held to `is` exactly: an undeclared key refuses rather than
- * doing nothing, and so does an empty patch, which changes nothing. The guard is total, and each
- * later read can throw or change, so a failed read refuses too and the caller receives the owned
- * copy `parse` returns.
+ * `admitValue` admits the patch, so a lossless type repair, such as a numeric string for a number
+ * member, admits and the caller receives the repaired owned copy. An undeclared key refuses rather
+ * than doing nothing, and so does a lossy repair, a failed read, and an empty patch, which changes
+ * nothing.
  *
  * @typeParam T - The patch the contract describes
  * @param contract - The compiled contract of the patch
@@ -631,12 +631,9 @@ export function admitPatch<T>(
 	id: string,
 ): Result<T, WorkflowError> {
 	const subject = `patch for ${noun} ${preview(id)}`
-	const report = attemptCall(() => (contract.is(value) ? [] : contract.audit(value)))
-	const owned = attemptCall(() =>
-		report.success && report.value.length === 0 ? contract.parse(value) : undefined,
-	)
-	if (!owned.success || owned.value === undefined) {
-		const faults = report.success ? report.value : []
+	const admitted = admitValue(contract, value)
+	if (!admitted.success) {
+		const { faults } = admitted.error
 		return failure(
 			new WorkflowError('MUTATION', describeWorkflowFaults(subject, contract.schema, faults), {
 				id,
@@ -644,6 +641,7 @@ export function admitPatch<T>(
 			}),
 		)
 	}
+	const owned = admitted.value
 	if (isRecord(owned.value) && Object.keys(owned.value).length === 0) {
 		const keys = Object.keys(contract.schema.properties ?? {}).join(', ')
 		return failure(

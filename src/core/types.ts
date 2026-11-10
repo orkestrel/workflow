@@ -956,8 +956,9 @@ export interface TaskInterface {
 	 * Defense-in-depth: the owning {@link TaskManagerInterface.update} gates
 	 * first (target exists + `pending`), so a direct call here is the second, redundant
 	 * check — it throws a `MUTATION` {@link import('./errors.js').WorkflowError} unless
-	 * this task's own `status` is `pending` and the patch is exact: an undeclared key, an empty
-	 * patch, and a value out of range refuse, and a patch lands whole or not at all.
+	 * this task's own `status` is `pending` and the patch admits through `admitValue`: a lossless
+	 * type repair enters repaired, an undeclared key, an empty patch, a lossy repair, and a value
+	 * out of range refuse, and a patch lands whole or not at all.
 	 *
 	 * @param value - The {@link TaskUpdate} fields to apply
 	 * @example
@@ -1165,8 +1166,9 @@ export interface PhaseInterface {
 	 * Defense-in-depth: the owning {@link WorkflowInterface.update} gates
 	 * first, so a direct call here throws a `MUTATION`
 	 * {@link import('./errors.js').WorkflowError} unless this phase's own `status` is
-	 * `pending` and the patch is exact: an undeclared key, an empty patch, and a value out of range
-	 * refuse, and a patch lands whole or not at all.
+	 * `pending` and the patch admits through `admitValue`: a lossless type repair enters repaired,
+	 * an undeclared key, an empty patch, a lossy repair, and a value out of range refuse, and a
+	 * patch lands whole or not at all.
 	 *
 	 * @param value - The {@link PhaseUpdate} fields to apply
 	 * @example

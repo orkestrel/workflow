@@ -357,6 +357,29 @@ await new GuideCommand({
 			expect(collectResults([[], []])).toEqual([])
 		})
 
+		it('applies a lossless repair through the workflow update the mutation prose names', () => {
+			const workflow = createWorkflow({
+				id: 'wf',
+				name: 'Wf',
+				phases: [{ id: 'p1', name: 'P1', tasks: [] }],
+			})
+			const phase = requireValue(workflow.phase('p1'), 'expected phase p1')
+
+			const updated: unknown = Reflect.apply(workflow.update, workflow, [
+				phase.id,
+				{ concurrency: '4' },
+			])
+
+			expect(updated).toMatchObject({ success: true })
+			expect(phase.concurrency).toBe(4)
+		})
+
+		it('carries the mutation prose the transcription copies', () => {
+			expect(guideText).toContain(
+				"`workflow.update(phase.id, { concurrency: '4' })` applies `concurrency: 4`, so the phase's `concurrency` reads `4` afterwards.",
+			)
+		})
+
 		it('carries the derivation fence lines the transcription copies', () => {
 			expect(guideText).toContain("isTerminalStatus('completed') // true")
 			expect(guideText).toContain("derivePhaseStatus(['completed', 'skipped']) // 'completed'")

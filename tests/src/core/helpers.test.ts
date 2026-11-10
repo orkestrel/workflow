@@ -49,7 +49,7 @@ import {
 } from '@src/core'
 import { describe, expect, it } from 'vitest'
 import { isAbortSignal, linkSignal } from '@orkestrel/abort'
-import { FAULT_LIMIT, failure, success } from '@orkestrel/contract'
+import { FAULT_LIMIT, admitValue, failure, success } from '@orkestrel/contract'
 import { captureError, createRecorder, waitForDelay } from '@orkestrel/test'
 import {
 	createErrorRecorder,
@@ -1423,7 +1423,7 @@ describe('admitDefinition — the door a definition enters through', () => {
 	})
 })
 
-describe('admitPatch — the exact door a patch enters through', () => {
+describe('admitPatch — the door a patch enters through', () => {
 	it('hands on an owned copy of a valid patch', () => {
 		const patch = { name: 'Renamed task' }
 		const admitted = admitPatch(taskUpdateContract, patch, 'task', 't')
@@ -1432,9 +1432,10 @@ describe('admitPatch — the exact door a patch enters through', () => {
 		expect(admitted.success && admitted.value).not.toBe(patch)
 	})
 
-	it('refuses an undeclared key, naming the keys to send, with no repair', () => {
-		const misspelt = admitPatch(taskUpdateContract, { naem: 'changed' }, 'task', 't')
-		const coercible = admitPatch(phaseUpdateContract, { concurrency: '4' }, 'phase', 'p')
+	it('refuses an undeclared key with the faults admitValue reports for the same value', () => {
+		const value = { naem: 'changed' }
+		const misspelt = admitPatch(taskUpdateContract, value, 'task', 't')
+		const reported = admitValue(taskUpdateContract, value)
 
 		expect(!misspelt.success && misspelt.error.code).toBe('MUTATION')
 		expect(!misspelt.success && misspelt.error.message).toContain(
@@ -1444,7 +1445,23 @@ describe('admitPatch — the exact door a patch enters through', () => {
 			id: 't',
 			faults: [{ reason: 'extra', path: ['naem'] }],
 		})
-		expect(coercible.success).toBe(false)
+		expect(!misspelt.success && misspelt.error.context?.faults).toEqual(
+			!reported.success && reported.error.faults,
+		)
+	})
+
+	it('admits a lossless type repair and hands on the repaired value', () => {
+		const admitted = admitPatch(phaseUpdateContract, { concurrency: '4' }, 'phase', 'p')
+
+		expect(admitted).toEqual(success({ concurrency: 4 }))
+	})
+
+	it('refuses a lossy repair', () => {
+		const refused = admitPatch(phaseUpdateContract, { concurrency: '4.5' }, 'phase', 'p')
+
+		expect(!refused.success && refused.error.code).toBe('MUTATION')
+		expect(!refused.success && refused.error.context?.id).toBe('p')
+		expect(!refused.success && refused.error.context?.faults).not.toEqual([])
 	})
 
 	it('refuses an empty patch, naming the keys it can set', () => {
@@ -1468,7 +1485,9 @@ describe('admitPatch — the exact door a patch enters through', () => {
 			't',
 		)
 
+		expect(!unreadable.success && unreadable.error.code).toBe('MUTATION')
 		expect(!unreadable.success && unreadable.error.message).toContain('could not be read')
+		expect(!unreadable.success && unreadable.error.context?.faults).toEqual([])
 	})
 })
 
