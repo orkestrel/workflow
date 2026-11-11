@@ -29,6 +29,7 @@ const optimizeDeps = {
 		'@orkestrel/emitter',
 		'@orkestrel/queue',
 		'@orkestrel/timeout',
+		'@orkestrel/database/browser',
 	],
 }
 
