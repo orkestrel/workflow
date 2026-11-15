@@ -49,7 +49,7 @@ import {
 } from '@src/core'
 import { describe, expect, it } from 'vitest'
 import { isAbortSignal, linkSignal } from '@orkestrel/abort'
-import { FAULT_LIMIT, admitValue, failure, success } from '@orkestrel/contract'
+import { FAULT_LIMIT, failure, repairValue, success } from '@orkestrel/contract'
 import { captureError, createRecorder, waitForDelay } from '@orkestrel/test'
 import {
 	createErrorRecorder,
@@ -1432,10 +1432,10 @@ describe('admitPatch — the door a patch enters through', () => {
 		expect(admitted.success && admitted.value).not.toBe(patch)
 	})
 
-	it('refuses an undeclared key with the faults admitValue reports for the same value', () => {
+	it('refuses an undeclared key with the faults repairValue reports for the same value', () => {
 		const value = { naem: 'changed' }
 		const misspelt = admitPatch(taskUpdateContract, value, 'task', 't')
-		const reported = admitValue(taskUpdateContract, value)
+		const reported = repairValue(taskUpdateContract, value)
 
 		expect(!misspelt.success && misspelt.error.code).toBe('MUTATION')
 		expect(!misspelt.success && misspelt.error.message).toContain(

@@ -94,8 +94,8 @@
 	"dependencies": {
 		"@orkestrel/abort": "^0.0.17",
 		"@orkestrel/budget": "^0.0.18",
-		"@orkestrel/contract": "^0.0.23",
-		"@orkestrel/database": "^0.0.24",
+		"@orkestrel/contract": "^0.0.24",
+		"@orkestrel/database": "^0.0.26",
 		"@orkestrel/emitter": "^0.0.16",
 		"@orkestrel/queue": "^0.0.23",
 		"@orkestrel/timeout": "^0.0.17"

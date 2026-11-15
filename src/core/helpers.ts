@@ -20,7 +20,6 @@ import type {
 	WorkflowSnapshot,
 } from './types.js'
 import {
-	admitValue,
 	describeFaults,
 	failure,
 	isArray,
@@ -33,6 +32,7 @@ import {
 	isRecord,
 	isString,
 	preview,
+	repairValue,
 	success,
 } from '@orkestrel/contract'
 import { isQueueConcurrency } from '@orkestrel/queue'
@@ -570,7 +570,7 @@ export function describeWorkflowFaults(
  * Admits a definition through its contract, or refuses it with the faults that name why.
  *
  * @remarks
- * `admitValue` admits readable definitions with only lossless repairs and refuses a saturated
+ * `repairValue` admits readable definitions with only lossless repairs and refuses a saturated
  * audit. This boundary translates its refusal to the caller's workflow error code and subject,
  * preserving faults in the error context. Patches admit through the same function in `admitPatch`, which adds an empty-patch refusal.
  *
@@ -593,7 +593,7 @@ export function admitDefinition<T>(
 	code: WorkflowErrorCode,
 	subject: string,
 ): Result<T, WorkflowError> {
-	const admitted = admitValue(contract, value)
+	const admitted = repairValue(contract, value)
 	if (admitted.success) return success(admitted.value.value)
 	const { faults } = admitted.error
 	return failure(
@@ -606,7 +606,7 @@ export function admitDefinition<T>(
  * that name why.
  *
  * @remarks
- * `admitValue` admits the patch, so a lossless type repair, such as a numeric string for a number
+ * `repairValue` admits the patch, so a lossless type repair, such as a numeric string for a number
  * member, admits and the caller receives the repaired owned copy. An undeclared key refuses rather
  * than doing nothing, and so does a lossy repair, a failed read, and an empty patch, which changes
  * nothing.
@@ -631,7 +631,7 @@ export function admitPatch<T>(
 	id: string,
 ): Result<T, WorkflowError> {
 	const subject = `patch for ${noun} ${preview(id)}`
-	const admitted = admitValue(contract, value)
+	const admitted = repairValue(contract, value)
 	if (!admitted.success) {
 		const { faults } = admitted.error
 		return failure(
